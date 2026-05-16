@@ -1,0 +1,20 @@
+{
+  "name": "tencentdb-agent-memory",
+  "version": "0.1.0",
+  "description": "Four-layer long-term memory (L0 Conversation -> L1 Atom -> L2 Scene -> L3 Persona) and Mermaid-canvas context offload for Claude Code, powered by the upstream Tencent/TencentDB-Agent-Memory Gateway sidecar.",
+  "author": {
+    "name": "Plugin port maintainer",
+    "url": "https://github.com/Tencent/TencentDB-Agent-Memory"
+  },
+  "homepage": "https://github.com/Tencent/TencentDB-Agent-Memory",
+  "repository": "https://github.com/Tencent/TencentDB-Agent-Memory",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "long-term-memory",
+    "recall",
+    "persona",
+    "context-offload",
+    "tencentdb"
+  ]
+}
