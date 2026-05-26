@@ -26,9 +26,9 @@ function lastTurn(transcriptPath) {
       const msg = typeof entry.message === "object" ? entry.message : entry;
       const role = msg.role;
       if (role === "assistant" && !assistantText) {
-        assistantText = extractText(msg);
+        assistantText = extractText(msg.content || msg);
       } else if (role === "user" && !userText) {
-        userText = extractText(msg);
+        userText = extractText(msg.content || msg);
       }
       if (userText && assistantText) break;
     }

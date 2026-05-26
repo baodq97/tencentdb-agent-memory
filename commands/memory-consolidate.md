@@ -124,3 +124,5 @@ console.log('Consolidation complete');
 - Read existing persona first and merge new insights
 - Keep persona under 500 words for efficient recall injection
 - Refer to the memory-consolidation skill for detailed extraction guidance
+
+After consolidation, tell the user: **Memory pipeline complete.** Hybrid recall (FTS5 + vector) is now active for future sessions.

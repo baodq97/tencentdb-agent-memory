@@ -66,7 +66,7 @@ function truncate(text, max) {
 }
 
 function isSubstantive(text) {
-  if (!text || text.length < 30) return false;
+  if (!text || text.length < 15) return false;
   if (text.startsWith("<command-name>") || text.startsWith("<local-command")) return false;
   if (text.startsWith("<system-reminder>")) return false;
   return true;

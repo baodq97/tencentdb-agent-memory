@@ -95,3 +95,5 @@ When reading conversations, extract memories following these rules:
 - Merge related facts into single complete memories
 
 Refer to `/memory-consolidation` skill for detailed extraction format and examples.
+
+After seeding, tell the user: **Next: `/memory-consolidate`** to group atoms into scenes and synthesize persona.
