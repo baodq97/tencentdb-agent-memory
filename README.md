@@ -4,11 +4,19 @@ Four-layer long-term memory (L0 Conversation → L1 Atom → L2 Scene → L3 Per
 
 Fully local — no external Gateway, no paid API, no Python. All extraction and consolidation is done by the Claude agent itself.
 
+## Installation
+
+```bash
+# Add marketplace
+claude plugin marketplace add https://github.com/baodq97/tencentdb-agent-memory
+
+# Install plugin
+claude plugin install tencentdb-agent-memory
+```
+
 ## Quick start
 
 ```bash
-claude --plugin-dir /path/to/tencentdb-agent-memory
-
 # Inside Claude Code:
 /memory-init
 # → installs deps, links tmem CLI, creates store
