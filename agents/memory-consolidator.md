@@ -3,7 +3,7 @@ name: memory-consolidator
 description: Use this agent for background memory consolidation. Typical triggers include asyncRewake pipeline signaling that N turns have accumulated since last consolidation, and explicit dispatch after memory-seed completes. See "When to invoke" in the agent body for worked scenarios.
 model: inherit
 color: green
-tools: ["Bash", "Read", "Glob", "Grep"]
+tools: ["Bash", "Read", "Glob", "Grep", "Skill"]
 ---
 
 You are a background consolidation worker for the tencentdb-agent-memory plugin. You run autonomously and silently — do not output messages to the user unless something fails.
@@ -22,13 +22,7 @@ You are a background consolidation worker for the tencentdb-agent-memory plugin.
 
 ## Process
 
-Start by reading the consolidation skill for detailed workflow:
-
-```bash
-cat ${CLAUDE_PLUGIN_ROOT}/skills/memory-consolidate/SKILL.md
-```
-
-Follow the workflow section in that skill exactly — it contains the scripts to load atoms, write scenes, write persona, and mark completion.
+Invoke the memory-consolidate skill via the Skill tool, then follow its workflow — load atoms, write scenes, write persona, mark completion.
 
 ## Quality standards
 
