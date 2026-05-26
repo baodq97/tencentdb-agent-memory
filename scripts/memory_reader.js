@@ -21,7 +21,7 @@ function claudeProjectsDir() {
 
 function projectHashForCwd(cwd) {
   const resolved = path.resolve(cwd || process.cwd());
-  return resolved.replace(/:/g, "-").replace(/[\\/]/g, "-").replace(/^-/, "");
+  return resolved.replace(/:/g, "-").replace(/[\\/]/g, "-");
 }
 
 function listProjects() {
