@@ -10,7 +10,7 @@
     {
       "name": "tencentdb-agent-memory",
       "description": "Four-layer long-term memory with hybrid FTS5 + vector recall, auto-capture, and background consolidation",
-      "source": "..",
+      "source": "./",
       "category": "productivity",
       "version": "0.2.0"
     }
