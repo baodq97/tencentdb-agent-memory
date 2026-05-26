@@ -1,99 +1,75 @@
 # tencentdb-agent-memory (Claude Code plugin)
 
-A Claude Code port of [Tencent/TencentDB-Agent-Memory](https://github.com/Tencent/TencentDB-Agent-Memory):
-four-layer long-term memory (L0 Conversation -> L1 Atom -> L2 Scene -> L3 Persona) plus the optional
-Mermaid-canvas Context Offload short-term compression.
+Four-layer long-term memory (L0 Conversation → L1 Atom → L2 Scene → L3 Persona) for Claude Code, inspired by [Tencent/TencentDB-Agent-Memory](https://github.com/Tencent/TencentDB-Agent-Memory).
 
-Works in two modes:
-
-1. **Standalone** (zero dependencies): Local FTS5 storage + auto-capture + agent-driven consolidation.
-   No Gateway, no paid LLM API, no Python needed.
-2. **With Gateway** (optional): Full upstream pipeline with hybrid BM25+vector recall, LLM extraction,
-   and SQLite + sqlite-vec storage via the Node.js sidecar on `127.0.0.1:8420`.
+Fully local — no external Gateway, no paid API, no Python. All extraction and consolidation is done by the Claude agent itself.
 
 ## Architecture
 
 ```
 Claude Code session
-  |- UserPromptSubmit hook --> Gateway /recall OR local FTS5 --> inject <memory-context>
-  |- Stop hook (sync)      --> Gateway /capture + auto-capture to local FTS5
-  |- Stop hook (asyncRewake) --> background consolidation trigger (L1→L2→L3)
-  |- SessionEnd hook       --> POST /session/end
-  |- Slash commands        --> /memory-seed, /memory-consolidate, /memory-search, ...
-  |- Skills                --> architecture, consolidation, tuning, offload, troubleshooting
+  ├─ UserPromptSubmit hook → hybrid recall (FTS5 + vector RRF) → inject <memory-context>
+  ├─ Stop hook (sync)      → auto-capture turn to local FTS5
+  ├─ Stop hook (asyncRewake) → background consolidation trigger (L1→L2→L3)
+  └─ SessionEnd hook       → mark session as pending for later seeding
 
 Local storage (~/.memory-tencentdb/):
-  global/   {records/*.jsonl, index.db (FTS5), persona.md}
-  projects/ {hash/records/*.jsonl, hash/index.db, hash/scene_blocks/*.md}
-
-Optional upstream Gateway (127.0.0.1:8420):
-  L0 SQLite/JSONL > L1 LLM extract+dedup > L2 scenes > L3 persona
-  + hybrid BM25+vector recall + Context Offload (Mermaid canvases)
+  global/    index.db (FTS5) + vectors.db (sqlite-vec) + persona.md + scenes/
+  projects/  {hash}/index.db + vectors.db + scenes/
+  models/    embeddinggemma-300m (downloaded on first /memory-init)
 ```
 
 ## Prerequisites
 
-- **Node.js >= 22.16** on PATH (`node -v`) — runs the Gateway and all hook scripts.
-- **Bash** to run `/memory-init` and the search slash-commands (Git Bash, WSL, or the bundled bash in Claude Code's shell on Windows).
+- **Node.js >= 22** (`node -v`)
+- **npm** (for installing node-llama-cpp + sqlite-vec)
 
-## Install (one-time)
+## Quick start
 
-1. Add this plugin to Claude Code (marketplace install or copy to `~/.claude/plugins/`).
-2. Inside Claude Code, run `/memory-init`. It will:
-   - clone `Tencent/TencentDB-Agent-Memory` into `~/.memory-tencentdb/tdai-memory-openclaw-plugin/`
-   - run `npm install` once
-   - launch the Gateway and wait for `/health = ok`
-3. (Optional) provide LLM credentials for L1/L2/L3 extraction:
-   ```bash
-   export MEMORY_TENCENTDB_LLM_API_KEY="sk-..."
-   export MEMORY_TENCENTDB_LLM_BASE_URL="https://api.openai.com/v1"
-   export MEMORY_TENCENTDB_LLM_MODEL="gpt-4o"
-   ```
+```bash
+# Launch Claude Code with plugin
+claude --plugin-dir /path/to/tencentdb-agent-memory
 
-## What is wired up automatically
+# Inside Claude Code — 3 steps:
+/memory-init           # Create dirs, FTS5/vector indexes, download embedding model
+# then use memory-seed skill to extract memories from past conversations
+# then use memory-consolidate skill to build scenes + persona
+```
 
-| Claude Code event   | Action                                                       |
-|---------------------|--------------------------------------------------------------|
-| `UserPromptSubmit`  | POST `/recall` -> injects `<memory-context>` into the prompt |
-| `Stop`              | POST `/capture` + auto-capture to local FTS5 + asyncRewake consolidation trigger |
-| `SessionEnd`        | POST `/session/end` -> flush pending pipeline work           |
+## What happens automatically
 
-On Gateway down or slow, hooks bail out in under 5 seconds and the conversation continues
-uninterrupted - no errors surface to the user.
+| Claude Code event   | Action |
+|---------------------|--------|
+| `UserPromptSubmit`  | Hybrid recall (FTS5 keyword + vector cosine + RRF merge) → inject `<memory-context>` |
+| `Stop`              | Auto-capture turn to FTS5 + vector; trigger consolidation after N turns |
+| `SessionEnd`        | Mark session as pending for later seeding |
 
-## Slash commands
+Hooks never block the conversation — all failures degrade gracefully to no injection.
 
-- `/memory-init` - clone upstream, npm install, start Gateway
-- `/memory-status` - Gateway `/health`, data-dir tree
-- `/memory-search <query>` - search L1 structured memories
-- `/memory-conversation-search <query>` - search L0 raw conversations
-- `/memory-persona` - show current `persona.md`
-- `/memory-scenes` - list L2 scene blocks
-- `/memory-config` - open the Gateway config
-- `/memory-stop` - stop the Gateway sidecar
-- `/memory-seed` - backfill memory from old conversation logs
-- `/memory-consolidate` - consolidate L1 atoms into L2 scenes + L3 persona
-- `/memory-eval` - run the automated evaluation suite
-- `/memory-capture-status` - show auto-capture turn count and consolidation status
+## Components
 
-## Skills (auto-trigger by topic)
+### Command
 
-- `memory-architecture` - L0-L3 pyramid, drill-down rules, Mermaid offload
-- `memory-setup` - port of upstream `SKILL.md`
-- `memory-recall-tuning` - `recall.*` / `pipeline.*` / `persona.*` tuning tables
-- `memory-offload` - Context Offload (Mermaid canvas) setup
-- `memory-consolidation` - L1 extraction rules, L2 scene building, L3 persona synthesis
-- `memory-troubleshooting` - circuit breaker, embedding 4-tuple, retention foot-guns
+- `/memory-init` — initialize local memory store + vector index
 
-## Agents
+### Skills (agent-driven, trigger by context)
 
-- `memory-debugger` - walks Persona -> Scene -> Atom -> Conversation when recall is wrong
-- `memory-eval` - subagent for real scenario testing (invoked by `/memory-eval`)
+- `memory-seed` — extract L1 atoms from conversation history
+- `memory-consolidate` — build L2 scenes + L3 persona from atoms
+- `memory-architecture` — reference: L0→L3 pyramid, recall strategy, data layout
+- `memory-troubleshooting` — diagnose recall failures, missing memories, hook issues
 
-## Configuration knobs
+### Agent
 
-All Gateway-side - see upstream `openclaw.plugin.json` and `skills/memory-recall-tuning/SKILL.md`.
+- `memory-debugger` — trace wrong/missing recall through the L0→L3 chain
+
+## Tech stack
+
+- **FTS5** — keyword search via `node:sqlite` (built-in)
+- **sqlite-vec** — vector cosine search (npm dependency)
+- **EmbeddingGemma-300m** — local embedding via `node-llama-cpp` (npm dependency, ~80MB model)
+- **RRF** (k=60) — merges FTS5 + vector results
 
 ## License
 
-Plugin glue: MIT. Upstream engine: MIT (c) TencentDB Agent Memory Team.
+Plugin: MIT. Upstream inspiration: MIT (c) TencentDB Agent Memory Team.
