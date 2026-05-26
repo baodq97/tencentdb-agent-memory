@@ -4,7 +4,7 @@ allowed-tools: Bash
 ---
 
 ```bash
-python ${CLAUDE_PLUGIN_ROOT}/scripts/gateway_supervisor.py status
+node ${CLAUDE_PLUGIN_ROOT}/scripts/gateway_supervisor.js status
 ```
 
 Then show the top of the data directory:

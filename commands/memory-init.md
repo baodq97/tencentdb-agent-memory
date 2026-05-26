@@ -7,8 +7,8 @@ Run the upstream installer and start the Gateway, then check `/health`.
 
 ```bash
 bash ${CLAUDE_PLUGIN_ROOT}/scripts/install_upstream.sh && \
-  python ${CLAUDE_PLUGIN_ROOT}/scripts/gateway_supervisor.py start && \
-  python ${CLAUDE_PLUGIN_ROOT}/scripts/gateway_supervisor.py status
+  node ${CLAUDE_PLUGIN_ROOT}/scripts/gateway_supervisor.js start && \
+  node ${CLAUDE_PLUGIN_ROOT}/scripts/gateway_supervisor.js status
 ```
 
 If install fails because `node` is missing or older than 22.16, install Node.js first (https://nodejs.org/) and re-run.

@@ -1,94 +1,52 @@
 # Self-Consolidation: Agent-Driven Memory Extraction
 
 **Date**: 2025-05-25
-**Status**: Approved for implementation
+**Status**: Implemented (2025-05-26)
 
 ## Problem
 
-The TencentDB-Agent-Memory Gateway requires an external paid LLM API (OpenAI/Anthropic) for L1/L2/L3 memory extraction. Without it, L0 conversations are captured but never consolidated into searchable atoms (L1), scene blocks (L2), or persona (L3).
+The TencentDB-Agent-Memory Gateway requires an external paid LLM API for L1/L2/L3 memory extraction. Without it, conversations are captured but never consolidated into searchable atoms, scenes, or persona.
 
 ## Goal
 
-**Zero paid services.** The user's own agent (Claude Code, Codex, Copilot, etc.) performs extraction via a multi-agent pipeline (Understand-Anything style). Local embedding (embeddinggemma-300m, offline) handles vector search.
+**Zero paid services.** The user's own agent (Claude Code session) performs extraction via slash commands. FTS5 keyword search replaces vector search. No external LLM or embedding service needed.
 
-## Architecture (UA-style multi-agent pipeline)
-
-```
-/memory-consolidate (SKILL.md orchestrator)
-│
-├── Phase 0: PRE-FLIGHT
-│   Check Gateway health, resolve data dir, read checkpoint
-│
-├── Phase 1: SCAN
-│   Script: consolidate-reader.py
-│   → Read L0 conversations, filter unprocessed
-│   → Output: intermediate/scan-result.json
-│
-├── Phase 2: EXTRACT (parallel batches)
-│   Agent: memory-extractor (×N concurrent)
-│   → Each batch: ~10-20 conversation turns
-│   → Output: intermediate/batch-{i}.json
-│
-├── Phase 3: MERGE + DEDUP
-│   Script: merge-memories.py
-│   → Combine batches, fuzzy dedup
-│   → Output: intermediate/merged-memories.json
-│
-├── Phase 4: SCENES
-│   Agent: scene-builder
-│   → Group memories into L2 scene blocks
-│   → Output: intermediate/scenes.json
-│
-├── Phase 5: PERSONA
-│   Agent: persona-builder
-│   → Generate L3 persona from scenes + memories
-│   → Output: intermediate/persona.md
-│
-├── Phase 6: REVIEW
-│   Agent: memory-reviewer
-│   → Validate all extracted data
-│   → Output: intermediate/review.json
-│
-└── Phase 7: WRITE
-    Script: write-results.py
-    → Write L1 to records/*.jsonl + SQLite
-    → Write L2 to scene_blocks/*.md
-    → Write L3 to persona.md
-    → Update checkpoint
-```
-
-## Storage Strategy
-
-Write directly to Gateway's data directory (no fork needed):
-- **L1 atoms**: Append to `records/YYYY-MM-DD.jsonl` + upsert SQLite via Python `sqlite3`
-- **L2 scenes**: Write `scene_blocks/*.md` with META header format
-- **L3 persona**: Overwrite `persona.md`
-- **Checkpoint**: Update `checkpoint.json` with last processed timestamp
-- **Embedding**: Skip (Gateway's local embedding handles on next restart/reindex)
-
-On next Gateway restart, it reloads from these files. For immediate searchability, the write script inserts into SQLite FTS5 tables directly (keyword search works instantly; vector search after Gateway reindex).
-
-## New Files
+## Architecture
 
 ```
-tencentdb-agent-memory/
-├── agents/
-│   ├── memory-extractor.md         NEW - extract L1 atoms from conversation batches
-│   ├── scene-builder.md            NEW - group memories into L2 scenes
-│   ├── persona-builder.md          NEW - generate L3 persona
-│   └── memory-reviewer.md          NEW - validate extracted data
+SessionEnd hook
+│ (saves session metadata as "pending" to state.json)
 │
-├── skills/
-│   └── memory-consolidation/
-│       ├── SKILL.md                NEW - orchestrator (7 phases)
-│       ├── merge-memories.py       NEW - merge batches + fuzzy dedup
-│       └── write-results.py        NEW - write L1/L2/L3 to data dir
+/memory-seed (user-triggered, agent-driven)
+│ Reads pending JSONL sessions → agent extracts L1 atoms
+│ Writes records/*.jsonl + FTS5 index
 │
-├── commands/
-│   └── memory-consolidate.md       NEW - slash command → invokes skill
+/memory-consolidate (user-triggered, agent-driven)
+│ Groups L1 atoms → L2 scene blocks (scene_blocks/*.md)
+│ Synthesizes L3 persona (persona.md)
 │
-└── scripts/
-    └── consolidate_reader.py       NEW - read L0 from data dir
+UserPromptSubmit hook
+  Searches FTS5 → injects <memory-context> (< 300 tokens)
+  Falls back from Gateway recall to local FTS5 recall
+```
+
+Key design decision: Agent hooks (`type: agent`) only have Read/Grep/Glob — no Write tool. SessionEnd is non-blocking. Therefore L1 extraction is deferred to `/memory-seed` where the agent session does the reasoning and writing.
+
+## Storage Layout
+
+```
+~/.memory-tencentdb/
+├── global/
+│   ├── records/*.jsonl              (L1: persona + global instructions)
+│   ├── persona.md                   (L3)
+│   └── index.db                     (SQLite FTS5)
+├── projects/
+│   ├── {project-hash}/
+│   │   ├── records/*.jsonl          (L1: episodic + project instructions)
+│   │   ├── scene_blocks/*.md        (L2 with META header)
+│   │   └── index.db                 (SQLite FTS5)
+│   └── ...
+└── state.json                       (incremental timestamps, pending sessions)
 ```
 
 ## Data Formats
@@ -125,7 +83,6 @@ heat: 3
 ## Key Facts
 - User prefers dark mode
 - Uses VS Code as primary editor
-- Configured custom keybindings for navigation
 ```
 
 ### L3 Persona (persona.md)
@@ -140,55 +97,57 @@ heat: 3
 - Dark mode in all tools
 - Prefers concise responses
 
-## Working Style
-- Uses Claude Code for daily development
-- Focuses on plugin development
+## Standing Instructions
+- Always use uv run for Python execution
 ```
 
-## Extraction Prompt (adapted from upstream l1-extraction.ts)
+## Components
 
-The memory-extractor agent uses a prompt that produces 3 memory types:
+| # | File | Purpose |
+|---|------|---------|
+| 1 | scripts/memory_store.js | SQLite FTS5 storage — init, upsert, search, delete, count |
+| 2 | scripts/memory_reader.js | Read L0 JSONL — list projects/sessions, parse messages |
+| 3 | scripts/memory_writer.js | Write L1/L2/L3 — JSONL + FTS5, scene blocks, persona, state |
+| 4 | scripts/memory_recall.js | FTS5 search + format `<memory-context>` (< 300 tokens) |
+| 5 | hooks/scripts/on_session_end.js | Gateway flush + save pending session to state.json |
+| 6 | hooks/scripts/on_user_prompt.js | Gateway recall → local FTS5 recall fallback |
+| 7 | commands/memory-seed.md | Backfill old conversations → L1 atoms |
+| 8 | commands/memory-consolidate.md | Group L1 → L2 scenes + L3 persona |
+| 9 | skills/memory-consolidation/SKILL.md | Extraction skill (type/priority/scope rules) |
+| 10 | skills/memory-consolidation/references/extraction-guide.md | Detailed extraction format + examples |
 
-1. **persona** (priority 50-100): Stable user attributes, preferences, skills
-2. **episodic** (priority 60-100): Objective events, decisions, plans
-3. **instruction** (priority 70-100, or -1): Long-term behavior rules for AI
+## Memory Types
 
-Filtering rules:
-- Skip trivial chatter, greetings, one-time tool requests
-- Skip AI self-descriptions
-- Merge related facts into single complete memories
-- Each memory must be understandable without conversation context
+| Type | Priority | Scope | Storage |
+|------|----------|-------|---------|
+| persona | 50-100 | Global | global/records/ |
+| instruction | 70-100 or -1 | Global (or project) | global/ or projects/{hash}/ |
+| episodic | 60-100 | Project | projects/{hash}/records/ |
 
-## Gateway Configuration
+## Extraction Flow
 
-```yaml
-# ~/.memory-tencentdb/tdai-gateway.yaml
-embedding:
-  provider: local
-extraction:
-  enabled: false
-```
+1. Agent reads JSONL conversation via `memory_reader.js`
+2. Agent analyzes conversation, produces JSON array of extracted memories
+3. Agent classifies scope (global vs project) by memory type
+4. `memory_writer.js` writes to JSONL + FTS5 index
+5. `state.json` updated with session processing status
 
-- `embedding.provider: "local"` → embeddinggemma-300m, 768d, offline
-- `extraction.enabled: false` → disable internal LLM pipeline
+No intermediate files, no multi-agent pipeline, no paid APIs.
 
-## Implementation Order
+## Gateway Coexistence
 
-1. `scripts/consolidate_reader.py` - read L0 conversations
-2. `agents/memory-extractor.md` - L1 extraction agent
-3. `skills/memory-consolidation/merge-memories.py` - merge + dedup
-4. `skills/memory-consolidation/write-results.py` - write to data dir
-5. `agents/scene-builder.md` - L2 scene agent
-6. `agents/persona-builder.md` - L3 persona agent
-7. `agents/memory-reviewer.md` - validation agent
-8. `skills/memory-consolidation/SKILL.md` - orchestrator
-9. `commands/memory-consolidate.md` - slash command
+Existing Gateway integration preserved unchanged:
+- `on_user_prompt.js`: Tries Gateway recall first, falls back to local FTS5
+- `on_session_end.js`: Calls Gateway `/session/end` (best-effort) + saves local metadata
+- `on_stop.js`: Unchanged (Gateway capture only)
+- All existing commands (`/memory-search`, `/memory-status`, etc.) work as before
 
 ## Success Criteria
 
-1. `/memory-consolidate` reads L0, extracts, writes L1/L2/L3
-2. `/memory-search <query>` returns agent-extracted atoms
-3. `/memory-persona` shows agent-generated persona
-4. `/memory-scenes` lists agent-created scene blocks
-5. Zero API keys configured
-6. Works on any agent platform (Claude Code, Codex, Copilot)
+1. `/memory-seed` reads conversations, extracts L1 atoms via agent reasoning
+2. `/memory-consolidate` produces L2 scenes + L3 persona
+3. UserPromptSubmit injects relevant memories (< 300 tokens, < 5s)
+4. Global/project memory separation works
+5. state.json incremental timestamps resume correctly
+6. Zero API keys needed for core memory functionality
+7. Existing Gateway integration unchanged

@@ -4,5 +4,5 @@ allowed-tools: Bash
 ---
 
 ```bash
-python ${CLAUDE_PLUGIN_ROOT}/scripts/gateway_supervisor.py stop
+node ${CLAUDE_PLUGIN_ROOT}/scripts/gateway_supervisor.js stop
 ```

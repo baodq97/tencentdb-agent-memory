@@ -5,14 +5,10 @@ allowed-tools: Bash
 ---
 
 ```bash
-python - <<'PY'
-import json, sys
-sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")
-from gateway_client import GatewayClient
-q = """$ARGUMENTS""".strip()
-if not q:
-    print("usage: /memory-conversation-search <query>")
-    sys.exit(2)
-print(json.dumps(GatewayClient(timeout=10).search_conversations(query=q, limit=10), indent=2, ensure_ascii=False))
-PY
+node -e "
+const { GatewayClient } = require('${CLAUDE_PLUGIN_ROOT}/scripts/gateway_client.js');
+const q = \`$ARGUMENTS\`.trim();
+if (!q) { console.log('usage: /memory-conversation-search <query>'); process.exit(2); }
+new GatewayClient(undefined, 10000).searchConversations(q, 10).then(r => console.log(JSON.stringify(r, null, 2))).catch(e => console.error(e.message));
+"
 ```
