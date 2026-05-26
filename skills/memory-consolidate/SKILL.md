@@ -39,7 +39,18 @@ console.log(JSON.stringify(result, null, 2));
 
 ### 2. Generate L2 scene blocks
 
-Group project-scoped atoms by topic into narrative scenes. Each scene captures a coherent work arc.
+First list existing scenes to avoid duplicates:
+
+```bash
+node -e "
+const { listScenes, projectDir } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_writer.js');
+const { projectHashForCwd } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_reader.js');
+const scenes = listScenes(projectDir(projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || '.')));
+console.log(JSON.stringify(scenes, null, 2));
+"
+```
+
+Group project-scoped atoms by topic. If a scene with the same topic already exists, **reuse its name** so `writeSceneBlock` updates it instead of creating a duplicate.
 
 ```bash
 node -e "
@@ -51,6 +62,7 @@ console.log('Wrote scene:', p);
 
 **Scene guidelines:**
 - Group by topic, not by session
+- Reuse existing scene names when the topic matches — this updates the file instead of creating a new one
 - Include key facts, decisions made, and outcomes
 - Heat: 1-5 (higher = more recent activity)
 

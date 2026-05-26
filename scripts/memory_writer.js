@@ -65,6 +65,7 @@ function writeL1Record(baseDir, record, index = true) {
   if (index) {
     indexRecord(baseDir, record);
   }
+  appendChangelog(baseDir, { action: "created", type: "l1", id: record.id, memoryType: record.type, content: record.content.slice(0, 100), timestamp: now });
   return record;
 }
 
@@ -80,19 +81,55 @@ function indexRecord(baseDir, record) {
   store.close();
 }
 
+function appendChangelog(baseDir, entry) {
+  try {
+    const logPath = path.join(baseDir, "changelog.jsonl");
+    fs.appendFileSync(logPath, JSON.stringify(entry) + "\n", "utf-8");
+  } catch {}
+}
+
 const META_START = "-----META-START-----";
 const META_END = "-----META-END-----";
+
+function parseSceneMeta(filepath) {
+  try {
+    const text = fs.readFileSync(filepath, "utf-8");
+    const start = text.indexOf(META_START);
+    const end = text.indexOf(META_END);
+    if (start === -1 || end === -1) return null;
+    const block = text.slice(start + META_START.length, end).trim();
+    const meta = {};
+    for (const line of block.split("\n")) {
+      const i = line.indexOf(":");
+      if (i > 0) meta[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    }
+    return meta;
+  } catch { return null; }
+}
+
+function listScenes(baseDir) {
+  const sceneDir = path.join(baseDir, "scene_blocks");
+  if (!fs.existsSync(sceneDir)) return [];
+  return fs.readdirSync(sceneDir)
+    .filter(f => f.endsWith(".md"))
+    .map(f => {
+      const filepath = path.join(sceneDir, f);
+      const meta = parseSceneMeta(filepath) || {};
+      return { filename: f, filepath, ...meta };
+    });
+}
 
 function writeSceneBlock(baseDir, sceneName, summary, content, heat = 1, created = "", updated = "") {
   const sceneDir = path.join(baseDir, "scene_blocks");
   fs.mkdirSync(sceneDir, { recursive: true });
 
   const now = nowIso();
-  created = created || now;
-  updated = updated || now;
-
   const filename = slugify(sceneName) + ".md";
   const filepath = path.join(sceneDir, filename);
+
+  const existing = parseSceneMeta(filepath);
+  created = created || (existing ? existing.created : "") || now;
+  updated = updated || now;
 
   const meta = [
     META_START,
@@ -103,14 +140,18 @@ function writeSceneBlock(baseDir, sceneName, summary, content, heat = 1, created
     META_END,
   ].join("\n");
 
+  const action = existing ? "updated" : "created";
   fs.writeFileSync(filepath, `${meta}\n\n${content}`, "utf-8");
+  appendChangelog(baseDir, { action, type: "scene", name: sceneName, file: filename, timestamp: now });
   return filepath;
 }
 
 function writePersona(baseDir, content) {
   fs.mkdirSync(baseDir, { recursive: true });
   const p = path.join(baseDir, "persona.md");
+  const existed = fs.existsSync(p);
   fs.writeFileSync(p, content, "utf-8");
+  appendChangelog(baseDir, { action: existed ? "updated" : "created", type: "persona", timestamp: nowIso() });
   return p;
 }
 
@@ -217,6 +258,6 @@ module.exports = {
   memoryBaseDir, globalDir, projectDir,
   generateMemoryId, writeL1Record, writeL1Batch,
   writeSceneBlock, writePersona, readPersona,
-  updateState, readState,
-  META_START, META_END,
+  updateState, readState, listScenes, parseSceneMeta,
+  appendChangelog, META_START, META_END,
 };
