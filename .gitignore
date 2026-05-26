@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 *.pyo
+node_modules/
 *.swp
 .DS_Store
 .vscode/

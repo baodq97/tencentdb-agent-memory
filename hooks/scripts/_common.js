@@ -17,21 +17,6 @@ function addPluginScriptsToPath() {
   return scriptsDir;
 }
 
-function readHookInput() {
-  try {
-    const chunks = [];
-    const fd = require("node:fs").openSync("/dev/stdin", "r");
-    const buf = Buffer.alloc(65536);
-    let n;
-    while ((n = require("node:fs").readSync(fd, buf)) > 0) chunks.push(buf.slice(0, n));
-    require("node:fs").closeSync(fd);
-    const raw = Buffer.concat(chunks).toString("utf-8").trim();
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
-}
-
 function readHookInputAsync() {
   return new Promise((resolve) => {
     let data = "";
@@ -54,4 +39,4 @@ function emit(out) {
   process.stdout.write(JSON.stringify(out));
 }
 
-module.exports = { addPluginScriptsToPath, readHookInput, readHookInputAsync, sessionKey, emit };
+module.exports = { addPluginScriptsToPath, readHookInputAsync, sessionKey, emit };

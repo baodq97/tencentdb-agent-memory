@@ -1,6 +1,6 @@
 ---
 description: Show or scaffold the Gateway config (tdai-gateway.json).
-allowed-tools: Bash
+allowed-tools: [Bash]
 ---
 
 ```bash

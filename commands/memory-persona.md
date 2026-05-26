@@ -1,6 +1,6 @@
 ---
 description: Show the current L3 persona (persona.md).
-allowed-tools: Bash
+allowed-tools: [Bash]
 ---
 
 ```bash

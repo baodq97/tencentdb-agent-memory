@@ -27,10 +27,7 @@ Claude Code session
 
 ## Prerequisites
 
-- **Node.js >= 22.16** on PATH (`node -v`) — runs the Gateway.
-- **Python >= 3.10** invokable as `python` on PATH (`python --version`) — runs the hook scripts.
-  - On Windows: install from python.org (it adds `python` to PATH; the Microsoft Store `python` stub does NOT count). Alternatively `uv python install 3.12` then symlink/alias so `python` points at it.
-  - On macOS/Linux: `python3` is usually present but may not be aliased as `python`. If `python --version` fails, symlink it: `ln -s "$(which python3)" /usr/local/bin/python` (or adjust the hook commands).
+- **Node.js >= 22.16** on PATH (`node -v`) — runs the Gateway and all hook scripts.
 - **Bash** to run `/memory-init` and the search slash-commands (Git Bash, WSL, or the bundled bash in Claude Code's shell on Windows).
 
 ## Install (one-time)

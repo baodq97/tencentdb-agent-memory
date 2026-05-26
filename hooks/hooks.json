@@ -1,17 +1,19 @@
 {
   "UserPromptSubmit": [
     {
+      "matcher": {},
       "hooks": [
         {
           "type": "command",
           "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/on_user_prompt.js",
-          "timeout": 6
+          "timeout": 8
         }
       ]
     }
   ],
   "Stop": [
     {
+      "matcher": {},
       "hooks": [
         {
           "type": "command",
@@ -23,6 +25,7 @@
   ],
   "SessionEnd": [
     {
+      "matcher": {},
       "hooks": [
         {
           "type": "command",

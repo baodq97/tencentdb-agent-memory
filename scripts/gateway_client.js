@@ -134,4 +134,23 @@ class GatewayClient {
   }
 }
 
+// ── CLI ──
+async function main() {
+  const cmd = process.argv[2];
+  const query = process.argv.slice(3).join(" ").trim();
+  if (!cmd || cmd === "--help") {
+    console.log("Usage: node gateway_client.js <command> [query]\n\nCommands:\n  search-memories <query>\n  search-conversations <query>");
+    return;
+  }
+  if (!query) { console.error("Error: query required"); process.exit(1); }
+  const client = new GatewayClient(undefined, 10000);
+  let result;
+  if (cmd === "search-memories") result = await client.searchMemories(query, 10);
+  else if (cmd === "search-conversations") result = await client.searchConversations(query, 10);
+  else { console.error(`Unknown command: ${cmd}`); process.exit(1); }
+  console.log(JSON.stringify(result, null, 2));
+}
+
+if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
+
 module.exports = { GatewayClient, breakerOpen, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_BASE_URL };

@@ -1,6 +1,6 @@
 ---
 description: List L2 scene blocks (Markdown) in the memory data dir.
-allowed-tools: Bash
+allowed-tools: [Bash]
 ---
 
 ```bash
