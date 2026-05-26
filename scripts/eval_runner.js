@@ -101,7 +101,7 @@ function testPluginStructure(ev) {
     ev.check(`Agent ${f}: frontmatter`, a.startsWith("---") && a.includes("name:"));
   }
 
-  const scripts = ["memory_store.js", "memory_reader.js", "memory_writer.js", "memory_recall.js", "gateway_client.js", "gateway_supervisor.js", "benchmark.js"];
+  const scripts = ["memory_store.js", "memory_reader.js", "memory_writer.js", "memory_recall.js", "memory_auto_capture.js", "memory_pipeline.js", "benchmark.js"];
   ev.check("Scripts: all JS exist", scripts.every(s => fs.existsSync(path.join(PLUGIN_ROOT, "scripts", s))));
 
   const hookScripts = ["_common.js", "on_session_end.js", "on_user_prompt.js", "on_stop.js"];
@@ -124,7 +124,7 @@ function testModuleLoading(ev) {
     ["scripts/memory_reader.js", "readSession"],
     ["scripts/memory_writer.js", "writeL1Record"],
     ["scripts/memory_recall.js", "recall"],
-    ["scripts/gateway_client.js", "GatewayClient"],
+    ["scripts/memory_auto_capture.js", "autoCapture"],
   ];
   for (const [mod, sym] of modules) {
     try {
@@ -137,7 +137,7 @@ function testModuleLoading(ev) {
 
   try {
     const m = require(path.join(PLUGIN_ROOT, "hooks/scripts/_common.js"));
-    ev.check("_common.js exports", !!(m.readHookInputAsync && m.emit && m.sessionKey));
+    ev.check("_common.js exports", !!(m.readHookInputAsync && m.emit));
   } catch (e) {
     ev.check("_common.js exports", false, e.message);
   }

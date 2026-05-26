@@ -1,86 +1,77 @@
 ---
 name: memory-troubleshooting
-description: Diagnose tencentdb-agent-memory plugin failures — Gateway not starting, hooks timing out, recall returning nothing, embedding silently disabled, capture backlog, circuit breaker tripping, persona.md missing, data dir not found, "node not on PATH". Use when the user reports memory misbehaviour, sees `[memory-tdai]` error logs, hits "circuit breaker tripped", or `/memory-status` shows status != ok.
+description: Diagnose tencentdb-agent-memory plugin failures — hooks timing out, recall returning nothing, persona.md missing, data dir not found, "node not on PATH", FTS5 index empty. Use when the user reports memory misbehaviour, `/memory-status` shows zero records, or recall doesn't inject context.
 ---
 
 # Troubleshooting
 
 A symptom → root-cause map. For each, jump to the fix and verify with `/memory-status`.
 
-## Gateway won't start
+## `/memory-init` fails
 
-**`/memory-init` exits non-zero or `/memory-status` shows `health.status: down`.**
-
-1. **Node missing or too old.** `node -v` must report `>= 22.16`. Install Node, re-run `/memory-init`.
-2. **Upstream not cloned.** `ls ~/.memory-tencentdb/tdai-memory-openclaw-plugin/.git` — if missing, `bash $CLAUDE_PLUGIN_ROOT/scripts/install_upstream.sh`.
-3. **Port in use.** `MEMORY_TENCENTDB_GATEWAY_PORT` defaults to `8420`. If something else binds it: either kill that process or `export MEMORY_TENCENTDB_GATEWAY_PORT=8421` and re-init.
-4. **Crash on startup.** Tail the supervised log: `tail -100 ~/.memory-tencentdb/logs/gateway.stderr.log` — common causes: missing `tsx`, corrupt `node_modules` (re-run `npm install` in the upstream dir).
+1. **Node missing or too old.** `node -v` must report `>= 22`. Install Node, re-run `/memory-init`.
+2. **Permission denied.** Check write access to `~/.memory-tencentdb/`. On Windows, ensure the directory isn't read-only.
 
 ## Hooks always inject empty context
 
 **Each turn looks like recall returned nothing even though `/memory-search` finds atoms.**
 
-1. **Circuit breaker open.** Check `~/.memory-tencentdb/breaker.json` — if `open_until` is in the future, 5+ consecutive Gateway errors tripped it. Fix the underlying Gateway issue and reset with `rm ~/.memory-tencentdb/breaker.json`.
-2. **Hook timing out.** `hooks/hooks.json` budgets are 4–6s. If `/recall` is slower, the hook bails. Either speed up recall (`embedding.recallTimeoutMs: 3000`, `recall.maxResults: 3`) or raise the timeout in `hooks.json`.
-3. **Recall response shape mismatch.** Upstream sometimes returns `prependContext` vs `context`. The hook checks both; if neither is non-empty, nothing is injected. `curl -s http://127.0.0.1:8420/recall -d '{"query":"X","session_key":"s"}' -H content-type:application/json` to see the raw response.
+1. **No memories seeded yet.** Run `/memory-seed` first to extract L1 atoms from past conversations, then `/memory-consolidate` for persona.
+2. **Hook timing out.** `hooks/hooks.json` budgets are 4–8s. If FTS5 search + persona read is slower (large DB), raise the timeout.
+3. **FTS5 query mismatch.** FTS5 is keyword-based. If the query shares no tokens with stored memories, it returns empty. The persona section catches some of these misses.
+4. **Wrong project hash.** The hook uses `CLAUDE_PROJECT_DIR` to determine the project hash. If running from a different directory, project-scoped memories won't be found.
 
 ## `/memory-search` returns empty results
 
-1. **L1 hasn't fired.** Default `pipeline.everyNConversations: 5`. After 5 turns you should see L1 atoms. Lower it to 2 for fast feedback.
-2. **L0 capture not running.** Tail `~/.memory-tencentdb/logs/gateway.stdout.log` — expect `[memory-tdai] [capture]` lines after each `Stop`. If absent, the Stop hook isn't running — verify with: `cat ~/.memory-tencentdb/last_hook.log` (the hooks can be debugged by adding `import logging; logging.basicConfig(filename="/tmp/hook.log")`).
-3. **`enableDedup` collapses everything.** Set `extraction.enableDedup: false` temporarily to see if dedup is over-eager.
-
-## Embedding silently disabled
-
-**Log shows `[embedding] disabled — incomplete config` even though `enabled: true`.**
-
-All four of `provider`, `baseUrl`, `apiKey`, `model`, `dimensions` must be present and non-empty. The Gateway disables the path on any missing field rather than throwing. Cross-check against `dimensions` of your chosen model — `text-embedding-3-small` is 1536, not 3072.
-
-If you set `provider: qclaw`, `proxyUrl` is also required.
+1. **No L1 atoms exist.** Run `/memory-seed` to extract from past conversations, or have a few conversations first (auto-capture stores raw turns).
+2. **Auto-capture not running.** The `Stop` hook must fire after each turn. Check that `hooks/hooks.json` is loaded correctly (no plugin errors on startup).
+3. **Query too broad/narrow.** FTS5 works on word tokens. Try simpler queries: `/memory-search "Go"` instead of `/memory-search "what language do I prefer"`.
 
 ## Persona never generates
 
-1. `persona.triggerEveryN: 50` — that's a lot of new L1 atoms. Drop to 10 while testing.
-2. Confirm L1 is firing (see above). No L1 → no persona.
-3. Check `~/.memory-tencentdb/logs/gateway.stdout.log` for `[persona]` lines. If you see "model unavailable", supply `MEMORY_TENCENTDB_LLM_API_KEY` and restart.
-
-## Capture backlog warnings
-
-Log line: `capture backlog: 4 in-flight`.
-
-The Gateway is slower than the conversation rate. Usually means an LLM call (L1 extraction) is blocking. Options:
-
-- Reduce `extraction.maxMemoriesPerSession` to 10
-- Raise `llm.timeoutMs` so calls don't pile up retrying
-- Switch `extraction.model` to a faster model
-- Skip noisy agents via `capture.excludeAgents: ["bench-judge-*"]`
+1. **Haven't run `/memory-consolidate`.** Persona is generated during consolidation, not automatically on every turn.
+2. **No L1 atoms of type "persona".** `/memory-seed` must extract persona-type atoms. Check: `/memory-search` for any results.
+3. **asyncRewake not triggered.** The consolidation pipeline runs after N turns (configured in `capture_state.json`). For immediate persona generation, run `/memory-consolidate` manually.
 
 ## Data dir not where you expect
 
-Resolution order (Gateway-side):
+Default: `~/.memory-tencentdb/`
 
-1. `TDAI_DATA_DIR` env var (absolute path)
-2. `data.baseDir` in `tdai-gateway.json`
-3. Default: `~/.memory-tencentdb/memory-tdai/` (override parent with `MEMORY_TENCENTDB_ROOT`)
-4. Legacy: `~/memory-tdai/` if it exists (deprecated)
-
-Set `TDAI_DATA_DIR` in the shell that launches Claude Code if you want a custom location.
-
-## "Aggressive cleanup not allowed"
-
-You set `capture.l0l1RetentionDays: 1` (or `2`) without `capture.allowAggressiveCleanup: true`. Either accept a longer retention (`3+`) or explicitly opt in:
-
-```json
-"capture": { "l0l1RetentionDays": 1, "allowAggressiveCleanup": true, "cleanTime": "03:00" }
+Structure:
 ```
+~/.memory-tencentdb/
+├── global/           # Cross-project (persona, instructions)
+│   ├── index.db      # FTS5 index
+│   ├── l1/           # JSONL shards
+│   ├── scenes/       # L2 scene blocks
+│   └── persona.md    # L3 persona
+├── projects/<hash>/  # Per-project (episodic)
+├── state.json        # Session tracking
+└── capture_state.json # Auto-capture state
+```
+
+## Auto-capture not working
+
+1. **Stop hook not firing.** Check Claude Code startup for plugin errors. The hook must be registered in `hooks/hooks.json`.
+2. **`memory_auto_capture.js` missing.** Verify file exists at `scripts/memory_auto_capture.js`.
+3. **No transcript path.** The Stop hook reads `payload.transcript_path` from stdin. If missing, nothing is captured.
+
+## Token budget exceeded
+
+Default budget: 300 tokens (~1200 chars). If injection is too large:
+- Reduce `topK` in `memory_recall.js` (default 5)
+- Shorten persona (keep top 5 attributes)
+- The recall function auto-truncates and stops adding memories at the budget limit
 
 ## Reset everything
 
-Nuclear option, after backing up `~/.memory-tencentdb/memory-tdai/`:
-
 ```bash
-/memory-stop
-rm -rf ~/.memory-tencentdb/breaker.json ~/.memory-tencentdb/gateway.pid
-# data dir kept intact at ~/.memory-tencentdb/memory-tdai/
+# Back up first
+cp -r ~/.memory-tencentdb/ ~/.memory-tencentdb.bak/
+
+# Delete and re-init
+rm -rf ~/.memory-tencentdb/
 /memory-init
+/memory-seed
+/memory-consolidate
 ```

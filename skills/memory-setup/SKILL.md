@@ -1,21 +1,21 @@
 ---
 name: memory-setup
-description: End-to-end setup workflow for the tencentdb-agent-memory plugin — clone upstream, install Node deps, start the Gateway sidecar, write the Gateway config, verify recall and capture work, and run the smoke test. Use when the user says "install memory", "enable long-term memory", "configure memory-tencentdb", "set up persona", "start the memory gateway", or hits a "Gateway not available" / "no memory injection" symptom on a fresh install.
+description: End-to-end setup workflow for the tencentdb-agent-memory plugin — initialize local FTS5 store, seed memories from past conversations, consolidate into scenes and persona. Use when the user says "install memory", "enable long-term memory", "configure memory-tencentdb", "set up persona", or hits "no memory injection" on a fresh install.
 ---
 
 # Setup workflow
 
-This is the one-shot install path. Adapted from upstream `SKILL.md`, retargeted at Claude Code.
+Standalone local memory — no external Gateway, no paid API keys required. Claude agent handles all extraction and consolidation.
 
 ## 1. Preflight
 
 ```bash
-node -v        # need >= 22.16
+node -v        # need >= 22
 ```
 
-Upgrade if older. Python is **not** required — all scripts are Node.js.
+Upgrade if older. Python is **not** required — all scripts are Node.js using built-in modules only.
 
-## 2. Bootstrap (one-time)
+## 2. Initialize (one-time)
 
 Inside Claude Code:
 
@@ -23,83 +23,66 @@ Inside Claude Code:
 /memory-init
 ```
 
-This runs `scripts/install_upstream.sh` (clone `Tencent/TencentDB-Agent-Memory` into `~/.memory-tencentdb/tdai-memory-openclaw-plugin/`, then `npm install`) and starts the Gateway sidecar. On success `/health` returns `{"status": "ok"}`.
+This creates the local FTS5 database and directory structure at `~/.memory-tencentdb/`. Safe to re-run.
 
-Re-running is safe — the installer is idempotent (`git pull --ff-only` then `npm install`).
-
-## 3. Provide LLM credentials (recommended)
-
-L1/L2/L3 extraction needs an OpenAI-compatible LLM endpoint. Set in the shell that launches Claude Code:
-
-```bash
-export MEMORY_TENCENTDB_LLM_API_KEY="sk-..."
-export MEMORY_TENCENTDB_LLM_BASE_URL="https://api.openai.com/v1"   # or any compat endpoint
-export MEMORY_TENCENTDB_LLM_MODEL="gpt-4o"
-```
-
-Without these, L0 capture still works but the pipeline can't promote turns into L1 atoms / L2 scenes / L3 persona — recall will only ever surface raw L0 fragments via BM25.
-
-## 4. Minimum Gateway config
+## 3. Seed memories from past conversations
 
 ```
-/memory-config
+/memory-seed
 ```
 
-It writes a default `~/.memory-tencentdb/tdai-gateway.json`. The whole field is optional — the Gateway runs with sensible defaults. The defaults already enable `recall.strategy: hybrid`, `pipeline.everyNConversations: 5`, and `persona.triggerEveryN: 50`.
+This reads your Claude Code conversation history (`~/.claude/projects/`) and uses the agent to extract L1 memory atoms. No external LLM needed — Claude itself does the extraction.
 
-## 5. Enable embedding (optional, for vector recall)
+Options:
+- `/memory-seed` — current project only
+- `/memory-seed --all` — all projects
+- `/memory-seed --project <hash>` — specific project
 
-Set the four required fields under `embedding` — they must all be present or it silently falls back to keyword-only:
+## 4. Consolidate (L2 scenes + L3 persona)
 
-```json
-{
-  "embedding": {
-    "enabled": true,
-    "provider": "openai",
-    "baseUrl": "https://api.openai.com/v1",
-    "apiKey": "${EMBEDDING_API_KEY}",
-    "model": "text-embedding-3-small",
-    "dimensions": 1536
-  }
-}
+```
+/memory-consolidate
 ```
 
-If any of `apiKey/baseUrl/model/dimensions` is missing, the embedding path is disabled at startup with a warning in the Gateway log.
+Groups L1 atoms into L2 scene blocks and synthesizes an L3 persona summary. This is also triggered automatically by the asyncRewake Stop hook after N turns.
 
-## 6. Verify
+## 5. Verify
 
 ```
 /memory-status
 ```
 
 Look for:
+- Record counts in global and project stores
+- Persona: N lines (not "none")
+- Scenes: at least one `.md` file
 
-- `status: ok` from `/health`
-- data dir created at `~/.memory-tencentdb/memory-tdai/` (or `$TDAI_DATA_DIR`)
-- subdirectories `conversations/ records/ scene_blocks/` (some appear only after the first turn)
-- `vectors.db` after the first turn is captured
+## 6. Smoke test
 
-## 7. Smoke test
+1. Have a 2-3 turn conversation mentioning something memorable ("my preferred language is Go").
+2. The `Stop` hook auto-captures each turn to local FTS5.
+3. Start a fresh Claude Code session and ask: "what language do I prefer?". The `UserPromptSubmit` hook injects recalled memories and Claude should answer "Go".
+4. Manual probe: `/memory-search "language"` returns matching atoms.
 
-1. Have a 2-3 turn conversation with Claude Code where you mention something memorable ("my preferred language is Go").
-2. After each turn the `Stop` hook posts `/capture` — check `~/.memory-tencentdb/logs/gateway.stdout.log` for `[memory-tdai] [capture]` lines.
-3. Start a fresh Claude Code session and ask: "what language do I prefer?". The `UserPromptSubmit` hook should inject the recalled atom and Claude should answer "Go".
-4. Manual probe: `/memory-search "language"` returns the atom with a score.
-
-## 8. Definition of Done
-
-All of the following must hold:
+## 7. Definition of Done
 
 - [x] `/memory-init` exits 0
-- [x] `/memory-status` shows `status: ok`
-- [x] `~/.memory-tencentdb/memory-tdai/` exists with subdirectories populated after the first turn
-- [x] `[memory-tdai]` log lines appear in `~/.memory-tencentdb/logs/gateway.stdout.log`
-- [x] `/memory-search <query>` returns at least one result after a few turns
+- [x] `/memory-status` shows record counts > 0
+- [x] `~/.memory-tencentdb/global/` and `~/.memory-tencentdb/projects/` exist
+- [x] `/memory-search <query>` returns results after seeding or a few turns
+- [x] Persona file exists after `/memory-consolidate`
 
-If any of these fails, jump to the `memory-troubleshooting` skill.
+If any fails, jump to the `memory-troubleshooting` skill.
+
+## How it works
+
+- **UserPromptSubmit hook** → local FTS5 recall → inject `<memory-context>` via `additionalContext`
+- **Stop hook** → auto-capture latest turn to FTS5 + trigger consolidation check
+- **SessionEnd hook** → mark session as "pending" for later `/memory-seed`
+- **asyncRewake pipeline** → background L1→L2→L3 consolidation after N turns
 
 ## Safety
 
-- Treat `apiKey` as secrets — keep them in env vars, never in `tdai-gateway.json` files committed to git.
-- `l0l1RetentionDays = 1` or `2` requires explicit `allowAggressiveCleanup: true` — by default `0` means "never clean up".
-- The plugin only modifies `~/.memory-tencentdb/` — it never touches `~/.openclaw/` or `~/.hermes/`.
+- The plugin only modifies `~/.memory-tencentdb/` — no other directories touched.
+- All data stays local. No external API calls.
+- Token budget: ~77/300 tokens max injected per turn, 74% headroom.

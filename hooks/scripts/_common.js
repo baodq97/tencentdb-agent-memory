@@ -1,8 +1,5 @@
 /**
- * Shared helpers for the three hook entrypoints.
- *
- * Keeps each hook script tiny — they only orchestrate; HTTP + circuit breaker
- * live in scripts/gateway_client.js.
+ * Shared helpers for hook entrypoints.
  */
 "use strict";
 
@@ -30,13 +27,8 @@ function readHookInputAsync() {
   });
 }
 
-function sessionKey(hookPayload) {
-  const sid = hookPayload.session_id || process.env.CLAUDE_SESSION_ID || "default";
-  return `claude-code:${sid}`;
-}
-
 function emit(out) {
   process.stdout.write(JSON.stringify(out));
 }
 
-module.exports = { addPluginScriptsToPath, readHookInputAsync, sessionKey, emit };
+module.exports = { addPluginScriptsToPath, readHookInputAsync, emit };
