@@ -137,6 +137,8 @@ class MemoryStore {
       record.priority ?? 50,
       record.scene_name || ""
     );
+
+    this._embedAndStore(rid, record.content);
     return true;
   }
 
@@ -197,6 +199,22 @@ class MemoryStore {
     return this.db.prepare(
       "SELECT * FROM l1_records ORDER BY updated_time DESC LIMIT ?"
     ).all(limit);
+  }
+
+  _embedAndStore(recordId, content) {
+    try {
+      const { getEmbeddingService } = require("./embedding_service.js");
+      const { VectorStore } = require("./vector_store.js");
+      const embSvc = getEmbeddingService();
+      if (!embSvc.isReady()) return;
+      embSvc.embed(content).then(vec => {
+        if (!vec) return;
+        const vecDbPath = path.join(path.dirname(this.dbPath), "vectors.db");
+        const vecStore = new VectorStore(vecDbPath);
+        vecStore.upsertVec(recordId, vec);
+        vecStore.close();
+      }).catch(() => {});
+    } catch {}
   }
 
   close() {
