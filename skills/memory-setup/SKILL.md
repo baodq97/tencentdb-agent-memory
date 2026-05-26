@@ -11,10 +11,9 @@ This is the one-shot install path. Adapted from upstream `SKILL.md`, retargeted 
 
 ```bash
 node -v        # need >= 22.16
-python --version  # need >= 3.10
 ```
 
-Upgrade either if older.
+Upgrade if older. Python is **not** required — all scripts are Node.js.
 
 ## 2. Bootstrap (one-time)
 

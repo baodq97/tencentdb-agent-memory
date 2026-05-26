@@ -1,7 +1,7 @@
 ---
 description: Backfill memory from old Claude Code conversation logs. Processes pending sessions incrementally.
 argument-hint: "[--project <hash>] [--all] [--session <id>]"
-allowed-tools: Read, Glob, Grep, Bash, Agent
+allowed-tools: [Read, Glob, Grep, Bash, Agent]
 ---
 
 Process Claude Code conversation logs and extract L1 memory atoms.

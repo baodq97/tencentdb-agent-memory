@@ -2,8 +2,8 @@
 /**
  * Thin HTTP client for the memory-tencentdb Gateway sidecar.
  *
- * Mirrors the Python gateway_client.py — endpoint shapes stay in lockstep.
- * Includes a process-local circuit breaker to keep hook overhead bounded.
+ * Endpoint shapes match upstream Gateway REST API.
+ * Includes a file-backed circuit breaker to keep hook overhead bounded.
  */
 "use strict";
 

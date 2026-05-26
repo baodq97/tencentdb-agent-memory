@@ -13,19 +13,7 @@ const fs = require("node:fs");
 const nodePath = require("node:path");
 const { addPluginScriptsToPath, readHookInputAsync, sessionKey, emit } = require("./_common.js");
 const scriptsDir = addPluginScriptsToPath();
-
-function extractText(message) {
-  const content = message?.content;
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((b) => b?.type === "text" && typeof b.text === "string")
-      .map((b) => b.text)
-      .join("\n")
-      .trim();
-  }
-  return "";
-}
+const { extractText } = require(nodePath.join(scriptsDir, "memory_reader.js"));
 
 function lastTurn(transcriptPath) {
   let userText = "";

@@ -11,9 +11,24 @@ Extract structured memories from Claude Code conversation logs. The agent (this 
 
 | Layer | What | Storage | Trigger |
 |-------|------|---------|---------|
-| L1 Atoms | Individual memory facts | `records/{date}.jsonl` + FTS5 | `/memory-seed` |
-| L2 Scenes | Grouped narrative blocks | `scene_blocks/*.md` | `/memory-consolidate` |
-| L3 Persona | Synthesized user profile | `persona.md` | `/memory-consolidate` |
+| L1 Atoms | Individual memory facts | `records/{date}.jsonl` + FTS5 | Auto-capture (Stop hook) + `/memory-seed` |
+| L2 Scenes | Grouped narrative blocks | `scene_blocks/*.md` | Auto-consolidate (every N turns) + `/memory-consolidate` |
+| L3 Persona | Synthesized user profile | `persona.md` | Auto-consolidate (every N turns) + `/memory-consolidate` |
+
+## Auto-Consolidation Flow
+
+The Stop hook runs two commands:
+1. **Sync** (`on_stop.js`): Auto-captures each turn as an L1 atom to FTS5
+2. **asyncRewake** (`memory_pipeline.js`): Runs in background, checks consolidation threshold
+
+After N turns (default 10, configurable via `MEMORY_CONSOLIDATE_EVERY` env var), the pipeline exits with code 2 which wakes Claude with consolidation instructions. Claude then uses LLM reasoning to:
+1. Read all auto-captured L1 atoms from each project's FTS5 index
+2. Group them by **topic** (not just session) into L2 scene blocks
+3. Synthesize persona + instruction atoms into L3 `persona.md`
+4. Remove consolidated atoms from FTS5
+5. Mark consolidation complete
+
+This approach gives LLM-quality consolidation (topic analysis, narrative synthesis, deduplication) while running transparently — the user only sees activity if Claude is idle when the wake happens.
 
 ## L1 Extraction Workflow
 

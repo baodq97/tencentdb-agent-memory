@@ -1,7 +1,7 @@
 ---
 description: Consolidate L1 atoms into L2 scene blocks and L3 persona. Run after /memory-seed.
 argument-hint: "[--scenes] [--persona] [--project <hash>]"
-allowed-tools: Read, Glob, Grep, Bash, Agent
+allowed-tools: [Read, Glob, Grep, Bash, Agent]
 ---
 
 Consolidate accumulated L1 memory atoms into higher-level structures.

@@ -71,7 +71,8 @@ function testPluginStructure(ev) {
   ev.check("Manifest: version", !!manifest.version, manifest.version);
   ev.check("Manifest: description", !!manifest.description);
 
-  const hooks = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, "hooks/hooks.json"), "utf-8"));
+  const hooksFile = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, "hooks/hooks.json"), "utf-8"));
+  const hooks = hooksFile.hooks || hooksFile;
   const events = Object.keys(hooks);
   ev.check("hooks.json: valid JSON", true);
   ev.check("hooks.json: matcher on all entries", events.every(e => hooks[e][0].matcher !== undefined));
@@ -337,8 +338,10 @@ function testBenchmark(ev) {
   for (let i = 0; i < FACTS.length; i++) {
     const f = FACTS[i];
     const ctx = doRecall(f.probe);
-    const memMatch = ctx.match(/<memories>([\s\S]*?)<\/memories>/);
     let rank = "MISS";
+
+    // Check <memories> section
+    const memMatch = ctx.match(/<memories>([\s\S]*?)<\/memories>/);
     if (memMatch) {
       const lines = memMatch[1].trim().split("\n");
       for (let j = 0; j < lines.length; j++) {
@@ -350,6 +353,16 @@ function testBenchmark(ev) {
         }
       }
     }
+
+    // Check <persona> section — persona is part of recall context
+    if (rank === "MISS") {
+      const personaMatch = ctx.match(/<persona>([\s\S]*?)<\/persona>/);
+      if (personaMatch && personaMatch[1].toLowerCase().includes(f.kw.toLowerCase())) {
+        rank = "PERSONA";
+        topK++;
+      }
+    }
+
     if (rank === "MISS") misses.push(f.kw);
     ev.check(`[${String(i).padStart(2, "0")}] kw=${f.kw}`, rank !== "MISS", rank);
   }

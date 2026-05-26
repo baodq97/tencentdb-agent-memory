@@ -3,8 +3,6 @@
  * UserPromptSubmit hook — recall from Gateway + local FTS5, inject via additionalContext.
  *
  * Tries Gateway /recall first (if available). Falls back to local FTS5 search.
- * Also checks if memory consolidation is due (after N auto-captured turns) and
- * appends a gentle hint if so.
  * On any failure exits 0 with empty output so the user's turn is never blocked.
  */
 "use strict";
@@ -36,17 +34,6 @@ function localRecall(prompt, cwd) {
   }
 }
 
-function consolidationHint() {
-  try {
-    const { checkConsolidationDue } = require(nodePath.join(scriptsDir, "memory_auto_capture.js"));
-    const info = checkConsolidationDue();
-    if (!info || !info.due) return "";
-    return `\n<memory-consolidation-hint>${info.message}</memory-consolidation-hint>`;
-  } catch {
-    return "";
-  }
-}
-
 async function main() {
   const payload = await readHookInputAsync();
   const prompt = payload.prompt || payload.user_prompt || "";
@@ -57,9 +44,6 @@ async function main() {
 
   let ctx = await gatewayRecall(prompt, sk);
   if (!ctx) ctx = localRecall(prompt, cwd);
-
-  const hint = consolidationHint();
-  if (hint) ctx = (ctx || "") + hint;
 
   if (!ctx) { emit({}); return; }
 

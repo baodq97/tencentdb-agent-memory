@@ -4,25 +4,31 @@ A Claude Code port of [Tencent/TencentDB-Agent-Memory](https://github.com/Tencen
 four-layer long-term memory (L0 Conversation -> L1 Atom -> L2 Scene -> L3 Persona) plus the optional
 Mermaid-canvas Context Offload short-term compression.
 
-The heavy lifting (extraction, dedup, hybrid BM25+vector recall, SQLite + sqlite-vec / TCVDB storage)
-runs in the **upstream Node.js Gateway** sidecar on `127.0.0.1:8420`. This plugin is a thin HTTP
-client + lifecycle manager wired into Claude Code hooks, mirroring the shape of the upstream Hermes
-Python provider.
+Works in two modes:
+
+1. **Standalone** (zero dependencies): Local FTS5 storage + auto-capture + agent-driven consolidation.
+   No Gateway, no paid LLM API, no Python needed.
+2. **With Gateway** (optional): Full upstream pipeline with hybrid BM25+vector recall, LLM extraction,
+   and SQLite + sqlite-vec storage via the Node.js sidecar on `127.0.0.1:8420`.
 
 ## Architecture
 
 ```
 Claude Code session
-  |- UserPromptSubmit hook --> POST /recall   --> inject <memory-context>
-  |- Stop hook             --> POST /capture  --> fire-and-forget L0 + L1/L2/L3
+  |- UserPromptSubmit hook --> Gateway /recall OR local FTS5 --> inject <memory-context>
+  |- Stop hook (sync)      --> Gateway /capture + auto-capture to local FTS5
+  |- Stop hook (asyncRewake) --> background consolidation trigger (L1→L2→L3)
   |- SessionEnd hook       --> POST /session/end
-  |- Slash commands        --> POST /search/* and lifecycle
-  |- Skills                --> docs for architecture, tuning, offload, troubleshooting
-                         |
-                         v HTTP 127.0.0.1:8420
-   memory-tencentdb Gateway (Node.js sidecar - UPSTREAM, unchanged)
-     L0 SQLite/JSONL > L1 LLM extract+dedup > L2 scenes (md) > L3 persona.md
-     + optional Context Offload (Mermaid canvases under data dir)
+  |- Slash commands        --> /memory-seed, /memory-consolidate, /memory-search, ...
+  |- Skills                --> architecture, consolidation, tuning, offload, troubleshooting
+
+Local storage (~/.memory-tencentdb/):
+  global/   {records/*.jsonl, index.db (FTS5), persona.md}
+  projects/ {hash/records/*.jsonl, hash/index.db, hash/scene_blocks/*.md}
+
+Optional upstream Gateway (127.0.0.1:8420):
+  L0 SQLite/JSONL > L1 LLM extract+dedup > L2 scenes > L3 persona
+  + hybrid BM25+vector recall + Context Offload (Mermaid canvases)
 ```
 
 ## Prerequisites
@@ -49,7 +55,7 @@ Claude Code session
 | Claude Code event   | Action                                                       |
 |---------------------|--------------------------------------------------------------|
 | `UserPromptSubmit`  | POST `/recall` -> injects `<memory-context>` into the prompt |
-| `Stop`              | POST `/capture` -> fire-and-forget L0 + pipeline queue       |
+| `Stop`              | POST `/capture` + auto-capture to local FTS5 + asyncRewake consolidation trigger |
 | `SessionEnd`        | POST `/session/end` -> flush pending pipeline work           |
 
 On Gateway down or slow, hooks bail out in under 5 seconds and the conversation continues
@@ -65,6 +71,10 @@ uninterrupted - no errors surface to the user.
 - `/memory-scenes` - list L2 scene blocks
 - `/memory-config` - open the Gateway config
 - `/memory-stop` - stop the Gateway sidecar
+- `/memory-seed` - backfill memory from old conversation logs
+- `/memory-consolidate` - consolidate L1 atoms into L2 scenes + L3 persona
+- `/memory-eval` - run the automated evaluation suite
+- `/memory-capture-status` - show auto-capture turn count and consolidation status
 
 ## Skills (auto-trigger by topic)
 
@@ -72,11 +82,13 @@ uninterrupted - no errors surface to the user.
 - `memory-setup` - port of upstream `SKILL.md`
 - `memory-recall-tuning` - `recall.*` / `pipeline.*` / `persona.*` tuning tables
 - `memory-offload` - Context Offload (Mermaid canvas) setup
+- `memory-consolidation` - L1 extraction rules, L2 scene building, L3 persona synthesis
 - `memory-troubleshooting` - circuit breaker, embedding 4-tuple, retention foot-guns
 
-## Agent
+## Agents
 
 - `memory-debugger` - walks Persona -> Scene -> Atom -> Conversation when recall is wrong
+- `memory-eval` - subagent for real scenario testing (invoked by `/memory-eval`)
 
 ## Configuration knobs
 
