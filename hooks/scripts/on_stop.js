@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * Stop hook — POST /capture for the most recent user+assistant turn.
+ * Stop hook — POST /capture to Gateway + auto-capture to local FTS5.
  *
- * Reads the transcript path from the hook payload, scans the tail of the JSONL
- * to find the latest user message and the latest assistant message, and
- * fire-and-forgets /capture. Failures are swallowed.
+ * 1. Read latest user+assistant turn from transcript.
+ * 2. Fire-and-forget /capture to Gateway (existing behavior).
+ * 3. Auto-capture to local FTS5 for immediate recall (new).
+ *    After N turns, sets consolidation_due flag in capture_state.json.
  */
 "use strict";
 
@@ -52,21 +53,35 @@ function lastTurn(transcriptPath) {
 
 async function main() {
   const payload = await readHookInputAsync();
+  const transcript = payload.transcript_path || "";
+  const [userText, assistantText] = lastTurn(transcript);
 
-  try {
-    const { GatewayClient, breakerOpen } = require(nodePath.join(scriptsDir, "gateway_client.js"));
-    if (breakerOpen()) { emit({}); return; }
+  // 1. Gateway capture (best-effort)
+  if (userText && assistantText) {
+    try {
+      const { GatewayClient, breakerOpen } = require(nodePath.join(scriptsDir, "gateway_client.js"));
+      if (!breakerOpen()) {
+        const sk = sessionKey(payload);
+        await new GatewayClient(undefined, 3000).capture(
+          userText, assistantText, sk,
+          payload.session_id || ""
+        );
+      }
+    } catch {}
+  }
 
-    const transcript = payload.transcript_path || "";
-    const [userText, assistantText] = lastTurn(transcript);
-    if (!userText || !assistantText) { emit({}); return; }
-
-    const sk = sessionKey(payload);
-    await new GatewayClient(undefined, 3000).capture(
-      userText, assistantText, sk,
-      payload.session_id || ""
-    );
-  } catch {}
+  // 2. Local auto-capture to FTS5
+  if (userText) {
+    try {
+      const { autoCapture } = require(nodePath.join(scriptsDir, "memory_auto_capture.js"));
+      autoCapture({
+        userText,
+        assistantText: assistantText || "",
+        sessionId: payload.session_id || "",
+        cwd: payload.cwd || "",
+      });
+    } catch {}
+  }
 
   emit({});
 }

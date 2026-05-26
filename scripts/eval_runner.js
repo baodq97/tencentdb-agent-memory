@@ -424,6 +424,92 @@ function testRealTranscripts(ev) {
   fs.rmSync(base, { recursive: true });
 }
 
+// ── Section 8: Auto-Capture ──
+function testAutoCapture(ev) {
+  ev.section("8. Auto-Capture (Stop hook → FTS5)");
+
+  const { autoCapture, checkConsolidationDue, markConsolidated, status } = require(path.join(PLUGIN_ROOT, "scripts/memory_auto_capture.js"));
+  const { MemoryStore } = require(path.join(PLUGIN_ROOT, "scripts/memory_store.js"));
+
+  // Basic capture
+  const r1 = autoCapture({
+    userText: "Help me configure a Redis cluster with sentinel for high availability and automatic failover",
+    assistantText: "I will set up Redis Sentinel...",
+    sessionId: "eval-autocap",
+    cwd: PLUGIN_ROOT,
+  });
+  ev.check("autoCapture: substantive message captured", r1.captured);
+  ev.check("autoCapture: turn counted", r1.turnCount >= 1);
+
+  // Non-substantive filtered
+  const r2 = autoCapture({ userText: "ok", assistantText: "Got it.", sessionId: "eval-autocap", cwd: PLUGIN_ROOT });
+  ev.check("autoCapture: short message filtered", !r2.captured);
+
+  // Command filtered
+  const r3 = autoCapture({ userText: "<command-name>/clear</command-name>", assistantText: "", sessionId: "eval-autocap", cwd: PLUGIN_ROOT });
+  ev.check("autoCapture: command filtered", !r3.captured);
+
+  // FTS5 searchable
+  const { projectHashForCwd } = require(path.join(PLUGIN_ROOT, "scripts/memory_reader.js"));
+  const ph = projectHashForCwd(PLUGIN_ROOT);
+  const dbPath = path.join(os.homedir(), ".memory-tencentdb", "projects", ph, "index.db");
+  if (fs.existsSync(dbPath)) {
+    const store = new MemoryStore(dbPath);
+    const results = store.search("Redis cluster sentinel");
+    ev.check("autoCapture: FTS5 searchable", results.length >= 1, `${results.length} results`);
+    // Cleanup
+    for (const r of store.allRecords()) {
+      if (r.record_id?.startsWith("ac_") && r.scene_name === "auto-capture") store.delete(r.record_id);
+    }
+    store.close();
+  } else {
+    ev.check("autoCapture: FTS5 searchable", false, "DB not found");
+  }
+
+  // Consolidation threshold
+  for (let i = 0; i < 9; i++) {
+    autoCapture({
+      userText: `Substantive test message ${i + 2} about software engineering practices and architectural patterns`,
+      assistantText: `Response ${i + 2}`,
+      sessionId: "eval-autocap",
+      cwd: PLUGIN_ROOT,
+    });
+  }
+  const s = status();
+  ev.check("autoCapture: consolidation triggers at threshold", s.consolidation_due, `${s.turns_since_consolidation}/${s.consolidation_threshold}`);
+
+  // Consolidation hint
+  const hint = checkConsolidationDue();
+  ev.check("checkConsolidationDue: returns hint", hint && hint.due && hint.message.length > 0);
+
+  // Mark consolidated
+  markConsolidated();
+  const s2 = status();
+  ev.check("markConsolidated: resets counter", !s2.consolidation_due && s2.turns_since_consolidation === 0);
+
+  // Cleanup
+  if (fs.existsSync(dbPath)) {
+    const store = new MemoryStore(dbPath);
+    for (const r of store.allRecords()) {
+      if (r.record_id?.startsWith("ac_") && r.scene_name === "auto-capture") store.delete(r.record_id);
+    }
+    store.close();
+  }
+  try { fs.unlinkSync(path.join(os.homedir(), ".memory-tencentdb", "capture_state.json")); } catch {}
+  // Clean up JSONL
+  const recDir = path.join(os.homedir(), ".memory-tencentdb", "projects", ph, "records");
+  try {
+    for (const f of fs.readdirSync(recDir)) {
+      const fp = path.join(recDir, f);
+      const lines = fs.readFileSync(fp, "utf-8").split("\n").filter(l => {
+        if (!l.trim()) return false;
+        try { const r = JSON.parse(l); return !r.id?.startsWith("ac_"); } catch { return true; }
+      });
+      fs.writeFileSync(fp, lines.join("\n") + (lines.length ? "\n" : ""), "utf-8");
+    }
+  } catch {}
+}
+
 // ── Utilities ──
 function findFiles(dir, ext) {
   const found = [];
@@ -455,11 +541,12 @@ function main() {
     [5, testWriter],
     [6, testBenchmark],
     [7, testRealTranscripts],
+    [8, testAutoCapture],
   ];
 
   for (const [num, fn] of allSections) {
     if (sectionFilter && sectionFilter !== num) continue;
-    if (num === 7 && !includeReal && !sectionFilter) continue;
+    if ((num === 7) && !includeReal && !sectionFilter) continue;
     fn(ev);
   }
 

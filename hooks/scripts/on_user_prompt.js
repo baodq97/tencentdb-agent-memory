@@ -3,16 +3,19 @@
  * UserPromptSubmit hook — recall from Gateway + local FTS5, inject via additionalContext.
  *
  * Tries Gateway /recall first (if available). Falls back to local FTS5 search.
+ * Also checks if memory consolidation is due (after N auto-captured turns) and
+ * appends a gentle hint if so.
  * On any failure exits 0 with empty output so the user's turn is never blocked.
  */
 "use strict";
 
+const nodePath = require("node:path");
 const { addPluginScriptsToPath, readHookInputAsync, sessionKey, emit } = require("./_common.js");
 const scriptsDir = addPluginScriptsToPath();
 
 async function gatewayRecall(prompt, sk) {
   try {
-    const { GatewayClient, breakerOpen } = require(require("node:path").join(scriptsDir, "gateway_client.js"));
+    const { GatewayClient, breakerOpen } = require(nodePath.join(scriptsDir, "gateway_client.js"));
     if (breakerOpen()) return "";
     const resp = await new GatewayClient(undefined, 5000).recall(prompt, sk);
     const ctx = resp?.context || resp?.prependContext || "";
@@ -24,11 +27,21 @@ async function gatewayRecall(prompt, sk) {
 
 function localRecall(prompt, cwd) {
   try {
-    const { projectHashForCwd } = require(require("node:path").join(scriptsDir, "memory_reader.js"));
-    const { recall } = require(require("node:path").join(scriptsDir, "memory_recall.js"));
-
+    const { projectHashForCwd } = require(nodePath.join(scriptsDir, "memory_reader.js"));
+    const { recall } = require(nodePath.join(scriptsDir, "memory_recall.js"));
     const projectHash = cwd ? projectHashForCwd(cwd) : "";
     return recall(prompt, projectHash);
+  } catch {
+    return "";
+  }
+}
+
+function consolidationHint() {
+  try {
+    const { checkConsolidationDue } = require(nodePath.join(scriptsDir, "memory_auto_capture.js"));
+    const info = checkConsolidationDue();
+    if (!info || !info.due) return "";
+    return `\n<memory-consolidation-hint>${info.message}</memory-consolidation-hint>`;
   } catch {
     return "";
   }
@@ -44,6 +57,9 @@ async function main() {
 
   let ctx = await gatewayRecall(prompt, sk);
   if (!ctx) ctx = localRecall(prompt, cwd);
+
+  const hint = consolidationHint();
+  if (hint) ctx = (ctx || "") + hint;
 
   if (!ctx) { emit({}); return; }
 
