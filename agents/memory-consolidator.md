@@ -37,5 +37,5 @@ Invoke the memory-consolidate skill via the Skill tool, then follow its workflow
 Mark consolidation complete and release the lock:
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js mark-done
+tmem mark-done
 ```

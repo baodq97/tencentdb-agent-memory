@@ -18,19 +18,19 @@ Analyze L1 atoms and produce higher-level structures. You (the agent) perform al
 ### 1. Check current state
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js status
+tmem status
 ```
 
 ### 2. List existing scenes (for dedup)
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js scenes list
+tmem scenes list
 ```
 
 ### 3. Load L1 atoms
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js atoms all
+tmem atoms all
 ```
 
 ### 4. Generate L2 scene blocks
@@ -38,7 +38,7 @@ node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js atoms all
 Group project-scoped atoms by topic. **Reuse existing scene names** from step 2 when the topic matches — this updates the file instead of creating a duplicate.
 
 ```bash
-echo 'MARKDOWN_CONTENT' | node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js write-scene --name "Scene Name" --summary "One-line summary" --heat 3
+echo 'MARKDOWN_CONTENT' | tmem write-scene --name "Scene Name" --summary "One-line summary" --heat 3
 ```
 
 **Scene guidelines:**
@@ -52,13 +52,13 @@ echo 'MARKDOWN_CONTENT' | node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js write-scene 
 Read existing persona:
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js persona
+tmem persona
 ```
 
 Write updated persona (merge new insights, don't replace):
 
 ```bash
-echo 'PERSONA_CONTENT' | node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js write-persona
+echo 'PERSONA_CONTENT' | tmem write-persona
 ```
 
 **Persona structure:**
@@ -83,7 +83,7 @@ Keep under 500 words.
 ### 6. Mark complete
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js mark-done
+tmem mark-done
 ```
 
 After consolidation, tell the user: **Memory pipeline complete.** Hybrid recall is now active.

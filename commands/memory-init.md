@@ -4,5 +4,5 @@ allowed-tools: Bash
 ---
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js init
+node --no-warnings ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js init
 ```

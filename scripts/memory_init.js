@@ -16,8 +16,15 @@ const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, "..
 const nodeModules = path.join(pluginRoot, "node_modules");
 
 if (!fs.existsSync(path.join(nodeModules, "sqlite-vec"))) {
-  console.log("Installing dependencies (first run)...");
+  console.log("Installing dependencies...");
   execSync("npm install --no-fund --no-audit", { cwd: pluginRoot, stdio: "inherit" });
+}
+
+try {
+  execSync("tmem --help", { stdio: "ignore" });
+} catch {
+  console.log("Linking tmem CLI...");
+  try { execSync("npm link --no-fund", { cwd: pluginRoot, stdio: "ignore" }); } catch {}
 }
 
 const { MemoryStore } = require("./memory_store.js");

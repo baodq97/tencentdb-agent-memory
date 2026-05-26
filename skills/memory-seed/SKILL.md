@@ -18,13 +18,13 @@ Read conversation transcripts from `~/.claude/projects/` and extract structured 
 ### 1. Find pending sessions
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js sessions
+tmem sessions
 ```
 
 ### 2. Read each session
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js read-session SESSION_FILE_PATH
+tmem read-session SESSION_FILE_PATH
 ```
 
 ### 3. Extract memories
@@ -55,14 +55,14 @@ Read the conversation and extract L1 atoms. See `references/extraction-guide.md`
 Pipe the JSON array to stdin:
 
 ```bash
-echo 'JSON_ARRAY' | node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js write-l1 --session SESSION_ID
+echo 'JSON_ARRAY' | tmem write-l1 --session SESSION_ID
 ```
 
 ### 5. Verify
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js status
-node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js changelog --last 10
+tmem status
+tmem changelog --last 10
 ```
 
 After seeding, tell the user: **Next: use the memory-consolidate skill** to group atoms into scenes and synthesize persona.
