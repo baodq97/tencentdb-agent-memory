@@ -249,6 +249,80 @@ async function cmdReindex() {
   console.log("Done.", total, "vectors indexed.");
 }
 
+// ── sync ──
+async function cmdSync() {
+  const { MemoryStore } = req("memory_store.js");
+  const { VectorStore } = req("vector_store.js");
+  const { getEmbeddingService } = req("embedding_service.js");
+  const { gDir, pDir } = getDirs();
+
+  let totalMissing = 0;
+  const missing = [];
+
+  for (const [label, dir] of [["Global", gDir], ["Project", pDir]]) {
+    const dbPath = path.join(dir, "index.db");
+    if (!fs.existsSync(dbPath)) continue;
+    const ftsStore = new MemoryStore(dbPath);
+    const records = ftsStore.allRecords("", 10000);
+    ftsStore.close();
+    if (!records.length) continue;
+
+    const vecPath = path.join(dir, "vectors.db");
+    const vecStore = new VectorStore(vecPath);
+    if (vecStore.degraded) { vecStore.close(); continue; }
+
+    const vecCount = vecStore.count();
+    const ftsIds = new Set(records.map(r => r.record_id));
+    const needEmbed = [];
+    for (const r of records) {
+      const exists = vecStore.searchVec(new Float32Array(768), 1);
+      // Cheaper: compare counts. If vec < fts, embed the newest records.
+      needEmbed.push(r);
+    }
+    vecStore.close();
+
+    const delta = records.length - vecCount;
+    if (delta <= 0) {
+      console.log(`${label}: in sync (${records.length} records, ${vecCount} vectors)`);
+      continue;
+    }
+
+    console.log(`${label}: ${delta} records missing vectors (${vecCount}/${records.length})`);
+    // Collect records sorted newest first, take delta
+    const sorted = records.sort((a, b) => (b.updated_time || "").localeCompare(a.updated_time || ""));
+    missing.push(...sorted.slice(0, delta).map(r => ({ label, dir, ...r })));
+    totalMissing += delta;
+  }
+
+  if (!totalMissing) { console.log("All vectors in sync."); return; }
+
+  const svc = getEmbeddingService();
+  console.log(`Syncing ${totalMissing} missing vectors...`);
+  svc.startWarmup();
+  await svc.waitForReady();
+  if (!svc.isReady()) { console.error("Embedding not available."); return; }
+
+  let synced = 0;
+  const byDir = {};
+  for (const r of missing) {
+    if (!byDir[r.dir]) byDir[r.dir] = [];
+    byDir[r.dir].push(r);
+  }
+
+  for (const [dir, records] of Object.entries(byDir)) {
+    const vecStore = new VectorStore(path.join(dir, "vectors.db"));
+    if (vecStore.degraded) { vecStore.close(); continue; }
+    for (const r of records) {
+      const vec = await svc.embed(r.content);
+      if (vec) { vecStore.upsertVec(r.record_id, vec); synced++; }
+    }
+    vecStore.close();
+  }
+
+  svc.close();
+  console.log(`Synced ${synced}/${totalMissing} vectors.`);
+}
+
 // ── atoms ──
 function cmdAtoms(args) {
   const { MemoryStore } = req("memory_store.js");
@@ -395,7 +469,8 @@ Commands:
     --dry-run                Preview dedup without removing
   changelog [--last N]       Show recent memory changes
   persona                    Show current persona
-  reindex                    Rebuild vector index from FTS5
+  sync                       Embed records missing from vector index (delta only)
+  reindex                    Rebuild entire vector index from FTS5
   mark-done                  Mark consolidation complete + release lock
   unlock                     Release stale consolidation lock`);
     return;
@@ -415,6 +490,7 @@ Commands:
     case "scenes": return cmdScenes(rest[0], rest);
     case "changelog": return cmdChangelog(rest);
     case "persona": return cmdPersona();
+    case "sync": return cmdSync();
     case "reindex": return cmdReindex();
     case "mark-done": return cmdMarkDone();
     case "unlock": return cmdUnlock();
