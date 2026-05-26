@@ -4,5 +4,5 @@ allowed-tools: Bash
 ---
 
 ```bash
-node --no-warnings ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js init
+cd ${CLAUDE_PLUGIN_ROOT} && npm install --no-fund --no-audit 2>/dev/null && npm link --no-fund 2>/dev/null && tmem init
 ```
