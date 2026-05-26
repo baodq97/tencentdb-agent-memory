@@ -15,6 +15,7 @@ All tuning is done by editing the plugin's JS files or running commands. No exte
 | `DEFAULT_MAX_TOKENS` | `memory_recall.js` | `280` | Token budget for injected context |
 | Persona lines | `memory_recall.js:getPersona()` | `5` | Max persona attributes injected |
 | Priority | L1 atom `priority` field | `50-100` | Higher priority = ranked first in results |
+| Hybrid recall | `memory_recall.js:recallAsync()` | FTS5 + vector + RRF | Automatic when embedding ready; FTS5-only fallback |
 
 ## Level 2 — extraction quality
 

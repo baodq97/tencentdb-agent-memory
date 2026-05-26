@@ -65,16 +65,20 @@ Three types with scope routing:
 
 ## Recall strategy
 
-Local FTS5 keyword search only. No paid embeddings required.
+Hybrid recall: local FTS5 keyword search + EmbeddingGemma-300m vector cosine similarity, merged via Reciprocal Rank Fusion (RRF, k=60).
 
-- FTS5 searches both global and project-scoped `index.db`
-- Results deduplicated and ranked by priority
-- Persona section always injected (catches FTS5 lexical misses)
-- Budget-capped: stops adding memories when approaching token limit
+- FTS5 searches both global and project-scoped `index.db` (keyword matching)
+- sqlite-vec searches `vectors.db` using cosine distance (semantic matching)
+- Results merged via RRF: items appearing in both lists get boosted scores
+- Graceful degradation: if embedding not ready or sqlite-vec unavailable, falls back to FTS5-only
+- Persona section always injected as safety net
+- Token budget: ~280 tokens max
+
+First run requires `/memory-reindex` to build vectors from existing memories.
 
 ## How this maps to Claude Code hooks
 
-- **UserPromptSubmit** → FTS5 recall → `additionalContext` with `<memory-context>` block
+- **UserPromptSubmit** → hybrid recall (FTS5 + vector + RRF) → `additionalContext` with `<memory-context>` block
 - **Stop** → auto-capture latest turn to FTS5 + consolidation check (asyncRewake)
 - **SessionEnd** → mark session as "pending" for later `/memory-seed`
 

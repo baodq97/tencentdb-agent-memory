@@ -38,6 +38,14 @@ Options:
 - `/memory-seed --all` — all projects
 - `/memory-seed --project <hash>` — specific project
 
+## 3.5. Build vector index (first time only)
+
+```
+/memory-reindex
+```
+
+Downloads the EmbeddingGemma-300m model (~80MB) on first run, then embeds all existing L1 atoms into `vectors.db` for hybrid recall. Subsequent upserts embed automatically.
+
 ## 4. Consolidate (L2 scenes + L3 persona)
 
 ```
