@@ -14,6 +14,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { MemoryStore } = require("./memory_store.js");
 const { globalDir, projectDir, readPersona } = require("./memory_writer.js");
+const { VectorStore, rrfMerge } = require("./vector_store.js");
 
 const CHARS_PER_TOKEN = 4;
 const DEFAULT_MAX_TOKENS = 280;
@@ -103,6 +104,86 @@ function truncate(text, maxChars) {
   return (last > 0 ? cut.slice(0, last) : cut) + "...";
 }
 
+async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 5) {
+  const maxChars = maxTokens * CHARS_PER_TOKEN;
+  const parts = [];
+  let used = 0;
+
+  const persona = getPersona();
+  if (persona) {
+    const summary = truncate(persona, 400);
+    parts.push(`<persona>\n${summary}\n</persona>`);
+    used += summary.length + 24;
+  }
+
+  const dirs = [globalDir()];
+  if (projectHash) dirs.push(projectDir(projectHash));
+
+  let ftsResults = [];
+  for (const dir of dirs) {
+    const db = path.join(dir, "index.db");
+    if (!fs.existsSync(db)) continue;
+    const store = new MemoryStore(db);
+    ftsResults.push(...store.search(query, topK * 2));
+    store.close();
+  }
+
+  let vecResults = [];
+  try {
+    const { getEmbeddingService } = require("./embedding_service.js");
+    const embSvc = getEmbeddingService();
+    if (embSvc.isReady()) {
+      const queryVec = await embSvc.embed(query);
+      if (queryVec) {
+        for (const dir of dirs) {
+          const vecDb = path.join(dir, "vectors.db");
+          if (!fs.existsSync(vecDb)) continue;
+          const vecStore = new VectorStore(vecDb);
+          if (!vecStore.degraded) {
+            const hits = vecStore.searchVec(queryVec, topK * 2);
+            const ftsDb = path.join(dir, "index.db");
+            if (fs.existsSync(ftsDb)) {
+              const ftsStore = new MemoryStore(ftsDb);
+              for (const hit of hits) {
+                const meta = ftsStore.get(hit.record_id);
+                if (meta) vecResults.push({ ...meta, distance: hit.distance });
+              }
+              ftsStore.close();
+            }
+          }
+          vecStore.close();
+        }
+      }
+    }
+  } catch {}
+
+  let memories;
+  if (vecResults.length > 0 && ftsResults.length > 0) {
+    memories = rrfMerge(
+      [ftsResults, vecResults],
+      r => r.record_id
+    ).slice(0, topK);
+  } else {
+    memories = dedupeAndRank([...ftsResults, ...vecResults], topK);
+  }
+
+  if (memories.length) {
+    const memLines = [];
+    for (const m of memories) {
+      const line = `- [${m.type || "?"}] ${m.content}`;
+      if (used + line.length + 2 > maxChars) break;
+      memLines.push(line);
+      used += line.length + 1;
+    }
+    if (memLines.length) {
+      parts.push("<memories>\n" + memLines.join("\n") + "\n</memories>");
+    }
+  }
+
+  if (!parts.length) return "";
+  return "<memory-context>\n" + parts.join("\n") + "\n</memory-context>";
+}
+
 // ── CLI ──
 function main() {
   const args = process.argv.slice(2);
@@ -139,4 +220,4 @@ Commands:
 
 if (require.main === module) main();
 
-module.exports = { recall };
+module.exports = { recall, recallAsync };
