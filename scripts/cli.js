@@ -249,6 +249,119 @@ async function cmdReindex() {
   console.log("Done.", total, "vectors indexed.");
 }
 
+// ── atoms ──
+function cmdAtoms(args) {
+  const { MemoryStore } = req("memory_store.js");
+  const { gDir, pDir } = getDirs();
+  const typeFilter = "";
+  const limit = 500;
+  const scope = args[0] || "all";
+
+  const result = {};
+  if (scope === "all" || scope === "global") {
+    const db = path.join(gDir, "index.db");
+    if (fs.existsSync(db)) {
+      const store = new MemoryStore(db);
+      result.global = store.allRecords(typeFilter, limit);
+      store.close();
+    } else { result.global = []; }
+  }
+  if (scope === "all" || scope === "project") {
+    const db = path.join(pDir, "index.db");
+    if (fs.existsSync(db)) {
+      const store = new MemoryStore(db);
+      result.project = store.allRecords(typeFilter, limit);
+      store.close();
+    } else { result.project = []; }
+  }
+  console.log(JSON.stringify(result, null, 2));
+}
+
+// ── sessions ──
+function cmdSessions() {
+  const { readState } = req("memory_writer.js");
+  const { listSessions, projectHashForCwd } = req("memory_reader.js");
+  const state = readState();
+  const processed = new Set(Object.keys(state.sessions || {}));
+  const pHash = projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || ".");
+  const sessions = listSessions(pHash).filter(s => !processed.has(s.sessionId));
+  console.log(JSON.stringify({ project: pHash, pending: sessions.length, sessions: sessions.slice(0, 20) }));
+}
+
+// ── read-session ──
+function cmdReadSession(sessionPath) {
+  if (!sessionPath) { console.error("Usage: tmem read-session <path>"); process.exit(1); }
+  const { readSession, formatMessagesForExtraction } = req("memory_reader.js");
+  console.log(formatMessagesForExtraction(readSession(sessionPath)));
+}
+
+// ── write-l1 ──
+function cmdWriteL1(args) {
+  const { writeL1Record, globalDir, projectDir, updateState } = req("memory_writer.js");
+  const { projectHashForCwd } = req("memory_reader.js");
+
+  let data = "";
+  try { data = fs.readFileSync(0, "utf-8"); } catch {}
+  if (!data.trim()) { console.error("Pipe JSON array to stdin. E.g.: echo '[{...}]' | tmem write-l1"); process.exit(1); }
+
+  const records = JSON.parse(data);
+  const pHash = projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || ".");
+  const sessionId = args.find((a, i) => args[i - 1] === "--session") || "";
+
+  let count = 0;
+  for (const rec of (Array.isArray(records) ? records : [records])) {
+    const base = ["persona", "instruction"].includes(rec.type) ? globalDir() : projectDir(pHash);
+    writeL1Record(base, rec);
+    count++;
+  }
+  if (sessionId) updateState(sessionId, pHash, "completed");
+  console.log(`Wrote ${count} L1 atoms`);
+}
+
+// ── write-scene ──
+function cmdWriteScene(args) {
+  const { writeSceneBlock, projectDir } = req("memory_writer.js");
+  const { projectHashForCwd } = req("memory_reader.js");
+  const pHash = projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || ".");
+
+  function flag(name) {
+    const i = args.indexOf(name);
+    return i !== -1 && i + 1 < args.length ? args[i + 1] : "";
+  }
+
+  const name = flag("--name");
+  const summary = flag("--summary");
+  const heat = parseInt(flag("--heat") || "1");
+
+  if (!name || !summary) { console.error("Usage: tmem write-scene --name <n> --summary <s> --heat <h> < content.md"); process.exit(1); }
+
+  let content = "";
+  try { content = fs.readFileSync(0, "utf-8"); } catch {}
+  if (!content.trim()) content = summary;
+
+  const p = writeSceneBlock(projectDir(pHash), name, summary, content.trim(), heat);
+  console.log("Wrote scene:", p);
+}
+
+// ── write-persona ──
+function cmdWritePersona() {
+  const { writePersona, globalDir } = req("memory_writer.js");
+  let content = "";
+  try { content = fs.readFileSync(0, "utf-8"); } catch {}
+  if (!content.trim()) { console.error("Pipe persona content to stdin. E.g.: echo '# Persona...' | tmem write-persona"); process.exit(1); }
+  writePersona(globalDir(), content.trim());
+  console.log("Persona updated.");
+}
+
+// ── mark-done ──
+function cmdMarkDone() {
+  const { markConsolidated } = req("memory_auto_capture.js");
+  markConsolidated();
+  const lockFile = path.join(os.homedir(), ".memory-tencentdb", "consolidation.lock");
+  try { fs.unlinkSync(lockFile); } catch {}
+  console.log("Consolidation marked complete, lock released.");
+}
+
 // ── unlock ──
 function cmdUnlock() {
   const lockFile = path.join(os.homedir(), ".memory-tencentdb", "consolidation.lock");
@@ -268,16 +381,23 @@ async function main() {
 Usage: tmem <command> [options]
 
 Commands:
-  init                     Initialize memory store + vector index
-  status                   Show memory stats (records, vectors, persona, scenes)
-  recall <query>           Hybrid recall (FTS5 + vector + RRF)
-  search <query>           Search L1 atoms (FTS5 only)
-  scenes [list|dedup]      List or deduplicate scene blocks
-    --dry-run              Show what would be removed without removing
-  changelog [--last N]     Show recent memory changes (default: 20)
-  persona                  Show current persona
-  reindex                  Rebuild vector index from FTS5
-  unlock                   Release stale consolidation lock`);
+  init                       Initialize memory store + vector index
+  status                     Show memory stats
+  recall <query>             Hybrid recall (FTS5 + vector + RRF)
+  search <query>             Search L1 atoms (FTS5 only)
+  atoms [global|project|all] Dump L1 atoms as JSON
+  sessions                   List pending sessions for seeding
+  read-session <path>        Format session for extraction
+  write-l1 [--session id]    Write L1 atoms from stdin JSON
+  write-scene --name --summary --heat  Write scene block (content from stdin)
+  write-persona              Write persona from stdin
+  scenes [list|dedup]        List or deduplicate scene blocks
+    --dry-run                Preview dedup without removing
+  changelog [--last N]       Show recent memory changes
+  persona                    Show current persona
+  reindex                    Rebuild vector index from FTS5
+  mark-done                  Mark consolidation complete + release lock
+  unlock                     Release stale consolidation lock`);
     return;
   }
 
@@ -286,10 +406,17 @@ Commands:
     case "status": return cmdStatus();
     case "recall": return cmdRecall(restStr);
     case "search": return cmdSearch(restStr);
+    case "atoms": return cmdAtoms(rest);
+    case "sessions": return cmdSessions();
+    case "read-session": return cmdReadSession(restStr);
+    case "write-l1": return cmdWriteL1(rest);
+    case "write-scene": return cmdWriteScene(rest);
+    case "write-persona": return cmdWritePersona();
     case "scenes": return cmdScenes(rest[0], rest);
     case "changelog": return cmdChangelog(rest);
     case "persona": return cmdPersona();
     case "reindex": return cmdReindex();
+    case "mark-done": return cmdMarkDone();
     case "unlock": return cmdUnlock();
     default:
       console.error(`Unknown command: ${cmd}. Run 'tmem --help' for usage.`);

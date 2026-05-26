@@ -26,7 +26,7 @@ A symptom → root-cause map. For each, verify the fix by checking data files di
 
 1. **No L1 atoms exist.** Use the memory-seed skill, or have a few conversations first (auto-capture stores raw turns).
 2. **Auto-capture not running.** The `Stop` hook must fire after each turn. Check that `hooks/hooks.json` is loaded correctly (no plugin errors on startup).
-3. **Search via script.** Debug directly: `node -e "const {MemoryStore}=require('./scripts/memory_store.js'); const s=new MemoryStore('~/.memory-tencentdb/global/index.db'); console.log(s.allRecords().length); s.close()"`
+3. **Search via CLI.** Run `tmem search <keyword>` or `tmem status` to check record counts.
 
 ## Persona never generates
 

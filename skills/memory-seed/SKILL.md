@@ -18,24 +18,13 @@ Read conversation transcripts from `~/.claude/projects/` and extract structured 
 ### 1. Find pending sessions
 
 ```bash
-node -e "
-const { readState } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_writer.js');
-const { listSessions, projectHashForCwd } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_reader.js');
-const state = readState();
-const processed = new Set(Object.keys(state.sessions || {}));
-const pHash = projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || '.');
-const sessions = listSessions(pHash).filter(s => !processed.has(s.sessionId));
-console.log(JSON.stringify({ project: pHash, pending: sessions.length, sessions: sessions.slice(0, 20) }));
-"
+node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js sessions
 ```
 
 ### 2. Read each session
 
 ```bash
-node -e "
-const { readSession, formatMessagesForExtraction } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_reader.js');
-console.log(formatMessagesForExtraction(readSession('SESSION_FILE_PATH')));
-"
+node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js read-session SESSION_FILE_PATH
 ```
 
 ### 3. Extract memories
@@ -63,19 +52,10 @@ Read the conversation and extract L1 atoms. See `references/extraction-guide.md`
 
 ### 4. Write atoms
 
+Pipe the JSON array to stdin:
+
 ```bash
-node -e "
-const { writeL1Record, updateState, globalDir, projectDir } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_writer.js');
-const records = EXTRACTED_ARRAY;
-const projectHash = 'PROJECT_HASH';
-const sessionId = 'SESSION_ID';
-for (const rec of records) {
-  const base = ['persona','instruction'].includes(rec.type) ? globalDir() : projectDir(projectHash);
-  writeL1Record(base, rec);
-}
-updateState(sessionId, projectHash, 'completed');
-console.log('Wrote ' + records.length + ' atoms');
-"
+echo 'JSON_ARRAY' | node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js write-l1 --session SESSION_ID
 ```
 
 ### 5. Verify

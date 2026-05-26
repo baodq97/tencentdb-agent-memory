@@ -37,6 +37,5 @@ Invoke the memory-consolidate skill via the Skill tool, then follow its workflow
 Mark consolidation complete and release the lock:
 
 ```bash
-node -e "require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_auto_capture.js').markConsolidated(); console.log('done')"
-node ${CLAUDE_PLUGIN_ROOT}/scripts/memory_pipeline.js --unlock
+node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js mark-done
 ```

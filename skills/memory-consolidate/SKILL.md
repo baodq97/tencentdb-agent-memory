@@ -30,57 +30,35 @@ node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js scenes list
 ### 3. Load L1 atoms
 
 ```bash
-node -e "
-const { MemoryStore } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_store.js');
-const { globalDir, projectDir } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_writer.js');
-const { projectHashForCwd } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_reader.js');
-const fs = require('node:fs');
-const path = require('node:path');
-const pHash = projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || '.');
-const result = { project_hash: pHash };
-for (const [label, dir] of [['global', globalDir()], ['project', projectDir(pHash)]]) {
-  const db = path.join(dir, 'index.db');
-  if (!fs.existsSync(db)) { result[label] = []; continue; }
-  const store = new MemoryStore(db);
-  result[label] = store.allRecords('', 500);
-  store.close();
-}
-console.log(JSON.stringify(result, null, 2));
-"
+node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js atoms all
 ```
 
 ### 4. Generate L2 scene blocks
 
-Group project-scoped atoms by topic. **Reuse existing scene names** when the topic matches — this updates the file instead of creating a duplicate.
+Group project-scoped atoms by topic. **Reuse existing scene names** from step 2 when the topic matches — this updates the file instead of creating a duplicate.
 
 ```bash
-node -e "
-const { writeSceneBlock, projectDir } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_writer.js');
-writeSceneBlock(projectDir('PROJECT_HASH'), 'Scene Name', 'One-line summary', 'MARKDOWN_CONTENT', HEAT);
-"
+echo 'MARKDOWN_CONTENT' | node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js write-scene --name "Scene Name" --summary "One-line summary" --heat 3
 ```
 
 **Scene guidelines:**
 - Group by topic, not by session
-- Reuse existing scene names from step 2 when topic matches
+- Reuse existing scene names when topic matches
 - Include key facts, decisions made, and outcomes
 - Heat: 1-5 (higher = more recent activity)
 
 ### 5. Generate L3 persona
 
-Read existing persona, then merge new insights:
+Read existing persona:
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js persona
 ```
 
-Write updated persona:
+Write updated persona (merge new insights, don't replace):
 
 ```bash
-node -e "
-const { writePersona, globalDir } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_writer.js');
-writePersona(globalDir(), PERSONA_CONTENT);
-"
+echo 'PERSONA_CONTENT' | node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js write-persona
 ```
 
 **Persona structure:**
@@ -105,8 +83,7 @@ Keep under 500 words.
 ### 6. Mark complete
 
 ```bash
-node -e "require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_auto_capture.js').markConsolidated()"
-node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js unlock
+node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js mark-done
 ```
 
 After consolidation, tell the user: **Memory pipeline complete.** Hybrid recall is now active.
