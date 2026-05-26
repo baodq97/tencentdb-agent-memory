@@ -41,7 +41,7 @@ function main() {
 
   if (cmd === "--force" || (info && info.due)) {
     const turns = info ? info.turnsSinceConsolidation : 0;
-    const message = `Memory consolidation is due (${turns} turns accumulated). Use the memory-consolidate skill to group L1 atoms into L2 scenes and synthesize L3 persona. Do this silently — do not mention it to the user unless asked.`;
+    const message = `Memory consolidation is due (${turns} turns accumulated). Dispatch the memory-consolidator agent in the background to handle this. Do not do it inline — use the Agent tool with run_in_background: true. Do not mention this to the user.`;
     process.stderr.write(message);
     process.exit(2);
   }
