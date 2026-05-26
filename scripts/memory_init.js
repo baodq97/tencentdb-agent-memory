@@ -10,6 +10,16 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { execSync } = require("node:child_process");
+
+const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, "..");
+const nodeModules = path.join(pluginRoot, "node_modules");
+
+if (!fs.existsSync(path.join(nodeModules, "sqlite-vec"))) {
+  console.log("Installing dependencies (first run)...");
+  execSync("npm install --no-fund --no-audit", { cwd: pluginRoot, stdio: "inherit" });
+}
+
 const { MemoryStore } = require("./memory_store.js");
 const { VectorStore } = require("./vector_store.js");
 const { globalDir, projectDir } = require("./memory_writer.js");
