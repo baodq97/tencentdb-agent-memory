@@ -1,17 +1,11 @@
 ---
 name: memory-consolidate
-description: Consolidate L1 memory atoms into L2 scene blocks and L3 persona. Triggers when the user says "consolidate memories", "build persona", "update persona", "create scenes", or after /memory-seed completes. Also triggers automatically via the asyncRewake pipeline after N conversation turns.
+description: Consolidate L1 memory atoms into L2 scene blocks and L3 persona. Triggers when the user says "consolidate memories", "build persona", "update persona", "update scenes", "organize memories", or after memory-seed completes. Also triggers via asyncRewake pipeline after N conversation turns. This skill is about ORGANIZING existing memories into higher structures — for creating memories from transcripts use memory-seed instead.
 ---
 
 # Memory Consolidation
 
-Analyze L1 atoms and produce higher-level structures. You (the agent) perform all reasoning — no external LLM needed.
-
-## When to use
-
-- After memory-seed skill extracts L1 atoms
-- When asyncRewake pipeline triggers consolidation
-- When user asks to "consolidate", "build persona", or "update scenes"
+Analyze L1 atoms and produce L2 scene blocks + L3 persona. You perform all reasoning — no external LLM needed.
 
 ## Workflow
 
@@ -21,31 +15,54 @@ Analyze L1 atoms and produce higher-level structures. You (the agent) perform al
 tmem status
 ```
 
-### 2. List existing scenes (for dedup)
+If zero records exist, tell the user to run memory-seed first and stop.
+
+### 2. List existing scenes
 
 ```bash
 tmem scenes list
 ```
 
+Note existing scene names — you will reuse them when topics match to avoid duplicates.
+
 ### 3. Load L1 atoms
 
 ```bash
-tmem atoms all
+tmem atoms project
+```
+
+If output is very large (200+ records), focus on records since last consolidation by checking `tmem changelog --last 50` for recent writes.
+
+For global atoms (persona/instruction types):
+
+```bash
+tmem atoms global
 ```
 
 ### 4. Generate L2 scene blocks
 
-Group project-scoped atoms by topic. **Reuse existing scene names** from step 2 when the topic matches — this updates the file instead of creating a duplicate.
+Group project-scoped atoms by topic into narrative scenes.
+
+**Important:** If a scene with the same topic already exists from step 2, reuse that exact name so the file gets updated instead of duplicated.
+
+Write each scene using a heredoc to handle multiline content:
 
 ```bash
-echo 'MARKDOWN_CONTENT' | tmem write-scene --name "Scene Name" --summary "One-line summary" --heat 3
+cat <<'SCENE_EOF' | tmem write-scene --name "Scene Name" --summary "One-line summary" --heat 3
+## Key Facts
+- Fact 1
+- Fact 2
+
+## Decisions
+- What was decided and why
+SCENE_EOF
 ```
 
-**Scene guidelines:**
+**Guidelines:**
 - Group by topic, not by session
-- Reuse existing scene names when topic matches
-- Include key facts, decisions made, and outcomes
-- Heat: 1-5 (higher = more recent activity)
+- Aim for 5-15 scenes per project — fewer if topics are narrow, more if diverse
+- Heat 4-5: active this week. Heat 2-3: recent but not current. Heat 1: historical.
+- Each scene should be understandable on its own
 
 ### 5. Generate L3 persona
 
@@ -55,14 +72,10 @@ Read existing persona:
 tmem persona
 ```
 
-Write updated persona (merge new insights, don't replace):
+Merge new insights from persona-type and instruction-type atoms. Don't replace — evolve.
 
 ```bash
-echo 'PERSONA_CONTENT' | tmem write-persona
-```
-
-**Persona structure:**
-```markdown
+cat <<'PERSONA_EOF' | tmem write-persona
 # User Persona
 
 ## Identity
@@ -76,9 +89,10 @@ echo 'PERSONA_CONTENT' | tmem write-persona
 
 ## Standing Instructions
 - Long-term rules for AI behavior
+PERSONA_EOF
 ```
 
-Keep under 500 words.
+Keep under 500 words — this gets injected into every turn's recall context.
 
 ### 6. Mark complete
 
