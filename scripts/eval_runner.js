@@ -101,7 +101,7 @@ function testPluginStructure(ev) {
     ev.check(`Agent ${f}: frontmatter`, a.startsWith("---") && a.includes("name:"));
   }
 
-  const scripts = ["memory_store.js", "memory_reader.js", "memory_writer.js", "memory_recall.js", "memory_auto_capture.js", "memory_pipeline.js", "benchmark.js"];
+  const scripts = ["memory_store.js", "memory_reader.js", "memory_writer.js", "memory_recall.js", "memory_auto_capture.js", "memory_pipeline.js", "benchmark.js", "embedding_service.js", "vector_store.js"];
   ev.check("Scripts: all JS exist", scripts.every(s => fs.existsSync(path.join(PLUGIN_ROOT, "scripts", s))));
 
   const hookScripts = ["_common.js", "on_session_end.js", "on_user_prompt.js", "on_stop.js"];
@@ -125,6 +125,8 @@ function testModuleLoading(ev) {
     ["scripts/memory_writer.js", "writeL1Record"],
     ["scripts/memory_recall.js", "recall"],
     ["scripts/memory_auto_capture.js", "autoCapture"],
+    ["scripts/embedding_service.js", "EmbeddingService"],
+    ["scripts/vector_store.js", "VectorStore"],
   ];
   for (const [mod, sym] of modules) {
     try {
@@ -523,6 +525,62 @@ function testAutoCapture(ev) {
   } catch {}
 }
 
+// ── Section 9: Vector Store + RRF ──
+function testVectorStore(ev) {
+  ev.section("9. Vector Store + RRF");
+
+  let VectorStore, rrfMerge;
+  try {
+    ({ VectorStore, rrfMerge } = require(path.join(PLUGIN_ROOT, "scripts/vector_store.js")));
+  } catch (e) {
+    ev.check("require(vector_store.js)", false, e.message.split("\n")[0]);
+    return;
+  }
+  ev.check("require(vector_store.js)", true);
+
+  const dbPath = path.join(os.tmpdir(), `eval_vec_${Date.now()}.db`);
+  const store = new VectorStore(dbPath, 4);
+  ev.check("VectorStore: init (degraded=" + store.degraded + ")", !store.degraded);
+
+  if (store.degraded) {
+    store.close();
+    return;
+  }
+
+  store.upsertVec("v1", [1, 0, 0, 0]);
+  store.upsertVec("v2", [0, 1, 0, 0]);
+  store.upsertVec("v3", [0.7, 0.7, 0, 0]);
+  ev.check("VectorStore: upsert count", store.count() === 3, `count=${store.count()}`);
+
+  const results = store.searchVec([1, 0, 0, 0], 3);
+  ev.check("VectorStore: KNN search returns results", results.length === 3);
+  ev.check("VectorStore: nearest is v1", results[0]?.record_id === "v1");
+
+  store.deleteVec("v2");
+  ev.check("VectorStore: delete", store.count() === 2);
+
+  store.close();
+  fs.unlinkSync(dbPath);
+
+  const fts = [{ record_id: "a" }, { record_id: "b" }, { record_id: "c" }];
+  const vec = [{ record_id: "b" }, { record_id: "a" }, { record_id: "d" }];
+  const merged = rrfMerge([fts, vec], r => r.record_id);
+  ev.check("RRF: items in both lists ranked higher", merged[0].rrfScore >= merged[2].rrfScore);
+  ev.check("RRF: all 4 items present", merged.length === 4);
+  ev.check("RRF: d ranked last (only in vec list)", merged[3].record_id === "d" || merged[3].record_id === "c");
+
+  try {
+    const { EmbeddingService, DIMENSIONS } = require(path.join(PLUGIN_ROOT, "scripts/embedding_service.js"));
+    ev.check("EmbeddingService: loads", true);
+    ev.check("EmbeddingService: DIMENSIONS=768", DIMENSIONS === 768);
+    const svc = new EmbeddingService();
+    ev.check("EmbeddingService: state=idle", svc.state === "idle");
+    ev.check("EmbeddingService: isReady=false before warmup", !svc.isReady());
+  } catch (e) {
+    ev.check("EmbeddingService: loads", false, e.message.split("\n")[0]);
+  }
+}
+
 // ── Utilities ──
 function findFiles(dir, ext) {
   const found = [];
@@ -555,6 +613,7 @@ function main() {
     [6, testBenchmark],
     [7, testRealTranscripts],
     [8, testAutoCapture],
+    [9, testVectorStore],
   ];
 
   for (const [num, fn] of allSections) {
