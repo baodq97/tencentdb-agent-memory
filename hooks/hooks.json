@@ -1,35 +1,46 @@
 {
-  "UserPromptSubmit": [
-    {
-      "hooks": [
-        {
-          "type": "command",
-          "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/on_user_prompt.py",
-          "timeout": 6
-        }
-      ]
-    }
-  ],
-  "Stop": [
-    {
-      "hooks": [
-        {
-          "type": "command",
-          "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/on_stop.py",
-          "timeout": 4
-        }
-      ]
-    }
-  ],
-  "SessionEnd": [
-    {
-      "hooks": [
-        {
-          "type": "command",
-          "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/on_session_end.py",
-          "timeout": 6
-        }
-      ]
-    }
-  ]
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/on_user_prompt.js",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/on_stop.js",
+            "timeout": 4
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/memory_pipeline.js",
+            "timeout": 60,
+            "asyncRewake": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/on_session_end.js",
+            "timeout": 6
+          }
+        ]
+      }
+    ]
+  }
 }
