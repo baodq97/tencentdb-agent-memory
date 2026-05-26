@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "tencentdb-agent-memory",
+  "version": "0.1.0",
+  "description": "Four-layer long-term memory (L0 Conversation → L1 Atom → L2 Scene → L3 Persona) for Claude Code — local FTS5 + EmbeddingGemma vector hybrid recall, agent-driven extraction and consolidation, zero external API",
+  "owner": {
+    "name": "Plugin port maintainer"
+  },
+  "plugins": [
+    {
+      "name": "tencentdb-agent-memory",
+      "description": "Four-layer long-term memory with hybrid FTS5 + vector recall, auto-capture, and background consolidation",
+      "source": ".",
+      "category": "productivity",
+      "version": "0.1.0"
+    }
+  ]
+}
