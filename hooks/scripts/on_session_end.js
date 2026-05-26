@@ -1,31 +1,37 @@
 #!/usr/bin/env node
 /**
  * SessionEnd hook — save session metadata as "pending" for later extraction.
+ * Must be fast — session is ending, process may be killed at any time.
  */
 "use strict";
 
-const { addPluginScriptsToPath, readHookInputAsync, emit } = require("./_common.js");
+const nodePath = require("node:path");
+const { addPluginScriptsToPath } = require("./_common.js");
 const scriptsDir = addPluginScriptsToPath();
 
-async function savePendingSession(payload) {
+let data = "";
+process.stdin.setEncoding("utf-8");
+process.stdin.on("data", chunk => { data += chunk; });
+process.stdin.on("end", run);
+process.stdin.on("error", run);
+setTimeout(run, 1500);
+
+let ran = false;
+function run() {
+  if (ran) return;
+  ran = true;
+
   try {
-    const { updateState } = require(require("node:path").join(scriptsDir, "memory_writer.js"));
-    const { projectHashForCwd } = require(require("node:path").join(scriptsDir, "memory_reader.js"));
-
+    const payload = data.trim() ? JSON.parse(data) : {};
     const sid = payload.session_id || "";
-    if (!sid) return;
-
-    const cwd = payload.cwd || "";
-    const projectHash = cwd ? projectHashForCwd(cwd) : "";
-
-    updateState(sid, projectHash, "pending");
+    if (sid) {
+      const { updateState } = require(nodePath.join(scriptsDir, "memory_writer.js"));
+      const { projectHashForCwd } = require(nodePath.join(scriptsDir, "memory_reader.js"));
+      const cwd = payload.cwd || "";
+      const projectHash = cwd ? projectHashForCwd(cwd) : "";
+      updateState(sid, projectHash, "pending");
+    }
   } catch {}
-}
 
-async function main() {
-  const payload = await readHookInputAsync();
-  savePendingSession(payload);
-  emit({});
+  process.stdout.write("{}");
 }
-
-main().catch(() => { emit({}); process.exit(0); });
