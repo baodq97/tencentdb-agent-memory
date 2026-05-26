@@ -4,5 +4,5 @@ allowed-tools: Bash
 ---
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/memory_init.js
+node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js init
 ```

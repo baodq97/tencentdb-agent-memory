@@ -87,4 +87,6 @@ async function main() {
   console.log("\nNext: run /memory-seed to extract memories from past conversations.");
 }
 
-main().catch(e => { console.error(e.message); process.exit(1); });
+if (require.main === module) main().catch(e => { console.error(e.message); process.exit(1); });
+
+module.exports = { main };

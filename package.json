@@ -2,6 +2,9 @@
   "name": "tencentdb-agent-memory",
   "version": "0.1.0",
   "private": true,
+  "bin": {
+    "tmem": "./scripts/cli.js"
+  },
   "dependencies": {
     "node-llama-cpp": "^3.16.2",
     "sqlite-vec": "0.1.7-alpha.2"

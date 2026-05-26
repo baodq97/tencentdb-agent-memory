@@ -78,6 +78,11 @@ console.log('Wrote ' + records.length + ' atoms');
 "
 ```
 
-### 5. Hint next step
+### 5. Verify
 
-After seeding, tell the user: **Next: `/memory-consolidate`** to group atoms into scenes and synthesize persona.
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js status
+node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js changelog --last 10
+```
+
+After seeding, tell the user: **Next: use the memory-consolidate skill** to group atoms into scenes and synthesize persona.

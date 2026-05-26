@@ -9,13 +9,25 @@ Analyze L1 atoms and produce higher-level structures. You (the agent) perform al
 
 ## When to use
 
-- After `/memory-seed` extracts L1 atoms
+- After memory-seed skill extracts L1 atoms
 - When asyncRewake pipeline triggers consolidation
 - When user asks to "consolidate", "build persona", or "update scenes"
 
 ## Workflow
 
-### 1. Load existing L1 atoms
+### 1. Check current state
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js status
+```
+
+### 2. List existing scenes (for dedup)
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js scenes list
+```
+
+### 3. Load L1 atoms
 
 ```bash
 node -e "
@@ -37,54 +49,37 @@ console.log(JSON.stringify(result, null, 2));
 "
 ```
 
-### 2. Generate L2 scene blocks
+### 4. Generate L2 scene blocks
 
-First list existing scenes to avoid duplicates:
-
-```bash
-node -e "
-const { listScenes, projectDir } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_writer.js');
-const { projectHashForCwd } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_reader.js');
-const scenes = listScenes(projectDir(projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || '.')));
-console.log(JSON.stringify(scenes, null, 2));
-"
-```
-
-Group project-scoped atoms by topic. If a scene with the same topic already exists, **reuse its name** so `writeSceneBlock` updates it instead of creating a duplicate.
+Group project-scoped atoms by topic. **Reuse existing scene names** when the topic matches — this updates the file instead of creating a duplicate.
 
 ```bash
 node -e "
 const { writeSceneBlock, projectDir } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_writer.js');
-const p = writeSceneBlock(projectDir('PROJECT_HASH'), 'Scene Name', 'One-line summary', 'MARKDOWN_CONTENT', HEAT);
-console.log('Wrote scene:', p);
+writeSceneBlock(projectDir('PROJECT_HASH'), 'Scene Name', 'One-line summary', 'MARKDOWN_CONTENT', HEAT);
 "
 ```
 
 **Scene guidelines:**
 - Group by topic, not by session
-- Reuse existing scene names when the topic matches — this updates the file instead of creating a new one
+- Reuse existing scene names from step 2 when topic matches
 - Include key facts, decisions made, and outcomes
 - Heat: 1-5 (higher = more recent activity)
 
-### 3. Generate L3 persona
+### 5. Generate L3 persona
 
-Synthesize persona-type and instruction-type atoms into a stable user profile. Read existing persona first and merge — don't replace.
+Read existing persona, then merge new insights:
 
 ```bash
-node -e "
-const { writePersona, globalDir, readPersona } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_writer.js');
-const existing = readPersona(globalDir());
-console.log('Existing persona:', existing || '(none)');
-"
+node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js persona
 ```
 
-After analyzing atoms and existing persona, write the updated version:
+Write updated persona:
 
 ```bash
 node -e "
 const { writePersona, globalDir } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_writer.js');
 writePersona(globalDir(), PERSONA_CONTENT);
-console.log('Persona updated');
 "
 ```
 
@@ -105,16 +100,13 @@ console.log('Persona updated');
 - Long-term rules for AI behavior
 ```
 
-Keep persona under 500 words for efficient recall injection.
+Keep under 500 words.
 
-### 4. Mark complete
+### 6. Mark complete
 
 ```bash
-node -e "
-const { updateState } = require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_writer.js');
-updateState('consolidation', '', 'completed');
-console.log('Consolidation complete');
-"
+node -e "require('${CLAUDE_PLUGIN_ROOT}/scripts/memory_auto_capture.js').markConsolidated()"
+node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js unlock
 ```
 
-After consolidation, tell the user: **Memory pipeline complete.** Hybrid recall (FTS5 + vector) is now active for future sessions.
+After consolidation, tell the user: **Memory pipeline complete.** Hybrid recall is now active.
