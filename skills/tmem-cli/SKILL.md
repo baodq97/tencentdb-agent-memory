@@ -55,6 +55,9 @@ tmem scene <name>           # <name> is the index entry, e.g. implementation-pro
 | `tmem config` | Show effective config + stored values + env overrides |
 | `tmem config consolidate-every [N]` | Get/set consolidation threshold (default 20) |
 | `tmem config scene-max-tokens [N]` | Get/set scene-navigation token budget (default 200; `0` disables) |
+| `tmem daemon status` | Health-ping the resident embed daemon → ready/warming/failed/stuck/down + pid (use when vector recall seems cold) |
+| `tmem daemon start` | Warm + serve the embed daemon in the foreground (like `ollama serve`); keeps vector recall hot |
+| `tmem daemon stop` | Stop the daemon + clear its pidfile (recovery: `status` → `stop` → `start`) |
 | `tmem mark-done` | Mark consolidation complete + release lock |
 | `tmem init` | Initialize memory store (normally via `/memory-init`) |
 

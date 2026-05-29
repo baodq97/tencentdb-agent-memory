@@ -3,6 +3,14 @@
 All notable changes to this plugin are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.3] — 2026-05-29
+
+### Added
+- **`tmem daemon <start|status|stop>`** — explicit lifecycle control for the resident embed daemon. `start` warms EmbeddingGemma and serves in the foreground (like `ollama serve`); `status` health-pings and reports ready/warming/failed/stuck/down + pid; `stop` kills the daemon and clears its pidfile. Gives a deterministic recovery path (`status` → `stop` → `start`) when a daemon gets into a stuck state.
+
+### Changed
+- Embed-client round-trip timeout raised **200 ms → 500 ms** (`embed_client.js`). Warm round-trips measure ~70 ms median, but the first call after idle can spike to ~280 ms; 500 ms keeps that turn on vectors instead of falling back to FTS, while a down daemon still fails fast via `ENOENT` (no added latency when absent).
+
 ## [0.2.2] — 2026-05-29
 
 ### Added
@@ -41,6 +49,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 ### Added
 - Initial Claude Code plugin port of [Tencent/TencentDB-Agent-Memory](https://github.com/Tencent/TencentDB-Agent-Memory): four-layer memory (L0 Conversation → L1 Atom → L2 Scene → L3 Persona), FTS5 keyword recall, agent-driven extraction/consolidation, fully local (no external Gateway, no paid API, no Python).
 
+[0.2.3]: https://github.com/baodq97/tencentdb-agent-memory/releases/tag/v0.2.3
 [0.2.2]: https://github.com/baodq97/tencentdb-agent-memory/releases/tag/v0.2.2
 [0.2.1]: https://github.com/baodq97/tencentdb-agent-memory/releases/tag/v0.2.1
 [0.2.0]: https://github.com/baodq97/tencentdb-agent-memory/releases/tag/v0.2.0

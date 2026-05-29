@@ -17,7 +17,10 @@ const { spawn } = require("node:child_process");
 const { addrForDir } = require("./embed_daemon.js");
 
 const DAEMON_PATH = path.join(__dirname, "embed_daemon.js");
-const DEFAULT_TIMEOUT_MS = 200;
+// Warm round-trip (connect + embed + JSON both ways) measured at ~70ms median,
+// with idle-wake first calls spiking to ~280ms. 500ms gives headroom for jitter
+// while a down daemon still fails fast via ENOENT (no added latency when absent).
+const DEFAULT_TIMEOUT_MS = 500;
 
 function daemonAddr() {
   return addrForDir(__dirname);
@@ -75,4 +78,53 @@ function embedViaDaemon(text, opts = {}) {
   });
 }
 
-module.exports = { embedViaDaemon, ensureDaemon, daemonAddr };
+/**
+ * Health-check the daemon WITHOUT spawning one (unlike embedViaDaemon, which
+ * auto-spawns on a connect error). Resolves a discriminated state:
+ *   ready   — replied with a vector (also returns vlen)
+ *   warming — alive but model still loading
+ *   failed  — alive but model load failed
+ *   stuck   — connected but no reply within the deadline (hung daemon)
+ *   down    — nothing listening (ENOENT/ECONNREFUSED)
+ *   badreply— connected and replied, but not a shape we understand
+ * Used by `tmem daemon status|start`; never falls back, never spawns.
+ */
+function pingDaemon(opts = {}) {
+  const timeoutMs = opts.timeoutMs || 1500;
+  const addr = daemonAddr();
+  return new Promise((resolve) => {
+    let done = false;
+    let buf = "";
+    let connected = false;
+    const finish = (state, extra) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { sock.destroy(); } catch {}
+      resolve(Object.assign({ state }, extra));
+    };
+    const timer = setTimeout(() => finish(connected ? "stuck" : "down"), timeoutMs);
+    timer.unref();
+
+    const sock = net.connect(addr);
+    sock.setEncoding("utf-8");
+    sock.on("connect", () => {
+      connected = true;
+      sock.write(JSON.stringify({ op: "embed", text: "ping" }) + "\n");
+    });
+    sock.on("data", (chunk) => {
+      buf += chunk;
+      const nl = buf.indexOf("\n");
+      if (nl === -1) return;
+      let resp;
+      try { resp = JSON.parse(buf.slice(0, nl)); } catch { return finish("badreply"); }
+      if (resp && Array.isArray(resp.vector)) return finish("ready", { vlen: resp.vector.length });
+      if (resp && resp.error === "warming") return finish("warming");
+      if (resp && resp.error === "failed") return finish("failed");
+      finish("badreply", { reply: resp });
+    });
+    sock.on("error", () => finish("down"));
+  });
+}
+
+module.exports = { embedViaDaemon, ensureDaemon, daemonAddr, pingDaemon };

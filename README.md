@@ -76,6 +76,9 @@ tmem init                       Initialize memory store
 tmem mark-done                  Mark consolidation complete
 tmem config consolidate-every N Set consolidation threshold (default 20)
 tmem config scene-max-tokens N  Set L2 scene-navigation token budget (default 200, 0 disables)
+tmem daemon start               Warm + serve the embed daemon (foreground, like `ollama serve`)
+tmem daemon status              Health-ping the daemon (ready/warming/failed/down + pid)
+tmem daemon stop                Stop the daemon + clear its pidfile
 ```
 
 ## Architecture
@@ -92,7 +95,7 @@ tmem config scene-max-tokens N  Set L2 scene-navigation token budget (default 20
 - **FTS5** — keyword search via `node:sqlite` (built-in)
 - **sqlite-vec** — vector cosine search (npm)
 - **EmbeddingGemma-300m** — local embedding via `node-llama-cpp` (npm, ~80MB model)
-- **Resident embed daemon** — keeps the model warm over local IPC (named pipe / unix socket); degrades to FTS-only on failure
+- **Resident embed daemon** — keeps the model warm over local IPC (named pipe / unix socket); degrades to FTS-only on failure. Manage explicitly with `tmem daemon start|status|stop`
 - **RRF** (k=60) — merges FTS5 + vector results
 
 ## Changelog

@@ -449,6 +449,74 @@ function cmdConfig(args) {
   process.exit(1);
 }
 
+// ── daemon ──
+async function cmdDaemon(sub) {
+  const ec = req("embed_client.js");
+  const { pidFileForDir, addrForDir, startDaemon } = req("embed_daemon.js");
+  const pidfile = pidFileForDir(SCRIPTS_DIR);
+  const addr = addrForDir(SCRIPTS_DIR);
+  const readPid = () => {
+    try { const n = parseInt(fs.readFileSync(pidfile, "utf-8").trim(), 10); return Number.isInteger(n) ? n : null; }
+    catch { return null; }
+  };
+  const alive = (pid) => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  if (sub === "status") {
+    const pid = readPid();
+    const h = await ec.pingDaemon({ timeoutMs: 2500 });
+    const detail = {
+      ready: `ready — serving ${h.vlen}-d vectors`,
+      warming: "warming — model loading; recall on FTS until ready",
+      failed: "failed — model load failed; recall stays on FTS",
+      stuck: "UNRESPONSIVE — connected but no reply; run `tmem daemon stop` then `start`",
+      down: "down — not running; recall on FTS (run `tmem daemon start`)",
+      badreply: "protocol mismatch — unexpected reply",
+    }[h.state] || h.state;
+    console.log(`tmem daemon: ${detail}`);
+    console.log(`  addr: ${addr}`);
+    console.log(`  ${pid ? `pid ${pid}${alive(pid) ? "" : " (stale pidfile — process not running)"}` : "no pidfile"}`);
+    process.exit(h.state === "ready" ? 0 : 1);
+  }
+
+  if (sub === "stop") {
+    const pid = readPid();
+    if (pid && alive(pid)) {
+      try { process.kill(pid); console.log(`tmem daemon: stopped pid ${pid}`); }
+      catch (e) { console.error(`tmem daemon: could not kill pid ${pid}: ${e.message}`); }
+    } else {
+      console.log("tmem daemon: not running (no live pid)");
+    }
+    try { fs.unlinkSync(pidfile); } catch {}
+    if (process.platform !== "win32") { try { fs.unlinkSync(addr); } catch {} }
+    return;
+  }
+
+  if (sub === "start" || sub === undefined) {
+    const h = await ec.pingDaemon({ timeoutMs: 2500 });
+    if (h.state === "ready" || h.state === "warming") {
+      const pid = readPid();
+      console.log(`tmem daemon: already running (${h.state}${pid ? `, pid ${pid}` : ""}). Nothing to do.`);
+      return;
+    }
+    // down/stuck/failed: clear any incumbent holding the address, then serve foreground
+    const pid = readPid();
+    if (pid && alive(pid)) {
+      console.log(`tmem daemon: clearing unresponsive incumbent pid ${pid} (state=${h.state})`);
+      try { process.kill(pid); } catch {}
+      try { fs.unlinkSync(pidfile); } catch {}
+      await sleep(600); // let the OS release the pipe/socket before rebinding
+    }
+    console.log("tmem daemon: starting (foreground). Warming EmbeddingGemma; serves until idle (15m) or Ctrl-C.");
+    console.log(`  addr: ${addr}`);
+    startDaemon(); // listening server keeps the process alive (long-lived parent = no reap)
+    return new Promise(() => {}); // never resolves — block here while serving
+  }
+
+  console.error("Usage: tmem daemon <start|status|stop>");
+  process.exit(1);
+}
+
 // ── main ──
 async function main() {
   const args = process.argv.slice(2);
@@ -480,7 +548,8 @@ Commands:
   sync [--full]              Embed missing vectors (delta); --full rebuilds the index
   mark-done                  Mark consolidation complete + release lock
   unlock                     Release stale consolidation lock
-  config [consolidate-every [N] | scene-max-tokens [N]]  Show config, or get/set a setting`);
+  config [consolidate-every [N] | scene-max-tokens [N]]  Show config, or get/set a setting
+  daemon <start|status|stop>  Manage the resident embed daemon (warm vector recall)`);
     return;
   }
 
@@ -503,6 +572,7 @@ Commands:
     case "mark-done": return cmdMarkDone();
     case "unlock": return cmdUnlock();
     case "config": return cmdConfig(rest);
+    case "daemon": return cmdDaemon(rest[0]);
     default:
       console.error(`Unknown command: ${cmd}. Run 'tmem --help' for usage.`);
       process.exit(1);
