@@ -30,11 +30,21 @@ claude plugin install tencentdb-agent-memory
 
 | Hook | Action |
 |------|--------|
-| `UserPromptSubmit` | Hybrid recall (FTS5 + vector + RRF) → inject `<memory-context>` |
+| `UserPromptSubmit` | Hybrid recall (FTS5 + vector + RRF) + L2 scene-navigation index → inject `<memory-context>` |
 | `Stop` | Auto-capture turn + background consolidation after N turns |
 | `SessionEnd` | Mark session as pending for later seeding |
 
 Hooks never block — failures degrade to no injection.
+
+## How recall works
+
+Each turn, the `UserPromptSubmit` hook builds a `<memory-context>` block from three layers:
+
+1. **L3 persona** — a short summary of who you are / your standing preferences.
+2. **L1 atoms** — hybrid search (FTS5 keyword + EmbeddingGemma vector, merged via RRF) over the most relevant memories, within a token budget.
+3. **L2 scene-navigation** — a heat-ranked *index* of scene blocks (name + heat + summary), project scenes first then global, with its own token budget. Full scene content is **not** inlined; load it on demand with `tmem scene <name>` (progressive disclosure — cheap always-on index, full read only when needed).
+
+Tune the scene-navigation budget with `tmem config scene-max-tokens N` (`0` disables it).
 
 ## Components
 
@@ -53,17 +63,19 @@ Installed automatically by `/memory-init`. Available in terminal and used by ski
 ```
 tmem status                     Memory stats
 tmem search <query>             FTS5 keyword search
-tmem recall <query>             Hybrid recall (FTS5 + vector + RRF)
+tmem recall <query>             Hybrid recall (FTS5 + vector + RRF) + L2 scene-navigation
 tmem persona                    Show persona
 tmem scenes list                List scene blocks
+tmem scene <name>               Print one full scene block (project-first, then global)
 tmem scenes dedup [--dry-run]   Remove duplicate scenes
 tmem changelog [--last N]       Recent memory changes
-tmem sync                       Embed records missing from vector index
+tmem sync [--full]              Embed missing vectors (delta); --full rebuilds
 tmem atoms [global|project|all] Dump L1 atoms as JSON
 tmem sessions                   List pending sessions
-tmem reindex                    Rebuild entire vector index
 tmem init                       Initialize memory store
 tmem mark-done                  Mark consolidation complete
+tmem config consolidate-every N Set consolidation threshold (default 20)
+tmem config scene-max-tokens N  Set L2 scene-navigation token budget (default 200, 0 disables)
 ```
 
 ## Architecture
@@ -80,7 +92,12 @@ tmem mark-done                  Mark consolidation complete
 - **FTS5** — keyword search via `node:sqlite` (built-in)
 - **sqlite-vec** — vector cosine search (npm)
 - **EmbeddingGemma-300m** — local embedding via `node-llama-cpp` (npm, ~80MB model)
+- **Resident embed daemon** — keeps the model warm over local IPC (named pipe / unix socket); degrades to FTS-only on failure
 - **RRF** (k=60) — merges FTS5 + vector results
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md) for per-version history.
 
 ## License
 

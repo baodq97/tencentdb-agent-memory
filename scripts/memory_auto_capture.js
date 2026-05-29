@@ -24,7 +24,8 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 
-const DEFAULT_CONSOLIDATE_EVERY = 10;
+const DEFAULT_CONSOLIDATE_EVERY = 20;
+const DEFAULT_SCENE_MAX_TOKENS = 200;
 const MAX_CONTENT_LENGTH = 500;
 
 function memoryBaseDir() {
@@ -49,6 +50,61 @@ function saveCaptureState(state) {
   const tmp = p + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf-8");
   fs.renameSync(tmp, p);
+}
+
+// ── user config (persisted separately from volatile capture state) ──
+function configPath() {
+  return path.join(memoryBaseDir(), "config.json");
+}
+
+function loadConfig() {
+  try { return JSON.parse(fs.readFileSync(configPath(), "utf-8")); } catch { return {}; }
+}
+
+function saveConfig(cfg) {
+  const p = configPath();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  const tmp = p + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), "utf-8");
+  fs.renameSync(tmp, p);
+}
+
+/** Effective consolidation threshold: env override > persisted config > default. */
+function getConsolidateEvery() {
+  const env = parseInt(process.env.MEMORY_CONSOLIDATE_EVERY || "", 10);
+  if (Number.isInteger(env) && env > 0) return env;
+  const stored = parseInt(loadConfig().consolidate_every, 10);
+  if (Number.isInteger(stored) && stored > 0) return stored;
+  return DEFAULT_CONSOLIDATE_EVERY;
+}
+
+/** Persist the consolidation threshold. Throws on invalid (non-positive-int) input. */
+function setConsolidateEvery(n) {
+  const v = parseInt(n, 10);
+  if (!Number.isInteger(v) || v < 1) throw new Error("consolidate-every must be a positive integer");
+  const cfg = loadConfig();
+  cfg.consolidate_every = v;
+  saveConfig(cfg);
+  return v;
+}
+
+/** Effective scene-navigation token budget: env override > persisted config > default. 0 disables. */
+function getSceneMaxTokens() {
+  const env = parseInt(process.env.MEMORY_SCENE_MAX_TOKENS || "", 10);
+  if (Number.isInteger(env) && env >= 0) return env;
+  const stored = parseInt(loadConfig().scene_max_tokens, 10);
+  if (Number.isInteger(stored) && stored >= 0) return stored;
+  return DEFAULT_SCENE_MAX_TOKENS;
+}
+
+/** Persist the scene-navigation token budget. 0 = disable scene-nav; throws on negative/non-int. */
+function setSceneMaxTokens(n) {
+  const v = parseInt(n, 10);
+  if (!Number.isInteger(v) || v < 0) throw new Error("scene-max-tokens must be a non-negative integer (0 disables)");
+  const cfg = loadConfig();
+  cfg.scene_max_tokens = v;
+  saveConfig(cfg);
+  return v;
 }
 
 function projectHashForCwd(cwd) {
@@ -136,7 +192,7 @@ function autoCapture({ userText, assistantText, sessionId, cwd }) {
   state.sessions[sessionId].turns = (state.sessions[sessionId].turns || 0) + 1;
   state.sessions[sessionId].last_capture = new Date().toISOString();
 
-  const threshold = parseInt(process.env.MEMORY_CONSOLIDATE_EVERY || String(DEFAULT_CONSOLIDATE_EVERY), 10);
+  const threshold = getConsolidateEvery();
   const sinceLastConsolidation = state.turn_count - (state.last_consolidation_turn || 0);
   const consolidationDue = sinceLastConsolidation >= threshold;
 
@@ -162,7 +218,7 @@ function checkConsolidationDue() {
   try {
     const state = loadCaptureState();
     if (!state.consolidation_due) return null;
-    const threshold = parseInt(process.env.MEMORY_CONSOLIDATE_EVERY || String(DEFAULT_CONSOLIDATE_EVERY), 10);
+    const threshold = getConsolidateEvery();
     const sinceLastConsolidation = (state.turn_count || 0) - (state.last_consolidation_turn || 0);
     return {
       due: true,
@@ -188,7 +244,7 @@ function markConsolidated() {
 
 function status() {
   const state = loadCaptureState();
-  const threshold = parseInt(process.env.MEMORY_CONSOLIDATE_EVERY || String(DEFAULT_CONSOLIDATE_EVERY), 10);
+  const threshold = getConsolidateEvery();
   const since = (state.turn_count || 0) - (state.last_consolidation_turn || 0);
   return {
     total_turns: state.turn_count || 0,
@@ -226,4 +282,4 @@ Commands:
 
 if (require.main === module) main();
 
-module.exports = { autoCapture, checkConsolidationDue, markConsolidated, status };
+module.exports = { autoCapture, checkConsolidationDue, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, loadConfig };

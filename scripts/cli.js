@@ -1,17 +1,7 @@
 #!/usr/bin/env node
 /**
  * tmem — CLI for tencentdb-agent-memory plugin.
- *
- * Usage:
- *   tmem init                          Initialize memory store + vector index
- *   tmem status                        Show memory stats
- *   tmem recall <query>                Search memories (hybrid FTS5 + vector)
- *   tmem search <query>                Search L1 atoms (FTS5 only)
- *   tmem scenes [list|dedup]           List or deduplicate scene blocks
- *   tmem changelog [--last N]          Show recent memory changes
- *   tmem persona                       Show current persona
- *   tmem reindex                       Rebuild vector index from FTS5
- *   tmem unlock                        Release stale consolidation lock
+ * Run `tmem --help` for the full command list (the authoritative source).
  */
 "use strict";
 
@@ -110,6 +100,19 @@ function cmdSearch(query) {
   for (const r of results) {
     console.log(`[${r.type || "?"}] (p=${r.priority}) ${r.content}`);
   }
+}
+
+// ── scene (read one full scene block by name, project-first then global) ──
+function cmdScene(name) {
+  if (!name) { console.error("Usage: tmem scene <name>  (names from `tmem scenes list` / scene-navigation)"); process.exit(1); }
+  const { gDir, pDir } = getDirs();
+  const file = name.endsWith(".md") ? name : name + ".md";
+  for (const dir of [pDir, gDir]) {
+    const p = path.join(dir, "scene_blocks", file);
+    if (fs.existsSync(p)) { console.log(fs.readFileSync(p, "utf-8")); return; }
+  }
+  console.error(`Scene not found: ${name}`);
+  process.exit(1);
 }
 
 // ── scenes ──
@@ -213,52 +216,18 @@ function cmdPersona() {
   console.log(p || "(no persona yet)");
 }
 
-// ── reindex ──
-async function cmdReindex() {
-  const { MemoryStore } = req("memory_store.js");
-  const { VectorStore } = req("vector_store.js");
-  const { getEmbeddingService } = req("embedding_service.js");
-  const { gDir, pDir } = getDirs();
-
-  const svc = getEmbeddingService();
-  console.log("Warming up embedding model...");
-  svc.startWarmup();
-  await svc.waitForReady();
-  if (!svc.isReady()) { console.error("Embedding failed:", svc.initError?.message); process.exit(1); }
-
-  let total = 0;
-  for (const [label, dir] of [["Global", gDir], ["Project", pDir]]) {
-    const dbPath = path.join(dir, "index.db");
-    if (!fs.existsSync(dbPath)) continue;
-    const ftsStore = new MemoryStore(dbPath);
-    const records = ftsStore.allRecords("", 10000);
-    ftsStore.close();
-    if (!records.length) continue;
-    const vecStore = new VectorStore(path.join(dir, "vectors.db"));
-    if (vecStore.degraded) continue;
-    let count = 0;
-    for (const r of records) {
-      const vec = await svc.embed(r.content);
-      if (vec) { vecStore.upsertVec(r.record_id, vec); count++; }
-    }
-    vecStore.close();
-    console.log(`${label}: indexed ${count}/${records.length}`);
-    total += count;
-  }
-  svc.close();
-  console.log("Done.", total, "vectors indexed.");
-}
-
 // ── sync ──
-async function cmdSync() {
+// Embed records into the vector index. Default: delta only (newest records missing
+// vectors). With --full: re-embed every record (former `reindex`).
+async function cmdSync(args) {
+  const full = (args || []).includes("--full");
   const { MemoryStore } = req("memory_store.js");
   const { VectorStore } = req("vector_store.js");
   const { getEmbeddingService } = req("embedding_service.js");
   const { gDir, pDir } = getDirs();
 
-  let totalMissing = 0;
-  const missing = [];
-
+  // Decide which records to embed, per dir.
+  const todo = []; // [{ dir, ...record }]
   for (const [label, dir] of [["Global", gDir], ["Project", pDir]]) {
     const dbPath = path.join(dir, "index.db");
     if (!fs.existsSync(dbPath)) continue;
@@ -267,60 +236,52 @@ async function cmdSync() {
     ftsStore.close();
     if (!records.length) continue;
 
-    const vecPath = path.join(dir, "vectors.db");
-    const vecStore = new VectorStore(vecPath);
+    const vecStore = new VectorStore(path.join(dir, "vectors.db"));
     if (vecStore.degraded) { vecStore.close(); continue; }
-
     const vecCount = vecStore.count();
-    const ftsIds = new Set(records.map(r => r.record_id));
-    const needEmbed = [];
-    for (const r of records) {
-      const exists = vecStore.searchVec(new Float32Array(768), 1);
-      // Cheaper: compare counts. If vec < fts, embed the newest records.
-      needEmbed.push(r);
-    }
     vecStore.close();
 
+    if (full) {
+      todo.push(...records.map(r => ({ dir, ...r })));
+      continue;
+    }
     const delta = records.length - vecCount;
     if (delta <= 0) {
       console.log(`${label}: in sync (${records.length} records, ${vecCount} vectors)`);
       continue;
     }
-
     console.log(`${label}: ${delta} records missing vectors (${vecCount}/${records.length})`);
-    // Collect records sorted newest first, take delta
     const sorted = records.sort((a, b) => (b.updated_time || "").localeCompare(a.updated_time || ""));
-    missing.push(...sorted.slice(0, delta).map(r => ({ label, dir, ...r })));
-    totalMissing += delta;
+    todo.push(...sorted.slice(0, delta).map(r => ({ dir, ...r })));
   }
 
-  if (!totalMissing) { console.log("All vectors in sync."); return; }
+  if (!todo.length) { console.log(full ? "No records to embed." : "All vectors in sync."); return; }
 
   const svc = getEmbeddingService();
-  console.log(`Syncing ${totalMissing} missing vectors...`);
+  console.log(`${full ? "Reindexing" : "Syncing"} ${todo.length} vectors...`);
   svc.startWarmup();
   await svc.waitForReady();
   if (!svc.isReady()) { console.error("Embedding not available."); return; }
 
-  let synced = 0;
   const byDir = {};
-  for (const r of missing) {
+  for (const r of todo) {
     if (!byDir[r.dir]) byDir[r.dir] = [];
     byDir[r.dir].push(r);
   }
 
+  let done = 0;
   for (const [dir, records] of Object.entries(byDir)) {
     const vecStore = new VectorStore(path.join(dir, "vectors.db"));
     if (vecStore.degraded) { vecStore.close(); continue; }
     for (const r of records) {
       const vec = await svc.embed(r.content);
-      if (vec) { vecStore.upsertVec(r.record_id, vec); synced++; }
+      if (vec) { vecStore.upsertVec(r.record_id, vec); done++; }
     }
     vecStore.close();
   }
 
   svc.close();
-  console.log(`Synced ${synced}/${totalMissing} vectors.`);
+  console.log(`Embedded ${done}/${todo.length} vectors.`);
 }
 
 // ── atoms ──
@@ -442,6 +403,52 @@ function cmdUnlock() {
   try { fs.unlinkSync(lockFile); console.log("Lock released."); } catch { console.log("No lock file."); }
 }
 
+// ── config ──
+function cmdConfig(args) {
+  const { getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, loadConfig } = req("memory_auto_capture.js");
+  const key = args[0];
+
+  if (!key) {
+    console.log(JSON.stringify({
+      consolidate_every: getConsolidateEvery(),
+      scene_max_tokens: getSceneMaxTokens(),
+      stored: loadConfig(),
+      env_override: {
+        MEMORY_CONSOLIDATE_EVERY: process.env.MEMORY_CONSOLIDATE_EVERY || null,
+        MEMORY_SCENE_MAX_TOKENS: process.env.MEMORY_SCENE_MAX_TOKENS || null,
+      },
+    }, null, 2));
+    return;
+  }
+
+  if (key === "consolidate-every") {
+    if (args[1] === undefined) { console.log(getConsolidateEvery()); return; }
+    try {
+      const v = setConsolidateEvery(args[1]);
+      console.log(`consolidate-every set to ${v}`);
+    } catch (e) {
+      console.error(e.message);
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (key === "scene-max-tokens") {
+    if (args[1] === undefined) { console.log(getSceneMaxTokens()); return; }
+    try {
+      const v = setSceneMaxTokens(args[1]);
+      console.log(`scene-max-tokens set to ${v}`);
+    } catch (e) {
+      console.error(e.message);
+      process.exit(1);
+    }
+    return;
+  }
+
+  console.error(`Unknown config key: ${key}. Supported: consolidate-every, scene-max-tokens`);
+  process.exit(1);
+}
+
 // ── main ──
 async function main() {
   const args = process.argv.slice(2);
@@ -465,14 +472,15 @@ Commands:
   write-l1 [--session id]    Write L1 atoms from stdin JSON
   write-scene --name --summary --heat  Write scene block (content from stdin)
   write-persona              Write persona from stdin
+  scene <name>               Print one full scene block (project-first, then global)
   scenes [list|dedup]        List or deduplicate scene blocks
     --dry-run                Preview dedup without removing
   changelog [--last N]       Show recent memory changes
   persona                    Show current persona
-  sync                       Embed records missing from vector index (delta only)
-  reindex                    Rebuild entire vector index from FTS5
+  sync [--full]              Embed missing vectors (delta); --full rebuilds the index
   mark-done                  Mark consolidation complete + release lock
-  unlock                     Release stale consolidation lock`);
+  unlock                     Release stale consolidation lock
+  config [consolidate-every [N] | scene-max-tokens [N]]  Show config, or get/set a setting`);
     return;
   }
 
@@ -487,13 +495,14 @@ Commands:
     case "write-l1": return cmdWriteL1(rest);
     case "write-scene": return cmdWriteScene(rest);
     case "write-persona": return cmdWritePersona();
+    case "scene": return cmdScene(restStr);
     case "scenes": return cmdScenes(rest[0], rest);
     case "changelog": return cmdChangelog(rest);
     case "persona": return cmdPersona();
-    case "sync": return cmdSync();
-    case "reindex": return cmdReindex();
+    case "sync": return cmdSync(rest);
     case "mark-done": return cmdMarkDone();
     case "unlock": return cmdUnlock();
+    case "config": return cmdConfig(rest);
     default:
       console.error(`Unknown command: ${cmd}. Run 'tmem --help' for usage.`);
       process.exit(1);

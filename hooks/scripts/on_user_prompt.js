@@ -11,8 +11,8 @@ const scriptsDir = addPluginScriptsToPath();
 async function doRecall(prompt, cwd) {
   try {
     try {
-      const { getEmbeddingService } = require(nodePath.join(scriptsDir, "embedding_service.js"));
-      getEmbeddingService().startWarmup();
+      const { ensureDaemon } = require(nodePath.join(scriptsDir, "embed_client.js"));
+      ensureDaemon();
     } catch {}
 
     const { projectHashForCwd } = require(nodePath.join(scriptsDir, "memory_reader.js"));

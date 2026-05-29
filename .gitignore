@@ -6,3 +6,6 @@ node_modules/
 .DS_Store
 .vscode/
 .idea/
+
+# local working docs (plans, specs, design notes) — not part of the published plugin
+docs/superpowers/

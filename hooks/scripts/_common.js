@@ -17,13 +17,17 @@ function addPluginScriptsToPath() {
 function readHookInputAsync() {
   return new Promise((resolve) => {
     let data = "";
+    let settled = false;
+    const parse = () => { try { return data.trim() ? JSON.parse(data) : {}; } catch { return {}; } };
+    const done = (val) => { if (settled) return; settled = true; clearTimeout(timer); resolve(val); };
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => (data += chunk));
-    process.stdin.on("end", () => {
-      try { resolve(data.trim() ? JSON.parse(data) : {}); } catch { resolve({}); }
-    });
-    process.stdin.on("error", () => resolve({}));
-    setTimeout(() => resolve(data.trim() ? JSON.parse(data) : {}), 3000);
+    process.stdin.on("end", () => done(parse()));
+    process.stdin.on("error", () => done({}));
+    // Fallback if stdin never closes. Cleared on end/error; unref'd so it never
+    // pins the event loop (the dangling, un-cleared timer here used to add ~3s/turn).
+    const timer = setTimeout(() => done(parse()), 3000);
+    timer.unref();
   });
 }
 
