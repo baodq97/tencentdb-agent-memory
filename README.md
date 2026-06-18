@@ -81,6 +81,27 @@ tmem daemon status              Health-ping the daemon (ready/warming/failed/dow
 tmem daemon stop                Stop the daemon + clear its pidfile
 ```
 
+## Contributor intelligence (`/contrib`)
+
+Profile how a top GitHub engineer works — and learn from them.
+
+```bash
+/contrib add mitchellh ghostty-org/ghostty   # declare a subject
+/contrib ingest mitchellh@ghostty            # gh -> 11-dimension atoms
+/contrib build  mitchellh@ghostty            # atoms -> persona
+/contrib add baodq97 baodq97/govkit          # add yourself (for compare + L4)
+/contrib ingest baodq97@govkit ; /contrib build baodq97@govkit
+/contrib capabilities                        # L4: what top SWEs share
+/contrib playbook mitchellh@ghostty          # emulable heuristics
+/contrib compare baodq97@govkit mitchellh@ghostty
+```
+
+Activity is classified into 11 dimensions across 3 clusters — Technical Craft
+(`idea/plan/solve/craft`), Collaboration & Influence (`comms/mentor/conflict`),
+and Outcomes & Ownership (`scope/ownership/execution`). Stored separately under
+`<global>/contributors/` — the self-memory feature is never touched. Requires an
+authenticated `gh` CLI.
+
 ## Architecture
 
 ```
