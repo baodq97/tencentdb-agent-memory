@@ -517,6 +517,98 @@ async function cmdDaemon(sub) {
   process.exit(1);
 }
 
+// ── contrib ──
+async function cmdContrib(rest) {
+  const sub = rest[0];
+  const args = rest.slice(1);
+  const { gDir } = getDirs();
+  const contribRoot = path.join(gDir, "contributors");
+  const dbPath = path.join(contribRoot, "index.db");
+  const { ContribStore } = req("contrib_store.js");
+  const { loadConfig, addSubject } = req("contrib_config.js");
+
+  const flag = (name) => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+
+  switch (sub) {
+    case "add": {
+      const [user, repo] = args;
+      const s = addSubject(gDir, { github_user: user, repo });
+      console.log(`Added subject ${s.id} (${s.repo})`);
+      return;
+    }
+    case "list-subjects": {
+      const cfg = loadConfig(gDir);
+      const store = new ContribStore(dbPath);
+      for (const s of cfg.subjects) {
+        console.log(`${s.id}\t${s.repo}\tatoms=${store.countAtoms(s.id)}`);
+      }
+      if (!cfg.subjects.length) console.log("(no subjects — use: tmem contrib add <user> <owner/repo>)");
+      return;
+    }
+    case "raw": {
+      const id = args[0];
+      const cfg = loadConfig(gDir);
+      const subject = cfg.subjects.find((s) => s.id === id);
+      if (!subject) { console.error(`unknown subject: ${id}`); process.exitCode = 1; return; }
+      const { fetchRaw } = req("contrib_ingest.js");
+      const raw = await fetchRaw(subject, {
+        maxRetries: cfg.ingest.max_retries,
+        maxWaitSec: cfg.ingest.max_wait_per_retry_sec,
+      });
+      const outDir = path.join(contribRoot, "raw", id);
+      fs.mkdirSync(outDir, { recursive: true });
+      fs.writeFileSync(path.join(outDir, "raw.json"), JSON.stringify(raw, null, 2));
+      console.log(JSON.stringify(raw, null, 2));
+      return;
+    }
+    case "upsert-atom": {
+      const store = new ContribStore(dbPath);
+      const atom = JSON.parse(flag("--json"));
+      store.upsertAtom(atom);
+      console.log(`ok ${atom.record_id}`);
+      return;
+    }
+    case "atoms": {
+      const store = new ContribStore(dbPath);
+      console.log(JSON.stringify(store.getAtoms(args[0], args[1]), null, 2));
+      return;
+    }
+    case "upsert-persona": {
+      const store = new ContribStore(dbPath);
+      const p = JSON.parse(flag("--json"));
+      store.upsertPersona(p);
+      console.log(`ok persona ${p.subject_id}`);
+      return;
+    }
+    case "persona": {
+      const store = new ContribStore(dbPath);
+      const p = store.getPersona(args[0]);
+      console.log(p ? JSON.stringify(p, null, 2) : `(no persona for ${args[0]})`);
+      return;
+    }
+    case "capabilities": {
+      const store = new ContribStore(dbPath);
+      const cfg = loadConfig(gDir);
+      try {
+        const caps = store.computeL4(cfg.l4.prevalence_threshold);
+        for (const c of caps) {
+          console.log(`${c.capability}\t${(c.prevalence * 100).toFixed(0)}%\t${c.summary}\texemplar=${c.exemplar}`);
+        }
+        if (!caps.length) console.log("(no common capabilities above threshold yet)");
+      } catch (e) {
+        if (/need >=2/.test(e.message)) { console.log("need >=2 subjects with personas to synthesise L4"); return; }
+        throw e;
+      }
+      return;
+    }
+    default:
+      console.log("usage: tmem contrib <add|list-subjects|raw|upsert-atom|atoms|upsert-persona|persona|capabilities>");
+  }
+}
+
 // ── main ──
 async function main() {
   const args = process.argv.slice(2);
@@ -549,7 +641,8 @@ Commands:
   mark-done                  Mark consolidation complete + release lock
   unlock                     Release stale consolidation lock
   config [consolidate-every [N] | scene-max-tokens [N]]  Show config, or get/set a setting
-  daemon <start|status|stop>  Manage the resident embed daemon (warm vector recall)`);
+  daemon <start|status|stop>  Manage the resident embed daemon (warm vector recall)
+  contrib <add|ingest|build|persona|playbook|compare|capabilities>  Contributor intelligence`);
     return;
   }
 
@@ -573,6 +666,7 @@ Commands:
     case "unlock": return cmdUnlock();
     case "config": return cmdConfig(rest);
     case "daemon": return cmdDaemon(rest[0]);
+    case "contrib": return cmdContrib(rest);
     default:
       console.error(`Unknown command: ${cmd}. Run 'tmem --help' for usage.`);
       process.exit(1);
