@@ -27,9 +27,15 @@ and stop.
 
 ### 2. Capability model (narrative)
 
-For each common capability, write 1–2 sentences: what the shared behaviour is,
-the prevalence ("N/M subjects"), and who exemplifies it best (the exemplar
-subject), citing one piece of their evidence.
+Pull every persona in one call to reason across them:
+
+```bash
+tmem contrib personas         # all subject personas as JSON
+```
+
+For each common capability (from step 1), write 1–2 sentences: what the shared
+behaviour is, the prevalence ("N/M subjects"), and who exemplifies it best (the
+exemplar subject), citing one piece of their evidence.
 
 ### 3. Learnable playbook (per subject)
 

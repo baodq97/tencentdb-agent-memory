@@ -17,7 +17,8 @@ Contributor intelligence. Subjects are declared in
   refetch everything.
 - `/contrib build [id]` — consolidate atoms into a persona (invokes
   **contrib-consolidate**).
-- `/contrib persona <id>` — print a subject's dossier.
+- `/contrib persona <id>` — print one subject's dossier.
+- `/contrib personas` — print all subjects' personas as JSON (for cross-engineer synthesis).
 - `/contrib playbook <id>` — print the learnable playbook (invokes
   **contrib-synthesize**).
 - `/contrib compare <id>` — you vs a role model: a qualitative gap analysis of

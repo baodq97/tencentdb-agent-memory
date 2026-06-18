@@ -602,6 +602,13 @@ async function cmdContrib(rest) {
       console.log(p ? JSON.stringify(p, null, 2) : `(no persona for ${args[0]})`);
       return;
     }
+    case "personas": {
+      const store = new ContribStore(dbPath);
+      const all = store.listPersonas();
+      console.log(JSON.stringify(all, null, 2));
+      if (!all.length) console.error("(no personas yet — run build first)");
+      return;
+    }
     case "capabilities": {
       const store = new ContribStore(dbPath);
       const cfg = loadConfig(gDir);
@@ -725,7 +732,7 @@ async function cmdContrib(rest) {
       return;
     }
     default:
-      console.log("usage: tmem contrib <add|list-subjects|raw|upsert-atom|atoms|upsert-persona|persona|capabilities|sync|search|compare>");
+      console.log("usage: tmem contrib <add|list-subjects|raw|upsert-atom|atoms|upsert-persona|persona|personas|capabilities|sync|search|compare|trajectory|team>");
   }
 }
 
