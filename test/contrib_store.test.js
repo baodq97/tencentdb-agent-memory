@@ -77,6 +77,33 @@ test("persona round-trips", () => {
   assert.strictEqual(s.listPersonas().length, 1);
 });
 
+test("searchAtoms finds atoms by keyword, filterable by subject", () => {
+  const s = new ContribStore(tmpDb());
+  s.upsertAtom({ record_id: "a1", subject_id: "tj@x", dimension: "plan", content: "splits PRs by concern", evidence: [] });
+  s.upsertAtom({ record_id: "a2", subject_id: "tj@x", dimension: "solve", content: "defensive boundary validation", evidence: [] });
+  s.upsertAtom({ record_id: "a3", subject_id: "sm@y", dimension: "plan", content: "small focused PRs", evidence: [] });
+  const prHits = s.searchAtoms("PRs");
+  assert.ok(prHits.length >= 2, "matches both PR atoms");
+  const scoped = s.searchAtoms("PRs", { subjectId: "sm@y" });
+  assert.strictEqual(scoped.length, 1);
+  assert.strictEqual(scoped[0].record_id, "a3");
+  // updated content is reflected in FTS
+  s.upsertAtom({ record_id: "a1", subject_id: "tj@x", dimension: "plan", content: "stacked diffs galore", evidence: [] });
+  assert.strictEqual(s.searchAtoms("stacked").length, 1);
+});
+
+test("computeL4 exemplar is the subject with the most evidence links", () => {
+  const s = new ContribStore(tmpDb());
+  s.upsertPersona({ subject_id: "a@x", dimensions: { plan: "p" } });
+  s.upsertPersona({ subject_id: "b@x", dimensions: { plan: "p" } });
+  // a@x has 1 atom with 3 evidence links; b@x has 2 atoms with 1 link each (=2)
+  s.upsertAtom({ record_id: "a1", subject_id: "a@x", dimension: "plan", content: "x", evidence: ["PR#1", "PR#2", "PR#3"] });
+  s.upsertAtom({ record_id: "b1", subject_id: "b@x", dimension: "plan", content: "y", evidence: ["PR#9"] });
+  s.upsertAtom({ record_id: "b2", subject_id: "b@x", dimension: "plan", content: "z", evidence: ["PR#8"] });
+  const caps = s.computeL4(0.6);
+  assert.strictEqual(caps.find((c) => c.capability === "plan").exemplar, "a@x");
+});
+
 test("computeL4 throws with fewer than 2 personas", () => {
   const s = new ContribStore(tmpDb());
   s.upsertPersona({ subject_id: "a@x", dimensions: { plan: "p" } });
@@ -90,16 +117,16 @@ test("computeL4 emits capabilities above prevalence threshold with exemplar", ()
   s.upsertPersona({ subject_id: "b@x", dimensions: { plan: "p", craft: "c" } });
   s.upsertPersona({ subject_id: "c@x", dimensions: { plan: "p" } });
   // exemplar for plan = subject with most plan atoms
-  s.upsertAtom({ record_id: "x1", subject_id: "b@x", dimension: "plan", content: "x", evidence: [] });
-  s.upsertAtom({ record_id: "x2", subject_id: "b@x", dimension: "plan", content: "y", evidence: [] });
-  s.upsertAtom({ record_id: "x3", subject_id: "a@x", dimension: "plan", content: "z", evidence: [] });
+  s.upsertAtom({ record_id: "x1", subject_id: "b@x", dimension: "plan", content: "x", evidence: ["PR#1"] });
+  s.upsertAtom({ record_id: "x2", subject_id: "b@x", dimension: "plan", content: "y", evidence: ["PR#2"] });
+  s.upsertAtom({ record_id: "x3", subject_id: "a@x", dimension: "plan", content: "z", evidence: ["PR#3"] });
 
   const caps = s.computeL4(0.6);
   const byKey = Object.fromEntries(caps.map((c) => [c.capability, c]));
   assert.ok(byKey.plan, "plan is common");
   assert.ok(byKey.craft, "craft is common (0.67 >= 0.6)");
   assert.ok(!byKey.scope, "scope is not common (0.33 < 0.6)");
-  assert.strictEqual(byKey.plan.exemplar, "b@x"); // 2 plan atoms beats a@x's 1
+  assert.strictEqual(byKey.plan.exemplar, "b@x"); // 2 evidence links beats a@x's 1
   assert.strictEqual(byKey.plan.summary, "3/3 subjects");
 
   const stored = s.getCapabilities();

@@ -554,6 +554,14 @@ async function cmdContrib(rest) {
       const subject = cfg.subjects.find((s) => s.id === id);
       if (!subject) { console.error(`unknown subject: ${id}`); process.exitCode = 1; return; }
       const { fetchRaw } = req("contrib_ingest.js");
+      // preflight: gh must be installed + authenticated
+      const { spawnSync } = require("node:child_process");
+      const ghCheck = spawnSync("gh", ["auth", "status"], { encoding: "utf8" });
+      if (ghCheck.error || ghCheck.status !== 0) {
+        console.error("gh CLI not available or not authenticated. Run: gh auth login");
+        process.exitCode = 1;
+        return;
+      }
       const store = new ContribStore(dbPath);
       const incremental = args.includes("--full") ? null : store.getCursor(id);
       const raw = await fetchRaw(subject, {
@@ -609,8 +617,68 @@ async function cmdContrib(rest) {
       }
       return;
     }
+    case "sync": {
+      const store = new ContribStore(dbPath);
+      const { VectorStore } = req("vector_store.js");
+      const { embedViaDaemon } = req("embed_client.js");
+      const vec = new VectorStore(path.join(contribRoot, "vectors.db"));
+      const id = args[0];
+      const cfg2 = loadConfig(gDir);
+      const subjects = id ? [id] : cfg2.subjects.map((s) => s.id);
+      let n = 0;
+      for (const sid of subjects) {
+        for (const a of store.getAtoms(sid)) {
+          try {
+            const emb = await embedViaDaemon(a.content);
+            if (emb && emb.length) { vec.upsertVec(a.record_id, emb); n += 1; }
+          } catch { /* daemon down — skip, FTS still works */ }
+        }
+      }
+      console.log(`embedded ${n} atom(s) into ${path.join(contribRoot, "vectors.db")}`);
+      return;
+    }
+    case "search": {
+      const store = new ContribStore(dbPath);
+      const query = args.filter((a) => !a.startsWith("--")).join(" ");
+      const subjectId = flag("--subject");
+      const ftsHits = store.searchAtoms(query, { subjectId, limit: 10 });
+      let merged = ftsHits.map((r) => r.record_id);
+      try {
+        const { VectorStore, rrfMerge } = req("vector_store.js");
+        const { embedViaDaemon } = req("embed_client.js");
+        const emb = await embedViaDaemon(query);
+        if (emb && emb.length) {
+          const vec = new VectorStore(path.join(contribRoot, "vectors.db"));
+          const vHits = vec.searchVec(emb, 10).map((r) => r.record_id || r.recordId);
+          merged = rrfMerge([merged, vHits]).map((r) => r.id || r);
+        }
+      } catch { /* vector unavailable — FTS-only */ }
+      const seen = new Set();
+      let shown = 0;
+      for (const rid of merged) {
+        if (seen.has(rid)) continue; seen.add(rid);
+        const rec = store.getAtomById(rid);
+        if (rec) { console.log(`[${rec.dimension}] ${rec.subject_id}: ${rec.content}`); shown += 1; }
+      }
+      if (!shown) console.log("(no matches)");
+      return;
+    }
+    case "compare": {
+      const store = new ContribStore(dbPath);
+      const [a, b] = args;
+      const pa = store.getPersona(a), pb = store.getPersona(b);
+      if (!pa || !pb) { console.error("both subjects need a persona (run build first)"); process.exitCode = 1; return; }
+      const { DIMENSIONS } = req("contrib_store.js");
+      console.log(`# ${a}  vs  ${b}\n`);
+      for (const d of DIMENSIONS) {
+        console.log(`## ${d}`);
+        console.log(`  ${a}: ${pa.dimensions[d] || "-"}`);
+        console.log(`  ${b}: ${pb.dimensions[d] || "-"}\n`);
+      }
+      return;
+    }
     default:
-      console.log("usage: tmem contrib <add|list-subjects|raw|upsert-atom|atoms|upsert-persona|persona|capabilities>");
+      console.log("usage: tmem contrib <add|list-subjects|raw|upsert-atom|atoms|upsert-persona|persona|capabilities|sync|search|compare>");
   }
 }
 

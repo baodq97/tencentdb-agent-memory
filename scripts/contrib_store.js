@@ -32,6 +32,15 @@ CREATE TABLE IF NOT EXISTS subject_atoms (
     updated_time  TEXT DEFAULT ''
 )`;
 
+const CREATE_ATOMS_FTS = `
+CREATE VIRTUAL TABLE IF NOT EXISTS subject_atoms_fts USING fts5(
+    content,
+    record_id UNINDEXED,
+    subject_id UNINDEXED,
+    dimension UNINDEXED,
+    tokenize='unicode61'
+)`;
+
 const CREATE_SCENES = `
 CREATE TABLE IF NOT EXISTS subject_scenes (
     scene_id     TEXT PRIMARY KEY,
@@ -74,12 +83,28 @@ class ContribStore {
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec("PRAGMA journal_mode=WAL");
     this.db.exec(CREATE_ATOMS);
+    this.db.exec(CREATE_ATOMS_FTS);
     this.db.exec(CREATE_SCENES);
     this.db.exec(CREATE_PERSONAS);
     this.db.exec(CREATE_L4);
     this.db.exec(CREATE_META);
     this.db.prepare("INSERT OR IGNORE INTO store_meta (key,value) VALUES (?,?)")
       .run("schema_version", String(SCHEMA_VERSION));
+    this._backfillFts();
+  }
+
+  // Rebuild the FTS index from subject_atoms if it's empty but atoms exist
+  // (handles DBs created before the FTS table was added).
+  _backfillFts() {
+    const atoms = this.db.prepare("SELECT COUNT(*) c FROM subject_atoms").get().c;
+    const indexed = this.db.prepare("SELECT COUNT(*) c FROM subject_atoms_fts").get().c;
+    if (atoms === 0 || indexed > 0) return;
+    const ins = this.db.prepare(
+      "INSERT INTO subject_atoms_fts (content, record_id, subject_id, dimension) VALUES (?,?,?,?)"
+    );
+    for (const a of this.db.prepare("SELECT content, record_id, subject_id, dimension FROM subject_atoms").all()) {
+      ins.run(a.content, a.record_id, a.subject_id, a.dimension);
+    }
   }
 
   upsertAtom(atom) {
@@ -102,6 +127,11 @@ class ContribStore {
       atom.scene_name || "", JSON.stringify(atom.metadata || {}),
       now, now,
     );
+    // keep FTS in sync (delete-then-insert handles content updates)
+    this.db.prepare("DELETE FROM subject_atoms_fts WHERE record_id=?").run(atom.record_id);
+    this.db.prepare(
+      "INSERT INTO subject_atoms_fts (content, record_id, subject_id, dimension) VALUES (?,?,?,?)"
+    ).run(atom.content, atom.record_id, atom.subject_id, atom.dimension);
     return atom.record_id;
   }
 
@@ -121,6 +151,24 @@ class ContribStore {
       return this.db.prepare("SELECT COUNT(*) c FROM subject_atoms WHERE subject_id=?").get(subjectId).c;
     }
     return this.db.prepare("SELECT COUNT(*) c FROM subject_atoms").get().c;
+  }
+
+  searchAtoms(query, opts = {}) {
+    const fts = toFtsQuery(query);
+    if (!fts) return [];
+    const limit = opts.limit ?? 10;
+    let sql = "SELECT record_id FROM subject_atoms_fts WHERE subject_atoms_fts MATCH ?";
+    const params = [fts];
+    if (opts.subjectId) { sql += " AND subject_id = ?"; params.push(opts.subjectId); }
+    if (opts.dimension) { sql += " AND dimension = ?"; params.push(opts.dimension); }
+    sql += " ORDER BY rank LIMIT ?";
+    params.push(limit);
+    const ids = this.db.prepare(sql).all(...params).map((r) => r.record_id);
+    return ids.map((id) => this.db.prepare("SELECT * FROM subject_atoms WHERE record_id=?").get(id)).filter(Boolean);
+  }
+
+  getAtomById(recordId) {
+    return this.db.prepare("SELECT * FROM subject_atoms WHERE record_id=?").get(recordId) || null;
   }
 
   getCursor(subjectId) {
@@ -176,12 +224,14 @@ class ContribStore {
       const present = personas.filter((p) => (p.dimensions[dim] || "").trim() !== "");
       const prevalence = present.length / total;
       if (prevalence < prevalenceThreshold) continue;
-      // exemplar: most atoms in this dimension among present subjects
+      // exemplar: strongest evidence in this dimension = most evidence links
+      // across the subject's atoms (ties broken by smallest subject_id).
       let exemplar = "";
       let best = -1;
       for (const p of present.map((p) => p.subject_id).sort()) {
-        const n = this.getAtoms(p, dim).length;
-        if (n > best) { best = n; exemplar = p; }
+        const links = this.getAtoms(p, dim)
+          .reduce((sum, a) => sum + JSON.parse(a.evidence_json || "[]").length, 0);
+        if (links > best) { best = links; exemplar = p; }
       }
       rows.push({
         capability: dim, dimension: dim, prevalence,
@@ -208,4 +258,13 @@ class ContribStore {
   }
 }
 
-module.exports = { ContribStore, DIMENSIONS };
+function toFtsQuery(query) {
+  const tokens = [];
+  for (const word of (query || "").split(/\s+/)) {
+    const clean = word.replace(/[^\w-]/g, "");
+    if (clean) tokens.push(`"${clean}"`);
+  }
+  return tokens.join(" OR ");
+}
+
+module.exports = { ContribStore, DIMENSIONS, toFtsQuery };

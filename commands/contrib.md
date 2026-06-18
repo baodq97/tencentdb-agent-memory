@@ -13,6 +13,8 @@ Contributor intelligence. Subjects are declared in
 - `/contrib add <github_user> <owner/repo>` — add a subject.
 - `/contrib ingest [id]` — fetch raw activity and extract 11-dimension atoms
   (invokes the **contrib-ingest** skill). Omit id to ingest all subjects.
+  Incremental by default (only activity since the last sync); pass `--full` to
+  refetch everything.
 - `/contrib build [id]` — consolidate atoms into a persona (invokes
   **contrib-consolidate**).
 - `/contrib persona <id>` — print a subject's dossier.
@@ -20,6 +22,10 @@ Contributor intelligence. Subjects are declared in
   **contrib-synthesize**).
 - `/contrib compare <id-a> <id-b>` — per-dimension you-vs-role-model diff.
 - `/contrib capabilities` — print the L4 capability model.
+- `/contrib sync [id]` — embed atoms into the contributor vector index (FTS works
+  without this; vector recall needs it + the embed daemon).
+- `/contrib search <query> [--subject <id>]` — keyword + vector recall over
+  atoms (FTS-only if the embed daemon is down).
 
 ## Notes
 
