@@ -65,13 +65,22 @@ async function ghJson(runner, args, opts) {
 
 async function fetchRaw(subject, opts = {}) {
   const runner = opts.runner || defaultRunner;
-  const { repo, max_prs = 100 } = subject;
-  const prsRaw = await ghJson(runner, [
-    "api", `/repos/${repo}/pulls?state=all&per_page=${Math.min(max_prs, 100)}`,
-  ], opts);
-  const commitsRaw = await ghJson(runner, ["api", `/repos/${repo}/commits`], opts);
+  const { repo, github_user, max_prs = 100 } = subject;
+  const perPage = Math.min(max_prs, 100);
 
-  const prs = (prsRaw || []).filter((p) => !isNoise(p.user?.login, null));
+  // PRs authored BY this subject — the pulls endpoint has no author filter,
+  // so use the search API (returns {items:[...]}).
+  const searchRaw = await ghJson(runner, [
+    "api", `/search/issues?q=repo:${repo}+type:pr+author:${github_user}&per_page=${perPage}`,
+  ], opts);
+  const prItems = Array.isArray(searchRaw) ? searchRaw : (searchRaw?.items || []);
+
+  // commits BY this subject — the commits endpoint supports ?author=
+  const commitsRaw = await ghJson(runner, [
+    "api", `/repos/${repo}/commits?author=${github_user}&per_page=${perPage}`,
+  ], opts);
+
+  const prs = (prItems || []).filter((p) => !isNoise(p.user?.login, null));
   const commits = (commitsRaw || []).filter((c) => !isNoise(c.author?.login, null));
 
   return { commits, prs, reviewComments: [], issues: [] };

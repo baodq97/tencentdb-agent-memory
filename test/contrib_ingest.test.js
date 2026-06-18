@@ -50,15 +50,23 @@ test("callWithRetry caps wait and gives up after maxRetries", async () => {
   );
 });
 
-test("fetchRaw drops bot PRs via noise filter", async () => {
-  const runner = fakeRunner({
-    "/pulls": { code: 0, stdout: prs, stderr: "", headers: {} },
-    "/commits": { code: 0, stdout: commits, stderr: "", headers: {} },
-  });
+test("fetchRaw scopes by author and drops bot PRs via noise filter", async () => {
+  const seen = [];
+  const searchResult = JSON.stringify({ items: JSON.parse(prs) });
+  const runner = async (args) => {
+    seen.push(args.join(" "));
+    const ep = args.join(" ");
+    if (ep.includes("/search/issues")) return { code: 0, stdout: searchResult, stderr: "", headers: {} };
+    if (ep.includes("/commits")) return { code: 0, stdout: commits, stderr: "", headers: {} };
+    return { code: 0, stdout: "[]", stderr: "", headers: {} };
+  };
   const raw = await fetchRaw(
     { id: "mitchellh@x", github_user: "mitchellh", repo: "o/x", since: "2023-01-01", max_prs: 100 },
     { runner, sleep: async () => {}, maxRetries: 3, maxWaitSec: 120 }
   );
   assert.strictEqual(raw.prs.length, 1);          // dependabot[bot] dropped
   assert.strictEqual(raw.prs[0].number, 1234);
+  // requests must be scoped to the subject's author, not repo-wide
+  assert.ok(seen.some((e) => e.includes("author:mitchellh")), "PR search scoped by author");
+  assert.ok(seen.some((e) => e.includes("/commits?author=mitchellh")), "commits scoped by author");
 });
