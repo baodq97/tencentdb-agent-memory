@@ -18,6 +18,11 @@ tmem contrib atoms <subject-id>
 
 ### 2. Build the persona
 
+**Read `references/persona-guide.md` first** — it covers merging atoms (not
+listing), resolving conflicting atoms, weighting by evidence, when to mark
+"insufficient data", and the quality bar (a persona should predict how the
+subject tackles a *new* task).
+
 For each of the 11 dimensions (`idea, plan, solve, craft, comms, mentor,
 conflict, scope, ownership, execution`), synthesise the atoms in that dimension
 into 1–3 sentences. Carry the strongest evidence links into the text. If a

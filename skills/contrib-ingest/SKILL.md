@@ -30,6 +30,11 @@ If it errors with "gh not found" or auth failure, tell the user to run
 
 ### 2. Classify into the 11 dimensions
 
+**Before classifying, read `references/dimensions.md`** — the per-dimension
+rubric with good-vs-shallow atom examples, the Ousterhout lens for `solve`, and
+evidence-strength criteria. Classification quality depends on it; the summary
+below is only the map.
+
 For each meaningful signal, write ONE atom tagged with exactly one dimension.
 Never invent style — every atom needs at least one evidence link (`PR#<n>` or
 commit sha).

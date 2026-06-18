@@ -1,6 +1,6 @@
 ---
 name: contrib-synthesize
-description: Synthesise the L4 capability model of top SWEs and produce learnable playbooks and exemplar quotes from contributor personas. Triggers when the user says "contributor capabilities", "what do top SWEs have in common", "build the playbook", "compare me to <user>". Needs >=2 personas.
+description: Synthesise the L4 capability model of top SWEs and produce learnable playbooks and exemplar quotes from contributor personas. Triggers when the user says "contributor capabilities", "what do top SWEs have in common", "build the playbook", "compare me to <user>". Operates on existing personas — build each subject's persona first with contrib-consolidate. Needs >=2 personas for L4/compare.
 ---
 
 # Contributor Synthesize
@@ -8,6 +8,10 @@ description: Synthesise the L4 capability model of top SWEs and produce learnabl
 Turn multiple contributor personas into (a) the L4 capability model, (b) a
 learnable playbook per subject, and (c) exemplar quotes. The deterministic
 prevalence math is done by the CLI; you write the interpretation for learners.
+
+**Read `references/synthesis-guide.md` first** — the altitude test for playbook
+heuristics, how to mine exemplar quotes, the you-vs-role-model gap table, and the
+"preliminary until ≥3 subjects" caveat for L4.
 
 ## Workflow
 
