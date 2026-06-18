@@ -1,0 +1,3 @@
+[
+  { "sha": "abc123", "commit": { "message": "fix(client): bound retry waits\n\nUnbounded waits could hang ingest." }, "author": { "login": "mitchellh" } }
+]
