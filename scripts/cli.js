@@ -554,13 +554,18 @@ async function cmdContrib(rest) {
       const subject = cfg.subjects.find((s) => s.id === id);
       if (!subject) { console.error(`unknown subject: ${id}`); process.exitCode = 1; return; }
       const { fetchRaw } = req("contrib_ingest.js");
+      const store = new ContribStore(dbPath);
+      const incremental = args.includes("--full") ? null : store.getCursor(id);
       const raw = await fetchRaw(subject, {
         maxRetries: cfg.ingest.max_retries,
         maxWaitSec: cfg.ingest.max_wait_per_retry_sec,
+        since: incremental,
       });
       const outDir = path.join(contribRoot, "raw", id);
       fs.mkdirSync(outDir, { recursive: true });
       fs.writeFileSync(path.join(outDir, "raw.json"), JSON.stringify(raw, null, 2));
+      store.setCursor(id, new Date().toISOString());
+      if (incremental) console.error(`[contrib] incremental since ${incremental} (use --full to refetch all)`);
       console.log(JSON.stringify(raw, null, 2));
       return;
     }

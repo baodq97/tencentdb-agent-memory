@@ -72,6 +72,27 @@ test("fetchRaw scopes by author and drops bot PRs via noise filter", async () =>
   assert.ok(seen.some((e) => e.includes("/pulls/1234/commits")), "per-PR (cross-branch) commits fetched");
 });
 
+test("fetchRaw collects issues the subject opened", async () => {
+  const prSearch = JSON.stringify({ items: JSON.parse(prs) });
+  const issueSearch = JSON.stringify({ items: [
+    { number: 700, title: "Crash on resize past scrollback", body: "Repro: ...", user: { login: "mitchellh" } },
+    { number: 701, title: "bot noise", body: "", user: { login: "dependabot[bot]" } },
+  ] });
+  const runner = async (args) => {
+    const ep = args.join(" ");
+    if (ep.includes("type:issue")) return { code: 0, stdout: issueSearch, stderr: "", headers: {} };
+    if (ep.includes("/search/issues")) return { code: 0, stdout: prSearch, stderr: "", headers: {} };
+    if (ep.includes("/commits")) return { code: 0, stdout: commits, stderr: "", headers: {} };
+    return { code: 0, stdout: "[]", stderr: "", headers: {} };
+  };
+  const raw = await fetchRaw(
+    { id: "mitchellh@x", github_user: "mitchellh", repo: "o/x", max_prs: 100 },
+    { runner, sleep: async () => {}, maxRetries: 3, maxWaitSec: 120 }
+  );
+  assert.strictEqual(raw.issues.length, 1);        // bot issue dropped
+  assert.strictEqual(raw.issues[0].number, 700);
+});
+
 test("fetchRaw collects review comments given and threads received", async () => {
   const searchResult = JSON.stringify({ items: JSON.parse(prs) });
   const givenComments = JSON.stringify([

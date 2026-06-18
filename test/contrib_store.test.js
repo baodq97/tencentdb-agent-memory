@@ -12,6 +12,17 @@ function tmpDb() {
   return path.join(dir, "index.db");
 }
 
+test("cursor round-trips per subject", () => {
+  const s = new ContribStore(tmpDb());
+  assert.strictEqual(s.getCursor("a@x"), null);
+  s.setCursor("a@x", "2026-06-18T00:00:00Z");
+  s.setCursor("b@x", "2025-01-01T00:00:00Z");
+  assert.strictEqual(s.getCursor("a@x"), "2026-06-18T00:00:00Z");
+  assert.strictEqual(s.getCursor("b@x"), "2025-01-01T00:00:00Z");
+  s.setCursor("a@x", "2026-07-01T00:00:00Z"); // overwrite
+  assert.strictEqual(s.getCursor("a@x"), "2026-07-01T00:00:00Z");
+});
+
 test("DIMENSIONS has the 11 fixed keys", () => {
   assert.deepStrictEqual(DIMENSIONS, [
     "idea", "plan", "solve", "craft",

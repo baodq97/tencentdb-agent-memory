@@ -123,6 +123,18 @@ class ContribStore {
     return this.db.prepare("SELECT COUNT(*) c FROM subject_atoms").get().c;
   }
 
+  getCursor(subjectId) {
+    const row = this.db.prepare("SELECT value FROM store_meta WHERE key=?").get(`cursor:${subjectId}`);
+    return row ? row.value : null;
+  }
+
+  setCursor(subjectId, iso) {
+    this.db.prepare(`
+      INSERT INTO store_meta (key, value) VALUES (?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    `).run(`cursor:${subjectId}`, iso);
+  }
+
   upsertPersona(p) {
     this.db.prepare(`
       INSERT INTO subject_personas (subject_id, summary, dimensions_json, notable_json, updated_time)
