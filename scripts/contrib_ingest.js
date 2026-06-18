@@ -143,7 +143,7 @@ async function fetchRaw(subject, opts = {}) {
     if (!batch || batch.length === 0) break;
     for (const c of batch) {
       if (c.user?.login === github_user) {
-        reviewCommentsGiven.push({ pr: prNumberFromUrl(c.pull_request_url), body: c.body, path: c.path });
+        reviewCommentsGiven.push({ pr: prNumberFromUrl(c.pull_request_url), body: c.body, path: c.path, created_at: c.created_at });
       }
     }
     if (batch.length < 100) break; // last page
@@ -157,4 +157,47 @@ function prNumberFromUrl(url) {
   return m ? parseInt(m[1], 10) : null;
 }
 
-module.exports = { fetchRaw, isNoise, callWithRetry, prNumberFromUrl };
+const CONV_PREFIX = /^(feat|fix|chore|docs|refactor|test|build|ci|perf|style|revert)(\([^)]+\))?:|^[a-z][\w.-]*:/;
+
+// Deterministic trajectory: bucket the subject's activity by year so the
+// evolution arc (cadence + commit style + shift toward review) is visible.
+// v1 measures cadence and style, NOT PR LOC (search API omits diff size).
+function computeTrajectory(raw) {
+  const byYear = new Map();
+  const bucket = (y) => {
+    if (!byYear.has(y)) byYear.set(y, { year: y, commits: 0, prs: 0, reviewsGiven: 0, _subjLen: 0, _conv: 0 });
+    return byYear.get(y);
+  };
+  const yearOf = (iso) => (iso && /^\d{4}/.test(iso) ? iso.slice(0, 4) : null);
+
+  for (const c of raw.commits || []) {
+    const y = yearOf(c.commit?.author?.date);
+    if (!y) continue;
+    const b = bucket(y);
+    b.commits += 1;
+    const subj = (c.commit?.message || "").split("\n")[0];
+    b._subjLen += subj.length;
+    if (CONV_PREFIX.test(subj)) b._conv += 1;
+  }
+  for (const p of raw.prs || []) {
+    const y = yearOf(p.created_at);
+    if (y) bucket(y).prs += 1;
+  }
+  for (const r of raw.reviewCommentsGiven || []) {
+    const y = yearOf(r.created_at);
+    if (y) bucket(y).reviewsGiven += 1;
+  }
+
+  return [...byYear.values()]
+    .sort((a, b) => a.year.localeCompare(b.year))
+    .map((b) => ({
+      year: b.year,
+      commits: b.commits,
+      prs: b.prs,
+      reviewsGiven: b.reviewsGiven,
+      avgSubjectLen: b.commits ? Math.round(b._subjLen / b.commits) : 0,
+      convPrefixPct: b.commits ? Math.round((b._conv / b.commits) * 100) : 0,
+    }));
+}
+
+module.exports = { fetchRaw, isNoise, callWithRetry, prNumberFromUrl, computeTrajectory };

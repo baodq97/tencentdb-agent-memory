@@ -696,6 +696,20 @@ async function cmdContrib(rest) {
       console.log("usage: tmem contrib team <add <teamId> <subjectId...> | capabilities <teamId>>");
       return;
     }
+    case "trajectory": {
+      const id = args[0];
+      const rawPath = path.join(contribRoot, "raw", id, "raw.json");
+      if (!fs.existsSync(rawPath)) { console.error(`no raw data for ${id} — run: tmem contrib raw ${id}`); process.exitCode = 1; return; }
+      const { computeTrajectory } = req("contrib_ingest.js");
+      const traj = computeTrajectory(JSON.parse(fs.readFileSync(rawPath, "utf8")));
+      if (!traj.length) { console.log("(no dated activity)"); return; }
+      console.log(`# trajectory: ${id}  (cadence + style by year; PR LOC not measured)`);
+      console.log("year\tcommits\tprs\treviews\tavgSubjLen\tconv%");
+      for (const r of traj) {
+        console.log(`${r.year}\t${r.commits}\t${r.prs}\t${r.reviewsGiven}\t${r.avgSubjectLen}\t${r.convPrefixPct}`);
+      }
+      return;
+    }
     case "compare": {
       const store = new ContribStore(dbPath);
       const [a, b] = args;

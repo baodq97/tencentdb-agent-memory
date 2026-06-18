@@ -4,7 +4,7 @@ const { test } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
-const { fetchRaw, isNoise, callWithRetry } = require("../scripts/contrib_ingest.js");
+const { fetchRaw, isNoise, callWithRetry, computeTrajectory } = require("../scripts/contrib_ingest.js");
 
 const FIX = path.join(__dirname, "fixtures", "contrib");
 const prs = fs.readFileSync(path.join(FIX, "prs.json"), "utf8");
@@ -70,6 +70,33 @@ test("fetchRaw scopes by author and drops bot PRs via noise filter", async () =>
   assert.ok(seen.some((e) => e.includes("author:mitchellh")), "PR search scoped by author");
   assert.ok(seen.some((e) => e.includes("/commits?author=mitchellh")), "default-branch commits scoped by author");
   assert.ok(seen.some((e) => e.includes("/pulls/1234/commits")), "per-PR (cross-branch) commits fetched");
+});
+
+test("computeTrajectory buckets activity by year and tracks style evolution", () => {
+  const raw = {
+    commits: [
+      { commit: { message: "stuff happened", author: { date: "2021-03-01T00:00:00Z" } } },
+      { commit: { message: "feat: add thing", author: { date: "2024-05-01T00:00:00Z" } } },
+      { commit: { message: "fix(core): guard edge", author: { date: "2024-06-01T00:00:00Z" } } },
+    ],
+    prs: [
+      { created_at: "2021-03-02T00:00:00Z" },
+      { created_at: "2024-05-02T00:00:00Z" },
+    ],
+    reviewCommentsGiven: [
+      { created_at: "2024-07-01T00:00:00Z" },
+      { created_at: "2024-08-01T00:00:00Z" },
+    ],
+  };
+  const traj = computeTrajectory(raw);
+  assert.strictEqual(traj.length, 2);
+  const [y2021, y2024] = traj;
+  assert.strictEqual(y2021.year, "2021");
+  assert.strictEqual(y2021.commits, 1);
+  assert.strictEqual(y2021.convPrefixPct, 0);     // "stuff happened" not conventional
+  assert.strictEqual(y2024.commits, 2);
+  assert.strictEqual(y2024.convPrefixPct, 100);   // both conventional
+  assert.strictEqual(y2024.reviewsGiven, 2);      // shift toward review in later year
 });
 
 test("fetchRaw collects issues the subject opened", async () => {

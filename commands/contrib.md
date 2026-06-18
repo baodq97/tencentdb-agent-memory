@@ -26,6 +26,10 @@ Contributor intelligence. Subjects are declared in
   without this; vector recall needs it + the embed daemon).
 - `/contrib search <query> [--subject <id>]` — keyword + vector recall over
   atoms (FTS-only if the embed daemon is down).
+- `/contrib trajectory <id>` — per-year cadence + commit-style evolution arc
+  (measures cadence/style, not PR LOC).
+- `/contrib team add <teamId> <id...>` · `/contrib team capabilities <teamId>` —
+  group subjects and synthesise a team-level capability model.
 
 ## Notes
 

@@ -55,7 +55,18 @@ If the user asks to compare themselves, ensure both the user and the role model
 are ingested subjects, then produce a per-dimension diff table: for each of the
 11 dimensions, one line on the role model, one on the user, and the gap to close.
 
-### 6. Guardrails
+### 6. (Wow) Trajectory narration
+
+```bash
+tmem contrib trajectory <id>
+```
+
+This prints per-year cadence + style (commits, PRs, reviews given, avg commit
+subject length, conventional-prefix %). Narrate the *arc*: when output scaled,
+when commit style matured, when they shifted from authoring toward review. Be
+honest that this measures cadence/style, not PR size (LOC is not available).
+
+### 7. Guardrails
 
 - Lead with interpretation for learning, not measurement.
 - Tone/sentiment never ranks a person. No vanity counts.
