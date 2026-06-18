@@ -117,6 +117,18 @@ test("computeL4 can scope to a subset (team) without persisting", () => {
   assert.strictEqual(s.getCapabilities().length, 0, "persist:false leaves global L4 untouched");
 });
 
+test("computeL4 does not count an 'insufficient data' dimension as present", () => {
+  const s = new ContribStore(tmpDb());
+  // plan evidenced for both; mentor only for a@x (b@x is insufficient)
+  s.upsertPersona({ subject_id: "a@x", dimensions: { plan: "small PRs", mentor: "teaches the why in review" } });
+  s.upsertPersona({ subject_id: "b@x", dimensions: { plan: "small PRs", mentor: "insufficient data" } });
+  const caps = s.computeL4(0.6, { persist: false });
+  const byKey = Object.fromEntries(caps.map((c) => [c.capability, c]));
+  assert.ok(byKey.plan, "plan common (2/2)");
+  assert.strictEqual(byKey.plan.summary, "2/2 subjects");
+  assert.ok(!byKey.mentor, "mentor only 1/2 real (0.5 < 0.6) — 'insufficient data' must not count");
+});
+
 test("computeL4 throws with fewer than 2 personas", () => {
   const s = new ContribStore(tmpDb());
   s.upsertPersona({ subject_id: "a@x", dimensions: { plan: "p" } });

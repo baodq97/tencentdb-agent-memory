@@ -3,6 +3,11 @@
 All notable changes to this plugin are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] — 2026-06-18
+
+### Fixed
+- **L4 prevalence no longer counts `"insufficient data"` as a present dimension.** `computeL4` filtered dimensions by non-empty string, so the persona-guide's `"insufficient data"` sentinel (an *unevidenced* dimension) was counted as present — inflating every capability toward 100% and collapsing the signal L4 exists to provide. Found by dogfooding a 6-member team where `mentor` showed 100% despite only 1/6 having any review-mentoring signal. The "present" predicate now excludes the `^insufficient` sentinel; prevalence reflects real evidence.
+
 ## [0.4.0] — 2026-06-18
 
 ### Added

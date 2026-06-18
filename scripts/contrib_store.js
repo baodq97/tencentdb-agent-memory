@@ -223,7 +223,13 @@ class ContribStore {
     const total = personas.length;
     const rows = [];
     for (const dim of DIMENSIONS) {
-      const present = personas.filter((p) => (p.dimensions[dim] || "").trim() !== "");
+      // A dimension counts as "present" only when it carries a real claim —
+      // the "insufficient data" sentinel (persona-guide convention for an
+      // unevidenced dimension) must NOT inflate prevalence.
+      const present = personas.filter((p) => {
+        const v = (p.dimensions[dim] || "").trim();
+        return v !== "" && !/^insufficient/i.test(v);
+      });
       const prevalence = present.length / total;
       if (prevalence < prevalenceThreshold) continue;
       // exemplar: strongest evidence in this dimension = most evidence links
