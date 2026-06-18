@@ -1,6 +1,6 @@
 {
   "name": "tencentdb-agent-memory",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Four-layer long-term memory (L0→L1→L2→L3 Persona) with hybrid FTS5+vector recall + L2 scene-navigation. CLI: tmem (status, search, recall, scene, scenes, changelog, persona, sync, config, daemon, atoms, sessions, write-l1, write-scene, write-persona, mark-done, init). Run /memory-init first.",
   "author": {
     "name": "baodq97"

@@ -3,6 +3,14 @@
 All notable changes to this plugin are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-06-18
+
+### Added
+- **Contributor Intelligence (`/contrib`, `tmem contrib`)** — a new, fully-isolated feature that profiles how a GitHub engineer works and turns it into something a learner can act on. Ingests a subject's public activity via `gh` (author-scoped PRs, cross-branch commits, review threads given & received, issues; bot/fork/generated-file filtering; bounded rate-limit retry; incremental cursor) and classifies it into **11 dimensions across 3 clusters** — Technical Craft (`idea/plan/solve/craft`), Collaboration & Influence (`comms/mentor/conflict`), Outcomes & Ownership (`scope/ownership/execution`) — as evidence-linked atoms.
+- **Personas & synthesis** — `build` consolidates atoms into a per-subject L3 persona; `capabilities` computes a deterministic **L4 capability model** (what the profiled engineers share); `playbook` distils a persona into emulable heuristics; `compare <id>` runs a you-vs-role-model gap analysis against your *existing* self-persona (no GitHub self-ingest); `compare <a> <b>` gives a deterministic two-contributor table; `trajectory` shows per-year cadence/style evolution; `team` aggregates a capability model across members.
+- **Storage & recall** — separate store at `memory/contributors/` (FTS5 + optional vector RRF via the existing embed daemon); `search`, `personas`, `atoms` for inspection. The existing self-memory feature and its recall hooks are never touched (regression-guarded by a test).
+- Three skills (`contrib-ingest`, `contrib-consolidate`, `contrib-synthesize`) with `references/` rubrics for classification, persona-building, and synthesis. 24 offline tests.
+
 ## [0.2.3] — 2026-05-29
 
 ### Added
