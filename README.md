@@ -88,7 +88,20 @@ Profile how a top GitHub engineer works — and learn from them.
 **Prerequisite:** an authenticated `gh` CLI (`gh auth login`). All data lives in
 `<global>/contributors/` — the self-memory feature is never touched.
 
-### Usage — first run
+### Quickest way — just drop a link
+
+Paste a GitHub link (or a handle) and say what you want — the **contrib-profile**
+skill takes it A→Z for you:
+
+> "Analyze how this engineer works: https://github.com/sindresorhus/ky"
+> "Profile https://github.com/torvalds and show me the playbook"
+
+It resolves the target (picks the right repo if you only give a user), runs the
+whole pipeline, and hands back the persona + learnable playbook. Prefer to drive
+it yourself? Ask "how do I use /contrib" and it guides you through the steps
+below instead.
+
+### Usage — first run (manual)
 
 1. **Declare a subject** (a GitHub user in one repo):
    ```
