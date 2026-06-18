@@ -85,22 +85,54 @@ tmem daemon stop                Stop the daemon + clear its pidfile
 
 Profile how a top GitHub engineer works — and learn from them.
 
-```bash
-/contrib add <user> <owner/repo>             # declare a subject
-/contrib ingest <user>@<repo>                # gh -> 11-dimension atoms
-/contrib build  <user>@<repo>                # atoms -> persona
-/contrib playbook <user>@<repo>              # emulable heuristics
-/contrib compare <user>@<repo>               # you (your existing self-persona) vs this role model
-/contrib add <user2> <org2/repo2>            # add a 2nd engineer
-/contrib ingest <user2>@<repo2> ; /contrib build <user2>@<repo2>
-/contrib capabilities                        # L4: what these top SWEs share (>=2 subjects)
-```
+**Prerequisite:** an authenticated `gh` CLI (`gh auth login`). All data lives in
+`<global>/contributors/` — the self-memory feature is never touched.
+
+### Usage — first run
+
+1. **Declare a subject** (a GitHub user in one repo):
+   ```
+   /contrib add <user> <owner/repo>
+   ```
+2. **Ingest** their public activity — `gh` fetches their PRs, commits (all
+   branches), review threads and issues, then the agent classifies it into
+   evidence-linked atoms across the 11 dimensions. Incremental by default
+   (`--full` to refetch):
+   ```
+   /contrib ingest <user>@<repo>
+   ```
+3. **Build the persona** — consolidate the atoms into one profile:
+   ```
+   /contrib build <user>@<repo>
+   ```
+4. **Learn from it:**
+   ```
+   /contrib persona  <user>@<repo>    # the full dossier (11 dimensions + evidence)
+   /contrib playbook <user>@<repo>    # emulable heuristics you can copy
+   /contrib compare  <user>@<repo>    # you (your existing self-persona) vs this role model
+   ```
+
+### Going further
+
+- **Capability model** — add a 2nd engineer and see what the top engineers
+  *share* (needs ≥2 built personas; they don't have to include you):
+  ```
+  /contrib add <user2> <org2/repo2> ; /contrib ingest <user2>@<repo2> ; /contrib build <user2>@<repo2>
+  /contrib capabilities
+  ```
+- **Two-engineer table** — `/contrib compare <a> <b>` (per-dimension, side by side).
+- **Trajectory** — `/contrib trajectory <id>` (per-year cadence + commit-style arc).
+- **Team** — `/contrib team add <teamId> <id...>` then `/contrib team capabilities <teamId>`.
+- **Recall** — `/contrib search "<query>"` (keyword; vector too if the embed daemon
+  is warm — run `/contrib sync` once to index).
+
+### The 11 dimensions
 
 Activity is classified into 11 dimensions across 3 clusters — Technical Craft
 (`idea/plan/solve/craft`), Collaboration & Influence (`comms/mentor/conflict`),
-and Outcomes & Ownership (`scope/ownership/execution`). Stored separately under
-`<global>/contributors/` — the self-memory feature is never touched. Requires an
-authenticated `gh` CLI.
+and Outcomes & Ownership (`scope/ownership/execution`). Every atom and persona
+claim is evidence-linked to a PR or commit. `v0.3.0` measures cadence/style, not
+PR diff size (the GitHub search API omits it).
 
 ## Architecture
 
