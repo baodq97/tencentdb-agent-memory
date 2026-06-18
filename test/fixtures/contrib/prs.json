@@ -1,0 +1,4 @@
+[
+  { "number": 1234, "title": "Add retry to client", "body": "## Why\nFlaky network.\n## How\nBounded backoff.", "additions": 120, "deletions": 8, "commits": 3, "user": { "login": "mitchellh" } },
+  { "number": 9, "title": "deps", "body": "", "additions": 4000, "deletions": 0, "commits": 1, "user": { "login": "dependabot[bot]" } }
+]

@@ -517,6 +517,225 @@ async function cmdDaemon(sub) {
   process.exit(1);
 }
 
+// ── contrib ──
+async function cmdContrib(rest) {
+  const sub = rest[0];
+  const args = rest.slice(1);
+  const { gDir } = getDirs();
+  const contribRoot = path.join(gDir, "contributors");
+  const dbPath = path.join(contribRoot, "index.db");
+  const { ContribStore } = req("contrib_store.js");
+  const { loadConfig, addSubject } = req("contrib_config.js");
+
+  const flag = (name) => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+
+  switch (sub) {
+    case "add": {
+      const [user, repo] = args;
+      const s = addSubject(gDir, { github_user: user, repo });
+      console.log(`Added subject ${s.id} (${s.repo})`);
+      return;
+    }
+    case "list-subjects": {
+      const cfg = loadConfig(gDir);
+      const store = new ContribStore(dbPath);
+      for (const s of cfg.subjects) {
+        console.log(`${s.id}\t${s.repo}\tatoms=${store.countAtoms(s.id)}`);
+      }
+      if (!cfg.subjects.length) console.log("(no subjects — use: tmem contrib add <user> <owner/repo>)");
+      return;
+    }
+    case "raw": {
+      const id = args[0];
+      const cfg = loadConfig(gDir);
+      const subject = cfg.subjects.find((s) => s.id === id);
+      if (!subject) { console.error(`unknown subject: ${id}`); process.exitCode = 1; return; }
+      const { fetchRaw } = req("contrib_ingest.js");
+      // preflight: gh must be installed + authenticated
+      const { spawnSync } = require("node:child_process");
+      const ghCheck = spawnSync("gh", ["auth", "status"], { encoding: "utf8" });
+      if (ghCheck.error || ghCheck.status !== 0) {
+        console.error("gh CLI not available or not authenticated. Run: gh auth login");
+        process.exitCode = 1;
+        return;
+      }
+      const store = new ContribStore(dbPath);
+      const incremental = args.includes("--full") ? null : store.getCursor(id);
+      const raw = await fetchRaw(subject, {
+        maxRetries: cfg.ingest.max_retries,
+        maxWaitSec: cfg.ingest.max_wait_per_retry_sec,
+        since: incremental,
+      });
+      const outDir = path.join(contribRoot, "raw", id);
+      fs.mkdirSync(outDir, { recursive: true });
+      fs.writeFileSync(path.join(outDir, "raw.json"), JSON.stringify(raw, null, 2));
+      store.setCursor(id, new Date().toISOString());
+      if (incremental) console.error(`[contrib] incremental since ${incremental} (use --full to refetch all)`);
+      console.log(JSON.stringify(raw, null, 2));
+      return;
+    }
+    case "upsert-atom": {
+      const store = new ContribStore(dbPath);
+      const atom = JSON.parse(flag("--json"));
+      store.upsertAtom(atom);
+      console.log(`ok ${atom.record_id}`);
+      return;
+    }
+    case "atoms": {
+      const store = new ContribStore(dbPath);
+      console.log(JSON.stringify(store.getAtoms(args[0], args[1]), null, 2));
+      return;
+    }
+    case "upsert-persona": {
+      const store = new ContribStore(dbPath);
+      const p = JSON.parse(flag("--json"));
+      store.upsertPersona(p);
+      console.log(`ok persona ${p.subject_id}`);
+      return;
+    }
+    case "persona": {
+      const store = new ContribStore(dbPath);
+      const p = store.getPersona(args[0]);
+      console.log(p ? JSON.stringify(p, null, 2) : `(no persona for ${args[0]})`);
+      return;
+    }
+    case "personas": {
+      const store = new ContribStore(dbPath);
+      const all = store.listPersonas();
+      console.log(JSON.stringify(all, null, 2));
+      if (!all.length) console.error("(no personas yet — run build first)");
+      return;
+    }
+    case "capabilities": {
+      const store = new ContribStore(dbPath);
+      const cfg = loadConfig(gDir);
+      try {
+        const caps = store.computeL4(cfg.l4.prevalence_threshold);
+        for (const c of caps) {
+          console.log(`${c.capability}\t${(c.prevalence * 100).toFixed(0)}%\t${c.summary}\texemplar=${c.exemplar}`);
+        }
+        if (!caps.length) console.log("(no common capabilities above threshold yet)");
+      } catch (e) {
+        if (/need >=2/.test(e.message)) { console.log("need >=2 subjects with personas to synthesise L4"); return; }
+        throw e;
+      }
+      return;
+    }
+    case "sync": {
+      const store = new ContribStore(dbPath);
+      const { VectorStore } = req("vector_store.js");
+      const { embedViaDaemon } = req("embed_client.js");
+      const vec = new VectorStore(path.join(contribRoot, "vectors.db"));
+      const id = args[0];
+      const cfg2 = loadConfig(gDir);
+      const subjects = id ? [id] : cfg2.subjects.map((s) => s.id);
+      let n = 0;
+      for (const sid of subjects) {
+        for (const a of store.getAtoms(sid)) {
+          try {
+            const emb = await embedViaDaemon(a.content);
+            if (emb && emb.length) { vec.upsertVec(a.record_id, emb); n += 1; }
+          } catch { /* daemon down — skip, FTS still works */ }
+        }
+      }
+      console.log(`embedded ${n} atom(s) into ${path.join(contribRoot, "vectors.db")}`);
+      return;
+    }
+    case "search": {
+      const store = new ContribStore(dbPath);
+      const query = args.filter((a) => !a.startsWith("--")).join(" ");
+      const subjectId = flag("--subject");
+      const ftsHits = store.searchAtoms(query, { subjectId, limit: 10 });
+      let merged = ftsHits.map((r) => r.record_id);
+      try {
+        const { VectorStore, rrfMerge } = req("vector_store.js");
+        const { embedViaDaemon } = req("embed_client.js");
+        const emb = await embedViaDaemon(query);
+        if (emb && emb.length) {
+          const vec = new VectorStore(path.join(contribRoot, "vectors.db"));
+          const vHits = vec.searchVec(emb, 10).map((r) => r.record_id || r.recordId);
+          merged = rrfMerge([merged, vHits]).map((r) => r.id || r);
+        }
+      } catch { /* vector unavailable — FTS-only */ }
+      const seen = new Set();
+      let shown = 0;
+      for (const rid of merged) {
+        if (seen.has(rid)) continue; seen.add(rid);
+        const rec = store.getAtomById(rid);
+        if (rec) { console.log(`[${rec.dimension}] ${rec.subject_id}: ${rec.content}`); shown += 1; }
+      }
+      if (!shown) console.log("(no matches)");
+      return;
+    }
+    case "team": {
+      const { addTeamMembers, getTeam } = req("contrib_config.js");
+      const action = args[0];
+      if (action === "add") {
+        const teamId = args[1];
+        const members = args.slice(2);
+        const t = addTeamMembers(gDir, teamId, members);
+        console.log(`team ${t.id}: ${t.members.join(", ")}`);
+        return;
+      }
+      if (action === "capabilities") {
+        const teamId = args[1];
+        const team = getTeam(gDir, teamId);
+        if (!team) { console.error(`unknown team: ${teamId}`); process.exitCode = 1; return; }
+        const store = new ContribStore(dbPath);
+        const cfg = loadConfig(gDir);
+        try {
+          const caps = store.computeL4(cfg.l4.prevalence_threshold, { subjectIds: team.members, persist: false });
+          const tag = team.members.length < 3 ? " (preliminary, <3 members)" : "";
+          console.log(`# team ${teamId} capabilities${tag}`);
+          for (const c of caps) {
+            console.log(`${c.capability}\t${(c.prevalence * 100).toFixed(0)}%\t${c.summary}\texemplar=${c.exemplar}`);
+          }
+          if (!caps.length) console.log("(no shared capabilities above threshold)");
+        } catch (e) {
+          if (/need >=2/.test(e.message)) { console.log("team needs >=2 members with personas"); return; }
+          throw e;
+        }
+        return;
+      }
+      console.log("usage: tmem contrib team <add <teamId> <subjectId...> | capabilities <teamId>>");
+      return;
+    }
+    case "trajectory": {
+      const id = args[0];
+      const rawPath = path.join(contribRoot, "raw", id, "raw.json");
+      if (!fs.existsSync(rawPath)) { console.error(`no raw data for ${id} — run: tmem contrib raw ${id}`); process.exitCode = 1; return; }
+      const { computeTrajectory } = req("contrib_ingest.js");
+      const traj = computeTrajectory(JSON.parse(fs.readFileSync(rawPath, "utf8")));
+      if (!traj.length) { console.log("(no dated activity)"); return; }
+      console.log(`# trajectory: ${id}  (cadence + style by year; PR LOC not measured)`);
+      console.log("year\tcommits\tprs\treviews\tavgSubjLen\tconv%");
+      for (const r of traj) {
+        console.log(`${r.year}\t${r.commits}\t${r.prs}\t${r.reviewsGiven}\t${r.avgSubjectLen}\t${r.convPrefixPct}`);
+      }
+      return;
+    }
+    case "compare": {
+      const store = new ContribStore(dbPath);
+      const [a, b] = args;
+      const pa = store.getPersona(a), pb = store.getPersona(b);
+      if (!pa || !pb) { console.error("both subjects need a persona (run build first)"); process.exitCode = 1; return; }
+      const { DIMENSIONS } = req("contrib_store.js");
+      console.log(`# ${a}  vs  ${b}\n`);
+      for (const d of DIMENSIONS) {
+        console.log(`## ${d}`);
+        console.log(`  ${a}: ${pa.dimensions[d] || "-"}`);
+        console.log(`  ${b}: ${pb.dimensions[d] || "-"}\n`);
+      }
+      return;
+    }
+    default:
+      console.log("usage: tmem contrib <add|list-subjects|raw|upsert-atom|atoms|upsert-persona|persona|personas|capabilities|sync|search|compare|trajectory|team>");
+  }
+}
+
 // ── main ──
 async function main() {
   const args = process.argv.slice(2);
@@ -549,7 +768,8 @@ Commands:
   mark-done                  Mark consolidation complete + release lock
   unlock                     Release stale consolidation lock
   config [consolidate-every [N] | scene-max-tokens [N]]  Show config, or get/set a setting
-  daemon <start|status|stop>  Manage the resident embed daemon (warm vector recall)`);
+  daemon <start|status|stop>  Manage the resident embed daemon (warm vector recall)
+  contrib <add|ingest|build|persona|playbook|compare|capabilities>  Contributor intelligence`);
     return;
   }
 
@@ -573,6 +793,7 @@ Commands:
     case "unlock": return cmdUnlock();
     case "config": return cmdConfig(rest);
     case "daemon": return cmdDaemon(rest[0]);
+    case "contrib": return cmdContrib(rest);
     default:
       console.error(`Unknown command: ${cmd}. Run 'tmem --help' for usage.`);
       process.exit(1);
