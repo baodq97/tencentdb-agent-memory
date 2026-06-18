@@ -14,7 +14,7 @@ description of the subject.
 - Good: "Split features into ≤150-LOC stacked PRs, one concern each."
 - Good: "Ship every bug-fix PR with its regression test in the same diff."
 - Too vague: "Be organized." / "Write good PRs." (not actionable)
-- Too specific: "Rename SelectionGesture.zig" (overfit to one PR, not a habit)
+- Too specific: "Rename the helper in PR #1234" (overfit to one PR, not a habit)
 
 Group heuristics loosely by cluster (craft / collaboration / outcomes) if there
 are many. Lead each with the imperative verb.

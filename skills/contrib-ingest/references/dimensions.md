@@ -9,7 +9,7 @@ observation backed by evidence — something a learner could copy. Vague praise
 A **good** atom names a *behaviour*, gives a *specific* detail (a number, a named
 pattern, a verbatim phrase), and links evidence:
 
-> `{dim:"plan", content:"Splits a feature into stacked PRs by component (glossary handler → terminal hookup → renderer), each independently reviewable.", evidence:["PR#12930","PR#12937","PR#12938"]}`
+> `{dim:"plan", content:"Splits a feature into stacked PRs by component (each layer in its own PR), each independently reviewable.", evidence:["PR#<n1>","PR#<n2>","PR#<n3>"]}`
 
 A **shallow** atom restates the dimension or praises without specifics — reject it:
 
@@ -33,7 +33,7 @@ Source: `issues` they opened, PR "why" sections.
 Look for: do they state the problem before the solution? repro steps,
 expected-vs-actual, root-cause vs symptom? do they pick leverage (a fix that
 unblocks many) over busywork?
-- Good: "Frames issues with repro + expected-vs-actual before proposing a fix (#700)."
+- Good: "Frames issues with repro + expected-vs-actual before proposing a fix (issue #<n>)."
 - Shallow: "Opens good issues."
 
 ### `plan` — PR decomposition & scoping
@@ -54,14 +54,14 @@ Read through *A Philosophy of Software Design*:
 - **Define errors out of existence**: designing APIs so error cases can't arise.
 Look for: extracting cohesive units before building on them; validating input at
 boundaries; guarding numeric/edge cases.
-- Good: "Defensive at boundaries — rejects malformed input, guards overflow (ea37f46); extracts SelectionGesture before layering a C API on it (#12830)."
+- Good: "Defensive at boundaries — rejects malformed input and guards against overflow (<sha>); extracts a cohesive unit before layering an API on top of it (PR#<n>)."
 - Shallow: "Fixes bugs and refactors."
 
 ### `craft` — review thinking in comments they WROTE (`reviewCommentsGiven`)
 Look for: do they cite the *why*, weigh alternatives, label severity ("Nit:",
 "Optional:"), reason about trade-offs out loud (CPU vs allocation), flag adjacent
 risks found while reviewing?
-- Good: "Reasons about trade-offs in-thread (allocation-free but more CPU, fine because cached) and flags adjacent risks (#12785)."
+- Good: "Reasons about trade-offs in-thread (e.g. allocation-free but more CPU, acceptable because the path is rare and cached) and flags adjacent risks found while reviewing (PR#<n>)."
 - Shallow: "Leaves helpful reviews."
 
 ---
@@ -72,7 +72,7 @@ risks found while reviewing?
 Source: commit subjects/bodies, PR descriptions.
 Look for: subject ≤~50 chars, imperative mood, scoped/conventional prefix; body
 explains *why* not just *what*; PR descriptions that orient the reader.
-- Good: "Scoped conventional subjects (`fix(terminal):`), ~half of commits carry an explanatory body."
+- Good: "Scoped conventional subjects (e.g. `fix(parser):`), ~half of commits carry an explanatory body."
 - Shallow: "Good commit messages."
 Note: terse non-conventional style is also a valid finding — describe it, don't judge it.
 
@@ -92,21 +92,21 @@ reasoning, or hold the line constructively? avoid needless blocking?
 
 ### `scope` — reach & impact
 Look for: breadth across components/areas, or deliberate narrow-and-deep mastery.
-- Good (breadth): "Works across terminal core, font/glyph, renderer, GTK, C API."
+- Good (breadth): "Works across several subsystems (e.g. core engine, storage, UI, public API)."
 - Good (depth): "Narrow-and-deep — one library polished to high quality."
 
 ### `ownership` — reliability & stewardship
 Look for: test-inclusion with fixes, controlled/minimal public API surface,
 consistent stewardship of components.
-- Good: "Stewards the C API via small explicit getters, refusing to leak internals."
+- Good: "Stewards the public API via small explicit getters, refusing to leak internals."
 
 ### `execution` — shipping discipline
 Look for: revert/back-out when wrong, frequent small releases, post-merge rework.
-- Good: "Ships decisively, reverts cleanly when an approach is wrong (aab0f80)."
+- Good: "Ships decisively, reverts cleanly when an approach is wrong (<sha>)."
 
 ---
 
 ## record_id convention
 
 Use a stable id so re-ingest upserts instead of duplicating:
-`<subject-id>:<dim>:<short-hash-or-slug-of-the-claim>`, e.g. `mitchellh@ghostty:plan:stacked`.
+`<subject-id>:<dim>:<short-hash-or-slug-of-the-claim>`, e.g. `<subject-id>:plan:stacked`.

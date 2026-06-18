@@ -86,14 +86,14 @@ tmem daemon stop                Stop the daemon + clear its pidfile
 Profile how a top GitHub engineer works — and learn from them.
 
 ```bash
-/contrib add mitchellh ghostty-org/ghostty   # declare a subject
-/contrib ingest mitchellh@ghostty            # gh -> 11-dimension atoms
-/contrib build  mitchellh@ghostty            # atoms -> persona
-/contrib add baodq97 baodq97/govkit          # add yourself (for compare + L4)
-/contrib ingest baodq97@govkit ; /contrib build baodq97@govkit
+/contrib add <user> <owner/repo>             # declare a subject
+/contrib ingest <user>@<repo>                # gh -> 11-dimension atoms
+/contrib build  <user>@<repo>                # atoms -> persona
+/contrib add <you> <your-org/your-repo>      # add yourself (for compare + L4)
+/contrib ingest <you>@<repo> ; /contrib build <you>@<repo>
 /contrib capabilities                        # L4: what top SWEs share
-/contrib playbook mitchellh@ghostty          # emulable heuristics
-/contrib compare baodq97@govkit mitchellh@ghostty
+/contrib playbook <user>@<repo>              # emulable heuristics
+/contrib compare <you>@<repo> <user>@<repo>
 ```
 
 Activity is classified into 11 dimensions across 3 clusters — Technical Craft
