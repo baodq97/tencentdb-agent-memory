@@ -104,6 +104,19 @@ test("computeL4 exemplar is the subject with the most evidence links", () => {
   assert.strictEqual(caps.find((c) => c.capability === "plan").exemplar, "a@x");
 });
 
+test("computeL4 can scope to a subset (team) without persisting", () => {
+  const s = new ContribStore(tmpDb());
+  s.upsertPersona({ subject_id: "a@x", dimensions: { plan: "p", scope: "s" } });
+  s.upsertPersona({ subject_id: "b@x", dimensions: { plan: "p" } });
+  s.upsertPersona({ subject_id: "c@x", dimensions: { scope: "s" } }); // outside team
+  const caps = s.computeL4(0.6, { subjectIds: ["a@x", "b@x"], persist: false });
+  const byKey = Object.fromEntries(caps.map((c) => [c.capability, c]));
+  assert.ok(byKey.plan, "plan common within team (2/2)");
+  assert.strictEqual(byKey.plan.summary, "2/2 subjects");
+  assert.ok(!byKey.scope, "scope only 1/2 in team");
+  assert.strictEqual(s.getCapabilities().length, 0, "persist:false leaves global L4 untouched");
+});
+
 test("computeL4 throws with fewer than 2 personas", () => {
   const s = new ContribStore(tmpDb());
   s.upsertPersona({ subject_id: "a@x", dimensions: { plan: "p" } });

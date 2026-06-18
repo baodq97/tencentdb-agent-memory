@@ -663,6 +663,39 @@ async function cmdContrib(rest) {
       if (!shown) console.log("(no matches)");
       return;
     }
+    case "team": {
+      const { addTeamMembers, getTeam } = req("contrib_config.js");
+      const action = args[0];
+      if (action === "add") {
+        const teamId = args[1];
+        const members = args.slice(2);
+        const t = addTeamMembers(gDir, teamId, members);
+        console.log(`team ${t.id}: ${t.members.join(", ")}`);
+        return;
+      }
+      if (action === "capabilities") {
+        const teamId = args[1];
+        const team = getTeam(gDir, teamId);
+        if (!team) { console.error(`unknown team: ${teamId}`); process.exitCode = 1; return; }
+        const store = new ContribStore(dbPath);
+        const cfg = loadConfig(gDir);
+        try {
+          const caps = store.computeL4(cfg.l4.prevalence_threshold, { subjectIds: team.members, persist: false });
+          const tag = team.members.length < 3 ? " (preliminary, <3 members)" : "";
+          console.log(`# team ${teamId} capabilities${tag}`);
+          for (const c of caps) {
+            console.log(`${c.capability}\t${(c.prevalence * 100).toFixed(0)}%\t${c.summary}\texemplar=${c.exemplar}`);
+          }
+          if (!caps.length) console.log("(no shared capabilities above threshold)");
+        } catch (e) {
+          if (/need >=2/.test(e.message)) { console.log("team needs >=2 members with personas"); return; }
+          throw e;
+        }
+        return;
+      }
+      console.log("usage: tmem contrib team <add <teamId> <subjectId...> | capabilities <teamId>>");
+      return;
+    }
     case "compare": {
       const store = new ContribStore(dbPath);
       const [a, b] = args;

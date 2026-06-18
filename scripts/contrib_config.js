@@ -5,6 +5,7 @@ const path = require("node:path");
 
 const DEFAULT = {
   subjects: [],
+  teams: [],
   l4: { prevalence_threshold: 0.6 },
   ingest: { max_retries: 3, max_wait_per_retry_sec: 120 },
 };
@@ -15,7 +16,31 @@ function loadConfig(dir) {
   const fp = configPath(dir);
   if (!fs.existsSync(fp)) return JSON.parse(JSON.stringify(DEFAULT));
   const cfg = JSON.parse(fs.readFileSync(fp, "utf8"));
-  return { ...DEFAULT, ...cfg, l4: { ...DEFAULT.l4, ...cfg.l4 }, ingest: { ...DEFAULT.ingest, ...cfg.ingest } };
+  return {
+    ...DEFAULT, ...cfg,
+    teams: cfg.teams || [],
+    l4: { ...DEFAULT.l4, ...cfg.l4 },
+    ingest: { ...DEFAULT.ingest, ...cfg.ingest },
+  };
+}
+
+function addTeamMembers(dir, teamId, members) {
+  const cfg = loadConfig(dir);
+  const known = new Set(cfg.subjects.map((s) => s.id));
+  for (const m of members) {
+    if (!known.has(m)) throw new Error(`unknown subject: ${m}`);
+  }
+  let team = cfg.teams.find((t) => t.id === teamId);
+  if (!team) { team = { id: teamId, members: [] }; cfg.teams.push(team); }
+  for (const m of members) if (!team.members.includes(m)) team.members.push(m);
+  const fp = configPath(dir);
+  fs.mkdirSync(path.dirname(fp), { recursive: true });
+  fs.writeFileSync(fp, JSON.stringify(cfg, null, 2));
+  return team;
+}
+
+function getTeam(dir, teamId) {
+  return loadConfig(dir).teams.find((t) => t.id === teamId) || null;
 }
 
 function addSubject(dir, { github_user, repo, since, max_prs }) {
@@ -32,4 +57,4 @@ function addSubject(dir, { github_user, repo, since, max_prs }) {
   return subject;
 }
 
-module.exports = { loadConfig, addSubject, configPath };
+module.exports = { loadConfig, addSubject, configPath, addTeamMembers, getTeam };

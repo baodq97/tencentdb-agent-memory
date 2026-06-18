@@ -215,9 +215,11 @@ class ContribStore {
       .all().map((r) => this.getPersona(r.subject_id));
   }
 
-  computeL4(prevalenceThreshold = 0.6) {
-    const personas = this.listPersonas();
+  computeL4(prevalenceThreshold = 0.6, opts = {}) {
+    let personas = this.listPersonas();
+    if (opts.subjectIds) personas = personas.filter((p) => opts.subjectIds.includes(p.subject_id));
     if (personas.length < 2) throw new Error("need >=2 personas");
+    const persist = opts.persist !== false;
     const total = personas.length;
     const rows = [];
     for (const dim of DIMENSIONS) {
@@ -238,15 +240,17 @@ class ContribStore {
         exemplar, summary: `${present.length}/${total} subjects`,
       });
     }
-    const stmt = this.db.prepare(`
-      INSERT INTO l4_capability (capability, dimension, prevalence, exemplar, summary, updated_time)
-      VALUES (?,?,?,?,?,?)
-      ON CONFLICT(capability) DO UPDATE SET
-        dimension=excluded.dimension, prevalence=excluded.prevalence,
-        exemplar=excluded.exemplar, summary=excluded.summary, updated_time=excluded.updated_time
-    `);
-    for (const r of rows) {
-      stmt.run(r.capability, r.dimension, r.prevalence, r.exemplar, r.summary, "");
+    if (persist) {
+      const stmt = this.db.prepare(`
+        INSERT INTO l4_capability (capability, dimension, prevalence, exemplar, summary, updated_time)
+        VALUES (?,?,?,?,?,?)
+        ON CONFLICT(capability) DO UPDATE SET
+          dimension=excluded.dimension, prevalence=excluded.prevalence,
+          exemplar=excluded.exemplar, summary=excluded.summary, updated_time=excluded.updated_time
+      `);
+      for (const r of rows) {
+        stmt.run(r.capability, r.dimension, r.prevalence, r.exemplar, r.summary, "");
+      }
     }
     return rows;
   }

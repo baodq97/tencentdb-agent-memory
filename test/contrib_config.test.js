@@ -5,7 +5,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { loadConfig, addSubject } = require("../scripts/contrib_config.js");
+const { loadConfig, addSubject, addTeamMembers, getTeam } = require("../scripts/contrib_config.js");
 
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), "ccfg-")); }
 
@@ -28,4 +28,17 @@ test("addSubject rejects bad repo and duplicates", () => {
   assert.throws(() => addSubject(dir, { github_user: "x", repo: "no-slash" }), /invalid repo/);
   addSubject(dir, { github_user: "mitchellh", repo: "ghostty-org/ghostty" });
   assert.throws(() => addSubject(dir, { github_user: "mitchellh", repo: "ghostty-org/ghostty" }), /duplicate subject/);
+});
+
+test("addTeamMembers groups known subjects and rejects unknown", () => {
+  const dir = tmpDir();
+  addSubject(dir, { github_user: "a", repo: "o/x" });
+  addSubject(dir, { github_user: "b", repo: "o/y" });
+  const t = addTeamMembers(dir, "core", ["a@x", "b@y"]);
+  assert.deepStrictEqual(t.members, ["a@x", "b@y"]);
+  assert.strictEqual(getTeam(dir, "core").members.length, 2);
+  // idempotent add, no dupes
+  addTeamMembers(dir, "core", ["a@x"]);
+  assert.strictEqual(getTeam(dir, "core").members.length, 2);
+  assert.throws(() => addTeamMembers(dir, "core", ["ghost@z"]), /unknown subject/);
 });
