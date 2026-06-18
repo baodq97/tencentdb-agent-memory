@@ -69,21 +69,68 @@ async function fetchRaw(subject, opts = {}) {
   const perPage = Math.min(max_prs, 100);
 
   // PRs authored BY this subject — the pulls endpoint has no author filter,
-  // so use the search API (returns {items:[...]}).
+  // so use the search API (returns {items:[...]}). Search spans all branches.
   const searchRaw = await ghJson(runner, [
     "api", `/search/issues?q=repo:${repo}+type:pr+author:${github_user}&per_page=${perPage}`,
   ], opts);
   const prItems = Array.isArray(searchRaw) ? searchRaw : (searchRaw?.items || []);
+  const prs = (prItems || []).filter((p) => !isNoise(p.user?.login, null));
 
-  // commits BY this subject — the commits endpoint supports ?author=
-  const commitsRaw = await ghJson(runner, [
+  // Commits ACROSS ALL BRANCHES, deduped by sha:
+  //  (a) direct commits on the default branch (?author=), plus
+  //  (b) commits on each PR's head branch (/pulls/<n>/commits) — these live on
+  //      feature branches and are missed by the default-branch listing.
+  const bySha = new Map();
+  const defaultCommits = await ghJson(runner, [
     "api", `/repos/${repo}/commits?author=${github_user}&per_page=${perPage}`,
   ], opts);
+  for (const c of defaultCommits || []) {
+    if (c.sha && !isNoise(c.author?.login, null)) bySha.set(c.sha, c);
+  }
 
-  const prs = (prItems || []).filter((p) => !isNoise(p.user?.login, null));
-  const commits = (commitsRaw || []).filter((c) => !isNoise(c.author?.login, null));
+  // Review threads RECEIVED on the subject's own PRs (conflict / how they respond).
+  const reviewThreadsReceived = [];
+  for (const pr of prs) {
+    const prCommits = await ghJson(runner, [
+      "api", `/repos/${repo}/pulls/${pr.number}/commits?per_page=100`,
+    ], opts);
+    for (const c of prCommits || []) {
+      if (!c.sha) continue;
+      if (isNoise(c.author?.login, null)) continue;
+      if (c.author?.login && c.author.login !== github_user) continue; // subject's own commits
+      bySha.set(c.sha, c);
+    }
+    // inline review comments (on the diff) + PR conversation comments (issues API)
+    const prComments = await ghJson(runner, [
+      "api", `/repos/${repo}/pulls/${pr.number}/comments?per_page=100`,
+    ], opts);
+    const convComments = await ghJson(runner, [
+      "api", `/repos/${repo}/issues/${pr.number}/comments?per_page=100`,
+    ], opts);
+    for (const c of [...(prComments || []), ...(convComments || [])]) {
+      if (isNoise(c.user?.login, null)) continue;
+      reviewThreadsReceived.push({
+        pr: pr.number, author: c.user?.login,
+        is_subject: c.user?.login === github_user, body: c.body, path: c.path || null,
+      });
+    }
+  }
+  const commits = [...bySha.values()];
 
-  return { commits, prs, reviewComments: [], issues: [] };
+  // Review comments the subject WROTE on others' PRs (craft / mentor).
+  const allReviewComments = await ghJson(runner, [
+    "api", `/repos/${repo}/pulls/comments?per_page=100&sort=created&direction=desc`,
+  ], opts);
+  const reviewCommentsGiven = (allReviewComments || [])
+    .filter((c) => c.user?.login === github_user)
+    .map((c) => ({ pr: prNumberFromUrl(c.pull_request_url), body: c.body, path: c.path }));
+
+  return { commits, prs, reviewCommentsGiven, reviewThreadsReceived, issues: [] };
 }
 
-module.exports = { fetchRaw, isNoise, callWithRetry };
+function prNumberFromUrl(url) {
+  const m = /\/pulls\/(\d+)/.exec(url || "");
+  return m ? parseInt(m[1], 10) : null;
+}
+
+module.exports = { fetchRaw, isNoise, callWithRetry, prNumberFromUrl };

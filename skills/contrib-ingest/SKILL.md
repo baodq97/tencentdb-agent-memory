@@ -16,9 +16,17 @@ Turn one subject's raw GitHub activity into evidence-linked L1 atoms across the
 tmem contrib raw <subject-id>
 ```
 
-This prints `{commits, prs, reviewComments, issues}` (bots/forks/generated files
-already filtered). If it errors with "gh not found" or auth failure, tell the
-user to run `gh auth login` and stop.
+This prints `{commits, prs, reviewCommentsGiven, reviewThreadsReceived, issues}`
+(bots/forks/generated files already filtered):
+- `commits` — the subject's commits across ALL branches (default branch + every
+  PR's head branch), deduped by sha.
+- `prs` — PRs the subject authored (all branches, via the search API).
+- `reviewCommentsGiven` — review comments the subject WROTE on others' PRs.
+- `reviewThreadsReceived` — comments on the subject's own PRs (with `is_subject`
+  flagging their own replies vs reviewers').
+
+If it errors with "gh not found" or auth failure, tell the user to run
+`gh auth login` and stop.
 
 ### 2. Classify into the 11 dimensions
 
@@ -34,15 +42,15 @@ commit sha).
 - `solve` — coding/refactor patterns. Read diffs through Ousterhout's lens: deep
   vs shallow modules, information leakage, strategic vs tactical, errors designed
   out of existence.
-- `craft` — review thinking in comments they WROTE: do they cite the why, weigh
-  alternatives, label severity ("Nit:", "Optional:").
+- `craft` — review thinking in `reviewCommentsGiven`: do they cite the why,
+  weigh alternatives, label severity ("Nit:", "Optional:").
 
 **Collaboration & Influence**
 - `comms` — commit message quality (subject ≤50 chars, body explains why,
   imperative mood) and PR description clarity.
-- `mentor` — review comments that teach/explain vs cosmetic-trivia floods.
-- `conflict` — review threads they RECEIVED: do they update their view, push back
-  constructively, avoid needless blocking.
+- `mentor` — `reviewCommentsGiven` that teach/explain vs cosmetic-trivia floods.
+- `conflict` — `reviewThreadsReceived`: in their own replies (`is_subject:true`)
+  do they update their view, push back constructively, avoid needless blocking.
 
 **Outcomes & Ownership**
 - `scope` — cross-repo/cross-area reach, size of areas touched.

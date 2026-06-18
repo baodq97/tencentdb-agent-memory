@@ -68,5 +68,37 @@ test("fetchRaw scopes by author and drops bot PRs via noise filter", async () =>
   assert.strictEqual(raw.prs[0].number, 1234);
   // requests must be scoped to the subject's author, not repo-wide
   assert.ok(seen.some((e) => e.includes("author:mitchellh")), "PR search scoped by author");
-  assert.ok(seen.some((e) => e.includes("/commits?author=mitchellh")), "commits scoped by author");
+  assert.ok(seen.some((e) => e.includes("/commits?author=mitchellh")), "default-branch commits scoped by author");
+  assert.ok(seen.some((e) => e.includes("/pulls/1234/commits")), "per-PR (cross-branch) commits fetched");
+});
+
+test("fetchRaw collects review comments given and threads received", async () => {
+  const searchResult = JSON.stringify({ items: JSON.parse(prs) });
+  const givenComments = JSON.stringify([
+    { user: { login: "mitchellh" }, body: "Nit: prefer a deep module here — this leaks the buffer detail.", path: "src/a.zig", pull_request_url: "https://api.github.com/repos/o/x/pulls/55" },
+    { user: { login: "someoneelse" }, body: "lgtm", path: "src/b.zig", pull_request_url: "https://api.github.com/repos/o/x/pulls/55" },
+  ]);
+  const receivedComments = JSON.stringify([
+    { user: { login: "reviewerA" }, body: "Could this overflow on resize?", path: "src/c.zig" },
+    { user: { login: "mitchellh" }, body: "Good catch — guarding the wrap count now.", path: "src/c.zig" },
+  ]);
+  const runner = async (args) => {
+    const ep = args.join(" ");
+    if (ep.includes("/search/issues")) return { code: 0, stdout: searchResult, stderr: "", headers: {} };
+    if (ep.includes("/pulls/comments")) return { code: 0, stdout: givenComments, stderr: "", headers: {} };
+    if (ep.includes("/pulls/1234/comments")) return { code: 0, stdout: receivedComments, stderr: "", headers: {} };
+    if (ep.includes("/commits")) return { code: 0, stdout: commits, stderr: "", headers: {} };
+    return { code: 0, stdout: "[]", stderr: "", headers: {} };
+  };
+  const raw = await fetchRaw(
+    { id: "mitchellh@x", github_user: "mitchellh", repo: "o/x", since: "2023-01-01", max_prs: 100 },
+    { runner, sleep: async () => {}, maxRetries: 3, maxWaitSec: 120 }
+  );
+  // given: only mitchellh's comment kept, PR number parsed from url
+  assert.strictEqual(raw.reviewCommentsGiven.length, 1);
+  assert.strictEqual(raw.reviewCommentsGiven[0].pr, 55);
+  // received: both reviewerA and mitchellh's reply on PR #1234, tagged is_subject
+  assert.strictEqual(raw.reviewThreadsReceived.length, 2);
+  const reply = raw.reviewThreadsReceived.find((t) => t.is_subject);
+  assert.ok(reply && reply.author === "mitchellh");
 });
