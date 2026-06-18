@@ -55,9 +55,22 @@ are lessons, not metrics.
 
 ### 5. (Wow) You vs role model
 
-If the user asks to compare themselves, ensure both the user and the role model
-are ingested subjects, then produce a per-dimension diff table: for each of the
-11 dimensions, one line on the role model, one on the user, and the gap to close.
+The user already has a self-persona — the plugin built it from their own Claude
+Code history. Don't make them ingest their own GitHub. Pull both sides directly:
+
+```bash
+tmem persona                  # the user's existing self-persona (conversation-derived)
+tmem contrib persona <id>     # the role model's 11-dimension persona
+```
+
+These use different schemas (the self-persona is `user/feedback/project` style,
+not the 11 GitHub dimensions), so this is a **qualitative gap analysis**, not a
+1:1 table. For each role-model dimension, state what their habit is, what the
+user's persona suggests about that area (or "not evidenced" if the self-persona
+is silent), and one concrete thing to adopt. Lead with the gaps worth closing.
+
+If the user instead wants to compare two *profiled contributors* (peer/team), use
+the deterministic table command: `tmem contrib compare <id-a> <id-b>`.
 
 ### 6. (Wow) Trajectory narration
 

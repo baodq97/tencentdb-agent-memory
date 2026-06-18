@@ -33,13 +33,23 @@ Quote real text; never paraphrase into the subject's mouth.
 
 ## You-vs-role-model compare
 
-Both subjects must have personas. Produce a per-dimension table: one line on the
-role model, one on the user, one on the **gap to close**. The gap line is the
-point — make it an actionable next step, not a score.
+Two distinct modes — pick by what the user is comparing:
 
-Honesty: tone/style differences are descriptive, never "better/worse". Different
-top engineers embody opposite valid styles (breadth + low-ego revision vs
-narrow-depth + opinionated stewardship) — frame as *paths*, not a ranking.
+**You vs a role model** (the common case): the user's side is their *existing*
+self-persona (`tmem persona`, built from their Claude Code history) — never make
+them ingest their own GitHub. The role model's side is `tmem contrib persona
+<id>`. The two schemas differ, so this is a **qualitative gap analysis**: per
+role-model dimension, name the habit, what the user's persona implies (or "not
+evidenced"), and one thing to adopt. The gap-to-close line is the point.
+
+**Two profiled contributors** (peer/team): both have 11-dimension contributor
+personas, so the deterministic per-dimension table (`tmem contrib compare <a>
+<b>`) applies — one line each, side by side.
+
+Honesty (both modes): tone/style differences are descriptive, never
+"better/worse". Different top engineers embody opposite valid styles (breadth +
+low-ego revision vs narrow-depth + opinionated stewardship) — frame as *paths*,
+not a ranking.
 
 ## L4 capability narration
 

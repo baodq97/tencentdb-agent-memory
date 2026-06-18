@@ -20,7 +20,11 @@ Contributor intelligence. Subjects are declared in
 - `/contrib persona <id>` — print a subject's dossier.
 - `/contrib playbook <id>` — print the learnable playbook (invokes
   **contrib-synthesize**).
-- `/contrib compare <id-a> <id-b>` — per-dimension you-vs-role-model diff.
+- `/contrib compare <id>` — you vs a role model: a qualitative gap analysis of
+  the role model against your *existing* self-persona (`tmem persona`, built from
+  your own history) — no need to ingest yourself from GitHub.
+- `/contrib compare <id-a> <id-b>` — deterministic per-dimension table between two
+  *profiled contributors* (peer/team).
 - `/contrib capabilities` — print the L4 capability model.
 - `/contrib sync [id]` — embed atoms into the contributor vector index (FTS works
   without this; vector recall needs it + the embed daemon).
@@ -34,10 +38,14 @@ Contributor intelligence. Subjects are declared in
 ## Notes
 
 - Requires an authenticated `gh` CLI. If missing, run `gh auth login`.
-- Needs ≥2 subjects with personas before `capabilities`/L4 is meaningful.
-- To use "you vs role model", add yourself as a subject too
-  (`/contrib add <you> <your/repo>`).
+- Needs ≥2 subjects with personas before `capabilities`/L4 is meaningful (e.g. two
+  role models — you don't have to be one of them).
+- "You vs role model" reuses your *existing* self-persona (`tmem persona`, built
+  from your own history) — you don't ingest your own GitHub.
 
-When the user runs a subcommand that maps to a skill (ingest/build/playbook),
-invoke that skill. For `add`/`persona`/`capabilities`/`compare`, call the
-matching `tmem contrib …` CLI command directly.
+Routing: subcommands that need judgment map to a skill — `ingest`/`build` →
+contrib-ingest/contrib-consolidate; `playbook`, `compare <id>` (single, you-vs-
+role-model), and the L4 narration of `capabilities` → contrib-synthesize. The
+deterministic subcommands — `add`, `persona`, `capabilities` (raw numbers),
+`compare <a> <b>` (two-contributor table), `trajectory`, `team`, `search` — call
+the matching `tmem contrib …` CLI directly.
