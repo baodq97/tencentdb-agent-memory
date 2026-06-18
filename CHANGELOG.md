@@ -3,6 +3,11 @@
 All notable changes to this plugin are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — 2026-06-18
+
+### Added
+- **`contrib-profile` orchestrator skill** — a one-shot front door to Contributor Intelligence. The user drops a GitHub profile/repo URL (or a handle) and the agent resolves the target (picking the right code repo via `gh` when only a user is given, skipping forks/awesome-lists) and runs the whole pipeline A→Z (add → ingest → build → playbook), or guides the user through it on request. Pure orchestration over the existing per-phase skills + CLI — no new runtime code. README gains a "just drop a link" quickstart.
+
 ## [0.3.0] — 2026-06-18
 
 ### Added
