@@ -3,6 +3,16 @@
 All notable changes to this plugin are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] — 2026-06-29
+
+### Fixed
+- **Vietnamese (and all non-ASCII) recall was silently broken.** `toFtsQuery` built the FTS5 MATCH with an ASCII `\w` class, which stripped diacritics from query terms (`"tiếng"` → `"ting"`, `"Việt"` → `"Vit"`), so queries matched nothing. On a real store this meant ~88% of Vietnamese memories were unrecallable by their own keywords (global 1/7, project 3/27 recalled). Now NFKC-normalizes and keeps Unicode letters/numbers (`\p{L}\p{N}`); recall went to 34/34 (100%) on the same store. Each token stays quoted, so FTS5 operators (`AND`/`OR`/`NOT`/`NEAR`) and special characters remain literals — no injection or query-breakage regression.
+- **`eval_runner.js` Section 8 destroyed real user memories.** The auto-capture eval ran against the real `~/.memory-tencentdb` store and its "cleanup" deleted every `ac_`/`auto-capture` record — indistinguishable from a user's real captured memories. It now isolates the entire section in a throwaway home (overriding both `$HOME` and `$USERPROFILE` for POSIX/Windows) with a deterministic `MEMORY_CONSOLIDATE_EVERY`, restores env in `finally`, and removes the destructive delete + JSONL surgery. Regression test added (`test/eval_isolation.test.js`).
+
+### Added
+- **L1 grounding gate (`scripts/grounding.js`).** `tmem write-l1 --session` now drops agent-extracted atoms whose content isn't grounded in their cited source messages (token-set overlap, Unicode-aware, no LLM). Graceful: atoms with empty/unresolvable `source_message_ids` are kept, preserving backward compatibility. `memory-seed` skill updated to cite real transcript uuids.
+- **Priority-cap rule in `memory-consolidate`.** Merging atoms must not inflate a memory's priority beyond the strongest contributing source.
+
 ## [0.4.1] — 2026-06-18
 
 ### Fixed

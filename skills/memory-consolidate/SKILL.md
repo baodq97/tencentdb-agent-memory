@@ -74,6 +74,8 @@ tmem persona
 
 Merge new insights from persona-type and instruction-type atoms. Don't replace — evolve.
 
+**Priority cap (don't amplify on merge):** merging combines evidence; it must NOT inflate importance beyond the strongest source. When you fold several atoms into one persona point or standing instruction, the merged item's weight (priority/prominence) MUST be `≤ max(priority)` of the contributing atoms — never higher just because it was repeated or merged. A single scene-local instruction must not be promoted into a dominant global rule unless the source atoms' own priority already justifies it. Likewise, scene `--heat` reflects recency, not merge count: repetition across sessions is not evidence of higher priority.
+
 ```bash
 cat <<'PERSONA_EOF' | tmem write-persona
 # User Persona

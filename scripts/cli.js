@@ -333,7 +333,8 @@ function cmdReadSession(sessionPath) {
 // ── write-l1 ──
 function cmdWriteL1(args) {
   const { writeL1Record, globalDir, projectDir, updateState } = req("memory_writer.js");
-  const { projectHashForCwd } = req("memory_reader.js");
+  const { projectHashForCwd, claudeProjectsDir, readSession } = req("memory_reader.js");
+  const { filterGrounded } = req("grounding.js");
 
   let data = "";
   try { data = fs.readFileSync(0, "utf-8"); } catch {}
@@ -343,14 +344,33 @@ function cmdWriteL1(args) {
   const pHash = projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || ".");
   const sessionId = args.find((a, i) => args[i - 1] === "--session") || "";
 
+  // Grounding gate (PR #266, graceful): when the transcript resolves, drop atoms
+  // whose content isn't grounded in their cited source messages. No source text
+  // available (no --session / unresolvable ids) → keep all, as before.
+  let toWrite = Array.isArray(records) ? records : [records];
+  let droppedCount = 0;
+  if (sessionId) {
+    const idToText = new Map();
+    try {
+      const file = path.join(claudeProjectsDir(), pHash, `${sessionId}.jsonl`);
+      for (const m of readSession(file)) if (m.id) idToText.set(m.id, m.content);
+    } catch {}
+    const { kept, dropped } = filterGrounded(toWrite, idToText);
+    toWrite = kept;
+    droppedCount = dropped.length;
+    for (const d of dropped) {
+      console.error(`Dropped ungrounded atom: "${String(d.content || "").slice(0, 80)}"`);
+    }
+  }
+
   let count = 0;
-  for (const rec of (Array.isArray(records) ? records : [records])) {
+  for (const rec of toWrite) {
     const base = ["persona", "instruction"].includes(rec.type) ? globalDir() : projectDir(pHash);
     writeL1Record(base, rec);
     count++;
   }
   if (sessionId) updateState(sessionId, pHash, "completed");
-  console.log(`Wrote ${count} L1 atoms`);
+  console.log(`Wrote ${count} L1 atoms${droppedCount ? ` (dropped ${droppedCount} ungrounded)` : ""}`);
 }
 
 // ── write-scene ──

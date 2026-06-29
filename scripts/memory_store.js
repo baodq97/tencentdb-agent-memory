@@ -224,8 +224,11 @@ class MemoryStore {
 
 function toFtsQuery(query) {
   const tokens = [];
-  for (const word of query.split(/\s+/)) {
-    const clean = word.replace(/[^\w-]/g, "");
+  // NFKC-normalize, then keep Unicode letters/numbers (\p{L}\p{N}) + underscore/hyphen.
+  // ASCII \w would strip Vietnamese diacritics (e.g. "tiếng"→"ting"), breaking recall.
+  // Each token is still quoted, so FTS5 operator words (AND/OR/NOT/NEAR) stay literals.
+  for (const word of query.normalize("NFKC").split(/\s+/)) {
+    const clean = word.replace(/[^\p{L}\p{N}_-]/gu, "");
     if (clean) tokens.push(`"${clean}"`);
   }
   return tokens.join(" OR ");
