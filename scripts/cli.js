@@ -757,7 +757,25 @@ async function cmdContrib(rest) {
 }
 
 // ── main ──
+/**
+ * Warn (non-fatal) if this cli.js is a different version than the plugin Claude
+ * Code actually loaded ($CLAUDE_PLUGIN_ROOT). Surfaces version drift, e.g. a stale
+ * `tmem` shim left pointing at an old cache dir. Best-effort; never throws.
+ */
+function warnIfVersionDrift() {
+  try {
+    const root = process.env.CLAUDE_PLUGIN_ROOT;
+    if (!root) return;
+    const own = require(path.join(__dirname, "..", "package.json")).version;
+    const loaded = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8")).version;
+    if (own && loaded && own !== loaded) {
+      console.error(`tmem: warning — running v${own} but Claude Code loaded plugin v${loaded}. Run /memory-init to re-sync the tmem command.`);
+    }
+  } catch { /* best-effort */ }
+}
+
 async function main() {
+  warnIfVersionDrift();
   const args = process.argv.slice(2);
   const cmd = args[0];
   const rest = args.slice(1);

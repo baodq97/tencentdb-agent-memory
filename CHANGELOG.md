@@ -3,6 +3,16 @@
 All notable changes to this plugin are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.3] — 2026-06-29
+
+### Fixed
+- **`tmem` could silently run an outdated plugin version after an update.** The global `tmem` binary was a static shim pointing at one version dir; if it wasn't re-linked after a plugin update (or a hand-written shim shadowed it), `tmem` kept executing stale code while Claude Code loaded the new version — e.g. the 0.4.2 Vietnamese-recall fix appeared dead because `tmem` still ran 0.2.3. The plugin's own hooks were unaffected (they already invoke `${CLAUDE_PLUGIN_ROOT}/...`).
+
+### Added
+- **Version-independent `tmem` launcher (`scripts/tmem.js`).** Resolves the cli at runtime: prefers the version Claude Code loaded (`$CLAUDE_PLUGIN_ROOT`), else the newest installed version in the plugin cache, else a sibling `cli.js`. A stale copy of the launcher self-corrects. `bin.tmem` now points at the launcher, and `/memory-init` installs it to `~/.local/bin` to override any stale shim.
+- **Version-drift warning in the cli.** When `tmem` runs a different version than the loaded plugin (`$CLAUDE_PLUGIN_ROOT`), it prints a one-line stderr warning suggesting `/memory-init` — a backstop for the rare case the launcher resolves to a non-loaded version.
+- **Zero-touch self-heal on SessionStart.** A new SessionStart hook keeps `~/.local/bin/tmem` pointing at the current launcher with no user action. It is idempotent and safe: it installs the shim when missing, refreshes a stale shim of ours, and **never overwrites a foreign file** the user owns (recognized by content signature). Fully best-effort — any failure is swallowed so it can't disrupt a session.
+
 ## [0.4.2] — 2026-06-29
 
 ### Fixed

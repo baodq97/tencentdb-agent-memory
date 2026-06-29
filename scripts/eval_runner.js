@@ -77,7 +77,7 @@ function testPluginStructure(ev) {
   ev.check("hooks.json: valid JSON", true);
   ev.check("hooks.json: matcher on all entries", events.every(e => hooks[e][0].matcher !== undefined));
   ev.check("hooks.json: all use node", events.every(e => hooks[e][0].hooks[0].command.startsWith("node ")));
-  ev.check("hooks.json: 3 events", events.length === 3, events.join(", "));
+  ev.check("hooks.json: 4 events", events.length === 4, events.join(", "));
 
   const cmds = fs.readdirSync(path.join(PLUGIN_ROOT, "commands")).filter(f => f.endsWith(".md"));
   const cmdOk = cmds.filter(f => {
