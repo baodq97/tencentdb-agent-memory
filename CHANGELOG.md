@@ -11,6 +11,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 ### Added
 - **Cross-project memory exploration (manual CLI).** `tmem projects` lists every memory store (slug, #records, #scenes, `*` = current). `tmem search <q> --all` searches every project store at once, grouped + labelled by store; `tmem search <q> --project <slug>` targets one. Recall and default `search` stay single-project — cross-project is opt-in so the per-prompt recall hook is never polluted. Tests: `test/cross_project_search.test.js`.
 - **`tmem migrate-fragments [--apply]`** — one-time cleanup that collapses legacy cwd-keyed fragment stores into their project root. Resolves each store's root via filesystem probe (longest-match handles dash-ambiguous dir names) and recovers deleted-dir fragments by prefixing against verified git roots only (never dumps orphans into a generic non-git dir). Records are id-deduped (idempotent), scenes keep the newer on name clash, and every fragment is ARCHIVED under `<base>/.migrated/` (never deleted). Dry-run by default. Tests: `test/migrate_fragments.test.js`.
+- **SessionStart fragmentation hint.** When the current project has legacy fragment stores, the SessionStart hook surfaces a one-line note so the user can run `tmem migrate-fragments`. Detection is cheap (slug-prefix compare, no filesystem probing) and best-effort; it deliberately does NOT auto-merge — the destructive consolidation stays user-triggered. Tests: `test/session_start_hint.test.js`.
 
 ## [0.4.3] — 2026-06-29
 
