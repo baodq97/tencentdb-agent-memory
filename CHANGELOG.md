@@ -3,6 +3,15 @@
 All notable changes to this plugin are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.4] — 2026-06-29
+
+### Fixed
+- **Memory recall fragmented per working directory.** Each project store was keyed by the full `cwd` slug with no project-root normalization, so launching Claude from a subdirectory, a linked worktree, a `.venv`, or `.claude/skills` created a SEPARATE store — and recall (which reads only the current cwd's store) silently missed memories written elsewhere. On a real repo this stranded ~30 scenes across 47 fragment stores. `projectHashForCwd` now resolves to the project root (nearest `.git`; a linked worktree follows its `gitdir:` to the MAIN repo root) before slugifying, with a fallback to the raw-path slug for non-git dirs (preserves existing behavior). All hook entry points + the CLI funnel through this one function, so the fix is global. Regression test: `test/project_root_keying.test.js`.
+
+### Added
+- **Cross-project memory exploration (manual CLI).** `tmem projects` lists every memory store (slug, #records, #scenes, `*` = current). `tmem search <q> --all` searches every project store at once, grouped + labelled by store; `tmem search <q> --project <slug>` targets one. Recall and default `search` stay single-project — cross-project is opt-in so the per-prompt recall hook is never polluted. Tests: `test/cross_project_search.test.js`.
+- **`tmem migrate-fragments [--apply]`** — one-time cleanup that collapses legacy cwd-keyed fragment stores into their project root. Resolves each store's root via filesystem probe (longest-match handles dash-ambiguous dir names) and recovers deleted-dir fragments by prefixing against verified git roots only (never dumps orphans into a generic non-git dir). Records are id-deduped (idempotent), scenes keep the newer on name clash, and every fragment is ARCHIVED under `<base>/.migrated/` (never deleted). Dry-run by default. Tests: `test/migrate_fragments.test.js`.
+
 ## [0.4.3] — 2026-06-29
 
 ### Fixed

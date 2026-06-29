@@ -1,6 +1,6 @@
 ---
 name: tmem-cli
-description: Use the tmem CLI to inspect and manage the local memory store — record/vector counts, keyword/hybrid search, view persona, list scenes, read one full scene block (tmem scene <name>), recent changes, sync vectors, configure thresholds. Trigger when the user asks "how many memories do I have", "show my persona", "what scenes exist", "search memories for X", "open that scene", "recent memory changes", or when you need to check memory state before/after an operation. Do NOT use for extracting or consolidating memories — those have dedicated skills.
+description: Use the tmem CLI to inspect and manage the local memory store — record/vector counts, keyword/hybrid search, view persona, list scenes, read one full scene block (tmem scene <name>), recent changes, sync vectors, configure thresholds. Also covers CROSS-PROJECT exploration — search every project store at once (tmem search <q> --all), list all memory stores (tmem projects), and collapse legacy cwd-keyed fragment stores into their project root (tmem migrate-fragments). Trigger when the user asks "how many memories do I have", "show my persona", "what scenes exist", "search memories for X", "search across all projects", "what projects/stores do I have", "my memory is fragmented", "open that scene", "recent memory changes", or when you need to check memory state before/after an operation. Do NOT use for extracting or consolidating memories — those have dedicated skills.
 ---
 
 # tmem CLI
@@ -30,13 +30,32 @@ tmem scene <name>           # <name> is the index entry, e.g. implementation-pro
 
 `tmem scene` resolves project-first, then global. Names also come from `tmem scenes list`.
 
+## Cross-project memory
+
+Each project keys its own store by the project **root** (the nearest `.git` ancestor; a
+subdir or linked worktree maps to the SAME store). Recall and default `search` see only the
+current project + global. To explore memory ACROSS projects by hand:
+
+```bash
+tmem projects                       # discover every store: slug, #records, #scenes ( * = current )
+tmem search "<query>" --all         # search them all at once, grouped by store
+tmem search "<query>" --project <slug>   # target one other project's store
+```
+
+If `tmem projects` shows many near-duplicate slugs that are subdirs/worktrees of one repo
+(legacy fragmentation from before root-keying), collapse them with `tmem migrate-fragments`
+(dry-run first, then `--apply`).
+
 ## Read / Inspect
 
 | Command | When to use |
 |---------|-------------|
 | `tmem status` | Overview: record counts, vector counts, persona, scenes, capture state |
 | `tmem recall "<query>"` | Full hybrid recall + scene-navigation — same as what the hook injects each turn |
-| `tmem search "<query>"` | Find specific memories by keyword (FTS5 only) |
+| `tmem search "<query>"` | Find memories by keyword (FTS5) in global + current project |
+| `tmem search "<query>" --all` | Cross-project: search EVERY project store, grouped + labelled by store |
+| `tmem search "<query>" --project <slug>` | Search global + one named project store (slug from `tmem projects`) |
+| `tmem projects` | List every memory store (slug, #records, #scenes), `*` marks the current project |
 | `tmem scene <name>` | Print one full scene block (project-first, then global) |
 | `tmem scenes list` | List all scene blocks with metadata (heat, updated, summary) |
 | `tmem persona` | Read the current persona document |
@@ -51,6 +70,7 @@ tmem scene <name>           # <name> is the index entry, e.g. implementation-pro
 | `echo CONTENT \| tmem write-scene --name N --summary S --heat H` | Write/update a scene block (used by memory-consolidate) |
 | `echo CONTENT \| tmem write-persona` | Write persona (used by memory-consolidate) |
 | `tmem scenes dedup [--dry-run]` | Find/remove duplicate scenes by keyword overlap |
+| `tmem migrate-fragments [--apply]` | Collapse legacy cwd-keyed fragment stores into their project root. Dry-run by default; `--apply` merges records (id-deduped) + scenes (newer wins) and ARCHIVES each fragment under `<base>/.migrated/`. Run `tmem sync` afterwards to embed moved records. |
 | `tmem sync [--full]` | Embed missing vectors (delta); `--full` rebuilds the whole index from FTS5 |
 | `tmem config` | Show effective config + stored values + env overrides |
 | `tmem config consolidate-every [N]` | Get/set consolidation threshold (default 20) |

@@ -27,6 +27,17 @@ function projectDir(projectHash) {
   return path.join(memoryBaseDir(), "projects", projectHash);
 }
 
+// Every project store slug under the memory base (for cross-project CLI tools).
+function listProjectHashes() {
+  const d = path.join(memoryBaseDir(), "projects");
+  try {
+    return fs.readdirSync(d, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
+  } catch { return []; }
+}
+
 function generateMemoryId() {
   return `m_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 }
@@ -255,7 +266,7 @@ Commands:
 if (require.main === module) main();
 
 module.exports = {
-  memoryBaseDir, globalDir, projectDir,
+  memoryBaseDir, globalDir, projectDir, listProjectHashes,
   generateMemoryId, writeL1Record, writeL1Batch,
   writeSceneBlock, writePersona, readPersona,
   updateState, readState, listScenes, parseSceneMeta,

@@ -62,7 +62,10 @@ Installed automatically by `/memory-init`. Available in terminal and used by ski
 
 ```
 tmem status                     Memory stats
-tmem search <query>             FTS5 keyword search
+tmem search <query>             FTS5 keyword search (global + current project)
+tmem search <query> --all       Cross-project: search every project store, labelled by store
+tmem projects                   List all memory stores (slug, records, scenes)
+tmem migrate-fragments [--apply]  Collapse legacy cwd-keyed fragment stores into their project root
 tmem recall <query>             Hybrid recall (FTS5 + vector + RRF) + L2 scene-navigation
 tmem persona                    Show persona
 tmem scenes list                List scene blocks

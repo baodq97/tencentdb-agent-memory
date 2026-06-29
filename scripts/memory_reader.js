@@ -19,9 +19,75 @@ function claudeProjectsDir() {
   return path.join(os.homedir(), ".claude", "projects");
 }
 
+function slugForPath(p) {
+  return p.replace(/:/g, "-").replace(/[\\/]/g, "-");
+}
+
+// Resolve any path to its project root so a subdir or a linked worktree keys the
+// SAME memory store as the repo root. Walk up to the nearest `.git`:
+//   - `.git` dir  -> that directory is the (main) repo root
+//   - `.git` file -> linked worktree; follow `gitdir:` to the main repo root
+// Returns null when no `.git` is found (caller falls back to the raw path slug).
+function findProjectRoot(startDir) {
+  let dir = startDir;
+  while (true) {
+    const gitPath = path.join(dir, ".git");
+    let st;
+    try { st = fs.statSync(gitPath); } catch { st = null; }
+    if (st) {
+      if (st.isDirectory()) return dir;
+      if (st.isFile()) {
+        try {
+          const m = fs.readFileSync(gitPath, "utf8").match(/gitdir:\s*(.+)/);
+          if (m) {
+            // gitdir -> <main>/.git/worktrees/<name>; main root is above `/.git/`
+            const gitdir = path.resolve(dir, m[1].trim());
+            const marker = `${path.sep}.git${path.sep}worktrees${path.sep}`;
+            const idx = gitdir.indexOf(marker);
+            if (idx !== -1) return gitdir.slice(0, idx);
+          }
+        } catch {}
+        return dir; // worktree but unparsable -> at least stop at the worktree root
+      }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null; // reached filesystem root
+    dir = parent;
+  }
+}
+
 function projectHashForCwd(cwd) {
   const resolved = path.resolve(cwd || process.cwd());
-  return resolved.replace(/:/g, "-").replace(/[\\/]/g, "-");
+  let root = null;
+  try { root = findProjectRoot(resolved); } catch { root = null; }
+  return slugForPath(root || resolved);
+}
+
+// Reverse a store slug back to its original directory by probing the filesystem.
+// Slugs are lossy (both `/` and a literal `-` became `-`), so we walk the tree,
+// greedily consuming the LONGEST token-group that names a real directory, with
+// backtracking. Returns the absolute path if it still exists, else null (the dir
+// was deleted — caller must treat it as unresolved). POSIX paths only ("-...").
+function pathFromSlugProbe(slug) {
+  if (typeof slug !== "string" || !slug.startsWith("-")) return null;
+  const tokens = slug.slice(1).split("-"); // drop leading "" from the root "/"
+  const sep = path.sep;
+
+  function walk(dir, idx) {
+    if (idx >= tokens.length) return dir;
+    for (let k = tokens.length; k > idx; k--) {
+      const seg = tokens.slice(idx, k).join("-");
+      const cand = dir + sep + seg;
+      let isDir = false;
+      try { isDir = fs.statSync(cand).isDirectory(); } catch { isDir = false; }
+      if (isDir) {
+        const res = walk(cand, k);
+        if (res) return res;
+      }
+    }
+    return null;
+  }
+  return walk(sep === "/" ? "" : sep, 0);
 }
 
 function listProjects() {
@@ -173,6 +239,8 @@ if (require.main === module) main();
 module.exports = {
   claudeProjectsDir,
   projectHashForCwd,
+  findProjectRoot,
+  pathFromSlugProbe,
   listProjects,
   listSessions,
   readSession,
