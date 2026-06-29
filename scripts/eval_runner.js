@@ -445,84 +445,77 @@ function testAutoCapture(ev) {
 
   const { autoCapture, checkConsolidationDue, markConsolidated, status } = require(path.join(PLUGIN_ROOT, "scripts/memory_auto_capture.js"));
   const { MemoryStore } = require(path.join(PLUGIN_ROOT, "scripts/memory_store.js"));
-
-  // Basic capture
-  const r1 = autoCapture({
-    userText: "Help me configure a Redis cluster with sentinel for high availability and automatic failover",
-    assistantText: "I will set up Redis Sentinel...",
-    sessionId: "eval-autocap",
-    cwd: PLUGIN_ROOT,
-  });
-  ev.check("autoCapture: substantive message captured", r1.captured);
-  ev.check("autoCapture: turn counted", r1.turnCount >= 1);
-
-  // Non-substantive filtered
-  const r2 = autoCapture({ userText: "ok", assistantText: "Got it.", sessionId: "eval-autocap", cwd: PLUGIN_ROOT });
-  ev.check("autoCapture: short message filtered", !r2.captured);
-
-  // Command filtered
-  const r3 = autoCapture({ userText: "<command-name>/clear</command-name>", assistantText: "", sessionId: "eval-autocap", cwd: PLUGIN_ROOT });
-  ev.check("autoCapture: command filtered", !r3.captured);
-
-  // FTS5 searchable
   const { projectHashForCwd } = require(path.join(PLUGIN_ROOT, "scripts/memory_reader.js"));
-  const ph = projectHashForCwd(PLUGIN_ROOT);
-  const dbPath = path.join(os.homedir(), ".memory-tencentdb", "projects", ph, "index.db");
-  if (fs.existsSync(dbPath)) {
-    const store = new MemoryStore(dbPath);
-    const results = store.search("Redis cluster sentinel");
-    ev.check("autoCapture: FTS5 searchable", results.length >= 1, `${results.length} results`);
-    // Cleanup
-    for (const r of store.allRecords()) {
-      if (r.record_id?.startsWith("ac_") && r.scene_name === "auto-capture") store.delete(r.record_id);
-    }
-    store.close();
-  } else {
-    ev.check("autoCapture: FTS5 searchable", false, "DB not found");
-  }
 
-  // Consolidation threshold
-  for (let i = 0; i < 9; i++) {
-    autoCapture({
-      userText: `Substantive test message ${i + 2} about software engineering practices and architectural patterns`,
-      assistantText: `Response ${i + 2}`,
+  // Isolate the ENTIRE section in a throwaway home so it never reads, writes, or
+  // deletes the user's real ~/.memory-tencentdb store. autoCapture/status/MemoryStore
+  // resolve their base dir from os.homedir(), which reads $HOME on POSIX but
+  // $USERPROFILE on Windows — so we override BOTH. Removing the temp dir at the end
+  // replaces the old (dangerous) selective ac_ cleanup that could not tell test data
+  // apart from a user's real auto-capture memories.
+  const origEnv = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, MEMORY_CONSOLIDATE_EVERY: process.env.MEMORY_CONSOLIDATE_EVERY };
+  const isoHome = fs.mkdtempSync(path.join(os.tmpdir(), "tdai-eval-autocap-"));
+  process.env.HOME = isoHome;
+  process.env.USERPROFILE = isoHome;
+  process.env.MEMORY_CONSOLIDATE_EVERY = "5"; // deterministic threshold for this isolated run
+  try {
+    // Basic capture
+    const r1 = autoCapture({
+      userText: "Help me configure a Redis cluster with sentinel for high availability and automatic failover",
+      assistantText: "I will set up Redis Sentinel...",
       sessionId: "eval-autocap",
       cwd: PLUGIN_ROOT,
     });
-  }
-  const s = status();
-  ev.check("autoCapture: consolidation triggers at threshold", s.consolidation_due, `${s.turns_since_consolidation}/${s.consolidation_threshold}`);
+    ev.check("autoCapture: substantive message captured", r1.captured);
+    ev.check("autoCapture: turn counted", r1.turnCount >= 1);
 
-  // Consolidation hint
-  const hint = checkConsolidationDue();
-  ev.check("checkConsolidationDue: returns hint", hint && hint.due && hint.message.length > 0);
+    // Non-substantive filtered
+    const r2 = autoCapture({ userText: "ok", assistantText: "Got it.", sessionId: "eval-autocap", cwd: PLUGIN_ROOT });
+    ev.check("autoCapture: short message filtered", !r2.captured);
 
-  // Mark consolidated
-  markConsolidated();
-  const s2 = status();
-  ev.check("markConsolidated: resets counter", !s2.consolidation_due && s2.turns_since_consolidation === 0);
+    // Command filtered
+    const r3 = autoCapture({ userText: "<command-name>/clear</command-name>", assistantText: "", sessionId: "eval-autocap", cwd: PLUGIN_ROOT });
+    ev.check("autoCapture: command filtered", !r3.captured);
 
-  // Cleanup
-  if (fs.existsSync(dbPath)) {
-    const store = new MemoryStore(dbPath);
-    for (const r of store.allRecords()) {
-      if (r.record_id?.startsWith("ac_") && r.scene_name === "auto-capture") store.delete(r.record_id);
+    // FTS5 searchable
+    const ph = projectHashForCwd(PLUGIN_ROOT);
+    const dbPath = path.join(os.homedir(), ".memory-tencentdb", "projects", ph, "index.db");
+    if (fs.existsSync(dbPath)) {
+      const store = new MemoryStore(dbPath);
+      const results = store.search("Redis cluster sentinel");
+      ev.check("autoCapture: FTS5 searchable", results.length >= 1, `${results.length} results`);
+      store.close();
+    } else {
+      ev.check("autoCapture: FTS5 searchable", false, "DB not found");
     }
-    store.close();
-  }
-  try { fs.unlinkSync(path.join(os.homedir(), ".memory-tencentdb", "capture_state.json")); } catch {}
-  // Clean up JSONL
-  const recDir = path.join(os.homedir(), ".memory-tencentdb", "projects", ph, "records");
-  try {
-    for (const f of fs.readdirSync(recDir)) {
-      const fp = path.join(recDir, f);
-      const lines = fs.readFileSync(fp, "utf-8").split("\n").filter(l => {
-        if (!l.trim()) return false;
-        try { const r = JSON.parse(l); return !r.id?.startsWith("ac_"); } catch { return true; }
+
+    // Consolidation threshold
+    for (let i = 0; i < 9; i++) {
+      autoCapture({
+        userText: `Substantive test message ${i + 2} about software engineering practices and architectural patterns`,
+        assistantText: `Response ${i + 2}`,
+        sessionId: "eval-autocap",
+        cwd: PLUGIN_ROOT,
       });
-      fs.writeFileSync(fp, lines.join("\n") + (lines.length ? "\n" : ""), "utf-8");
     }
-  } catch {}
+    const s = status();
+    ev.check("autoCapture: consolidation triggers at threshold", s.consolidation_due, `${s.turns_since_consolidation}/${s.consolidation_threshold}`);
+
+    // Consolidation hint
+    const hint = checkConsolidationDue();
+    ev.check("checkConsolidationDue: returns hint", hint && hint.due && hint.message.length > 0);
+
+    // Mark consolidated
+    markConsolidated();
+    const s2 = status();
+    ev.check("markConsolidated: resets counter", !s2.consolidation_due && s2.turns_since_consolidation === 0);
+  } finally {
+    for (const [k, v] of Object.entries(origEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    fs.rmSync(isoHome, { recursive: true, force: true });
+  }
 }
 
 // ── Section 9: Vector Store + RRF ──

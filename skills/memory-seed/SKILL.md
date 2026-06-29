@@ -35,6 +35,8 @@ cat ${CLAUDE_PLUGIN_ROOT}/skills/memory-seed/references/extraction-guide.md
 
 Analyze the conversation and produce a JSON array of memories. Each memory needs `content`, `type`, `priority`, `scene_name`, `source_message_ids`, `metadata`.
 
+**Grounding (important):** populate `source_message_ids` with the actual transcript message `uuid`s the memory was drawn from. `tmem write-l1 --session` runs a deterministic grounding check — an atom whose `content` does not overlap its cited source messages is **dropped as confabulation**. Leaving `source_message_ids` empty skips the check (atom kept ungated), so cite real ids to get protection, and never invent facts absent from the source. Note: the check is lexical (shared words), so a heavily paraphrased/normalized atom (e.g. expanding an acronym the source never spelled out) can be dropped even when truthful — keep some of the source's own wording in `content`, or leave `source_message_ids` empty if you must paraphrase far.
+
 **Three types with scope routing:**
 - **persona** (priority 50-100) → stored globally. Stable user attributes, preferences.
 - **episodic** (priority 60-100) → stored per-project. Events, decisions, plans.
@@ -53,7 +55,7 @@ Write the JSON array to a temp file to avoid shell escaping issues, then pipe it
 
 ```bash
 cat <<'ATOMS_EOF' | tmem write-l1 --session SESSION_ID
-[{"content": "...", "type": "persona", "priority": 80, "scene_name": "...", "source_message_ids": [], "metadata": {}}]
+[{"content": "...", "type": "persona", "priority": 80, "scene_name": "...", "source_message_ids": ["<real-uuid-from-transcript>"], "metadata": {}}]
 ATOMS_EOF
 ```
 
