@@ -20,6 +20,22 @@ function getDirs() {
   return { gDir: globalDir(), pDir: projectDir(pHash), pHash };
 }
 
+function storeRecordCount(dir) {
+  const db = path.join(dir, "index.db");
+  if (!fs.existsSync(db)) return 0;
+  try { const { MemoryStore } = req("memory_store.js"); const s = new MemoryStore(db); const n = s.allRecords("", 100000).length; s.close(); return n; }
+  catch { return 0; }
+}
+function storeSceneCount(dir) {
+  try { return fs.readdirSync(path.join(dir, "scene_blocks")).filter(f => f.endsWith(".md")).length; }
+  catch { return 0; }
+}
+// True iff `child` is the same path as, or nested under, `parent` (symlink-safe-ish via resolve).
+function isInside(child, parent) {
+  const c = path.resolve(child), p = path.resolve(parent);
+  return c === p || c.startsWith(p + path.sep);
+}
+
 // ── init ──
 async function cmdInit() {
   const { main } = require(path.join(SCRIPTS_DIR, "memory_init.js"));
@@ -84,22 +100,197 @@ async function cmdRecall(query) {
 }
 
 // ── search ──
-function cmdSearch(query) {
-  if (!query) { console.error("Usage: tmem search <query>"); process.exit(1); }
+// tmem search <query>                  global + current project (default)
+// tmem search <query> --all            global + EVERY project store (cross-project)
+// tmem search <query> --project <slug> global + one named project store
+function cmdSearch(rest) {
+  const args = Array.isArray(rest) ? rest : [String(rest || "")];
+  const all = args.includes("--all");
+  const projIdx = args.indexOf("--project");
+  const onlyProj = projIdx !== -1 ? args[projIdx + 1] : null;
+  const query = args
+    .filter((a, i) => a !== "--all" && a !== "--project" && !(projIdx !== -1 && i === projIdx + 1))
+    .join(" ").trim();
+  if (!query) { console.error("Usage: tmem search <query> [--all | --project <slug>]"); process.exit(1); }
+
   const { MemoryStore } = req("memory_store.js");
-  const { gDir, pDir } = getDirs();
-  const results = [];
-  for (const dir of [gDir, pDir]) {
+  const { globalDir, projectDir, listProjectHashes } = req("memory_writer.js");
+  const { pHash } = getDirs();
+
+  // [label, dir] stores to search, in display order.
+  const targets = [["global", globalDir()]];
+  if (all) {
+    for (const h of listProjectHashes()) targets.push([h, projectDir(h)]);
+  } else if (onlyProj) {
+    targets.push([onlyProj, projectDir(onlyProj)]);
+  } else {
+    targets.push([pHash, projectDir(pHash)]);
+  }
+
+  let total = 0;
+  for (const [label, dir] of targets) {
     const db = path.join(dir, "index.db");
     if (!fs.existsSync(db)) continue;
     const store = new MemoryStore(db);
-    results.push(...store.search(query, 10));
+    const hits = store.search(query, 10);
     store.close();
+    if (!hits.length) continue;
+    if (all || onlyProj) console.log(`\n# ${label}  (${hits.length})`);
+    for (const r of hits) {
+      console.log(`[${r.type || "?"}] (p=${r.priority}) ${r.content}`);
+    }
+    total += hits.length;
   }
-  if (!results.length) { console.log("No matches for:", query); return; }
-  for (const r of results) {
-    console.log(`[${r.type || "?"}] (p=${r.priority}) ${r.content}`);
+  if (!total) console.log("No matches for:", query);
+}
+
+// ── projects ── discover every memory store (incl. fragments) for cross-project work
+function cmdProjects() {
+  const { globalDir, projectDir, listProjectHashes } = req("memory_writer.js");
+  const { pHash } = getDirs();
+
+  const rows = [["global", globalDir()], ...listProjectHashes().map(h => [h, projectDir(h)])]
+    .map(([slug, dir]) => ({ slug, recs: storeRecordCount(dir), scenes: storeSceneCount(dir) }))
+    .sort((a, b) => b.recs - a.recs);
+
+  console.log(`STORE${" ".repeat(67)} recs scenes`);
+  for (const r of rows) {
+    const cur = r.slug === pHash ? " *" : "";
+    const name = (r.slug.length > 70 ? "…" + r.slug.slice(-69) : r.slug).padEnd(70);
+    console.log(`${name} ${String(r.recs).padStart(4)} ${String(r.scenes).padStart(6)}${cur}`);
   }
+  console.log(`\n${rows.length} stores  (* = current project)  ·  search one: tmem search <q> --project <slug>  ·  all: tmem search <q> --all`);
+}
+
+// ── migrate-fragments ── collapse cwd-keyed fragment stores into their project root.
+// Legacy stores keyed by a subdir/worktree cwd (before project-root keying) are merged
+// into the store of their real project root. Dry-run by default; --apply executes.
+// Safety: records dedup by id (idempotent), scenes keep the newer on name clash, and
+// fragments are ARCHIVED (never deleted) under <base>/.migrated/.
+function cmdMigrateFragments(args) {
+  const apply = (args || []).includes("--apply");
+  const { MemoryStore } = req("memory_store.js");
+  const { memoryBaseDir, projectDir, listProjectHashes, parseSceneMeta } = req("memory_writer.js");
+  const { projectHashForCwd, pathFromSlugProbe, findProjectRoot } = req("memory_reader.js");
+
+  const base = memoryBaseDir();
+  const projectsRoot = path.join(base, "projects");
+  const archiveRoot = path.join(base, ".migrated");
+
+  const slugs = listProjectHashes();
+
+  // Pass 1 — probe each store to its directory, then classify via the GIT project root.
+  // gitRoots holds only slugs backed by a real `.git` (dir or worktree) — used both to
+  // detect fragments and, crucially, as the ONLY valid recovery targets so orphans never
+  // get dumped into a generic non-git directory store (e.g. ~/projects).
+  const gitRoots = new Set();
+  const probed = new Map(); // slug -> { target, isGitRoot } | null
+  for (const slug of slugs) {
+    const p = pathFromSlugProbe(slug);
+    if (!p) { probed.set(slug, null); continue; }
+    const r = findProjectRoot(p);           // non-null only when a .git was found
+    const target = projectHashForCwd(p);     // slug of r, or raw-path slug when no .git
+    probed.set(slug, { target, hasGit: !!r });
+    if (r && target === slug) gitRoots.add(slug);
+  }
+  for (const v of probed.values()) if (v && v.hasGit) gitRoots.add(v.target);
+
+  // Pass 2 — classify. A deleted-dir fragment (probe null) or a misprobe is recovered by
+  // the LONGEST git root that prefixes its slug; its slug still embeds the live root.
+  const merges = [], unresolved = [];
+  const longestGitRootPrefix = (slug) => {
+    let best = null;
+    for (const r of gitRoots) if (r !== slug && slug.startsWith(r + "-") && (!best || r.length > best.length)) best = r;
+    return best;
+  };
+  for (const slug of slugs) {
+    const v = probed.get(slug);
+    if (v && v.hasGit && v.target === slug) continue; // a real git root — keep as-is
+    let target = (v && v.hasGit && v.target !== slug && slug.startsWith(v.target + "-")) ? v.target : null;
+    if (!target) target = longestGitRootPrefix(slug);
+    if (!target) {
+      const reason = !v ? "original dir gone" : "no git root (kept as its own store)";
+      unresolved.push({ slug, reason });
+      continue;
+    }
+    const dir = projectDir(slug);
+    merges.push({ slug, target, recs: storeRecordCount(dir), scenes: storeSceneCount(dir) });
+  }
+
+  if (!merges.length) {
+    console.log("No fragments to migrate — every resolvable store already keys to its project root.");
+    if (unresolved.length) console.log(`(${unresolved.length} store(s) unresolved — original dir gone; left untouched. Inspect with: tmem search <q> --project <slug>)`);
+    return;
+  }
+
+  console.log(apply ? "Migrating fragments:" : "Migration plan (dry-run — pass --apply to execute):");
+  for (const m of merges) console.log(`  ${m.slug}\n    → ${m.target}   (${m.recs} recs, ${m.scenes} scenes)`);
+  for (const u of unresolved) console.log(`  ${u.slug}\n    → SKIP (${u.reason})`);
+  if (!apply) {
+    console.log(`\n${merges.length} mergeable, ${unresolved.length} unresolved. Re-run with --apply to execute (fragments are archived, not deleted).`);
+    return;
+  }
+
+  const sceneUpdated = (file) => {
+    const meta = parseSceneMeta(file); // takes a filepath, reads + parses it
+    return (meta && meta.updated) || "";
+  };
+
+  let movedRecs = 0, movedScenes = 0, archived = 0;
+  for (const m of merges) {
+    const srcDir = path.resolve(projectDir(m.slug));
+    const tgtDir = projectDir(m.target);
+    if (!isInside(srcDir, projectsRoot)) { console.error(`  ! refuse (escapes ${projectsRoot}): ${srcDir}`); continue; }
+
+    // 1) records — source of truth is the fragment's records/*.jsonl (original atom shape).
+    //    Dedup by id against the target index; upsert is idempotent.
+    const tgtDb = path.join(tgtDir, "index.db");
+    const existing = new Set();
+    if (fs.existsSync(tgtDb)) { const t = new MemoryStore(tgtDb); for (const r of t.allRecords("", 100000)) existing.add(r.record_id || r.id); t.close(); }
+    const srcRecordsDir = path.join(srcDir, "records");
+    const atoms = [];
+    if (fs.existsSync(srcRecordsDir)) {
+      for (const f of fs.readdirSync(srcRecordsDir).filter(x => x.endsWith(".jsonl"))) {
+        for (const line of fs.readFileSync(path.join(srcRecordsDir, f), "utf-8").split("\n")) {
+          if (!line.trim()) continue;
+          try { atoms.push(JSON.parse(line)); } catch {}
+        }
+      }
+    }
+    const fresh = atoms.filter(a => a.id && !existing.has(a.id));
+    if (fresh.length) {
+      fs.mkdirSync(path.join(tgtDir, "records"), { recursive: true });
+      fs.appendFileSync(path.join(tgtDir, "records", "migrated.jsonl"),
+        fresh.map(a => JSON.stringify(a)).join("\n") + "\n", "utf-8");
+      const t = new MemoryStore(tgtDb);
+      for (const a of fresh) { t.upsert(a); movedRecs++; }
+      t.close();
+    }
+
+    // 2) scenes — copy; on name clash keep whichever was updated more recently.
+    const srcScenes = path.join(srcDir, "scene_blocks");
+    if (fs.existsSync(srcScenes)) {
+      const tgtScenes = path.join(tgtDir, "scene_blocks");
+      fs.mkdirSync(tgtScenes, { recursive: true });
+      for (const f of fs.readdirSync(srcScenes).filter(x => x.endsWith(".md"))) {
+        const sp = path.join(srcScenes, f), tp = path.join(tgtScenes, f);
+        if (fs.existsSync(tp) && sceneUpdated(tp) >= sceneUpdated(sp)) continue;
+        fs.copyFileSync(sp, tp);
+        movedScenes++;
+      }
+    }
+
+    // 3) archive the fragment (never delete).
+    fs.mkdirSync(archiveRoot, { recursive: true });
+    const dest = path.join(archiveRoot, m.slug);
+    if (!isInside(dest, archiveRoot)) { console.error(`  ! refuse archive (escapes ${archiveRoot}): ${dest}`); continue; }
+    try { fs.rmSync(dest, { recursive: true, force: true }); } catch {}
+    fs.renameSync(srcDir, dest);
+    archived++;
+  }
+
+  console.log(`\nDone: merged ${movedRecs} records + ${movedScenes} scenes from ${archived} fragment(s). Archived under ${archiveRoot} (delete when satisfied).`);
+  console.log(`Next: run \`tmem sync\` in each affected project to embed the migrated records' vectors.`);
 }
 
 // ── scene (read one full scene block by name, project-first then global) ──
@@ -790,7 +981,9 @@ Commands:
   init                       Initialize memory store + vector index
   status                     Show memory stats
   recall <query>             Hybrid recall (FTS5 + vector + RRF)
-  search <query>             Search L1 atoms (FTS5 only)
+  search <query> [--all|--project <slug>]  Search L1 atoms (FTS5); --all = every project store
+  projects                   List all memory stores (slug, records, scenes) for cross-project work
+  migrate-fragments [--apply]  Merge legacy cwd-keyed fragment stores into their project root (dry-run by default)
   atoms [global|project|all] Dump L1 atoms as JSON
   sessions                   List pending sessions for seeding
   read-session <path>        Format session for extraction
@@ -815,7 +1008,9 @@ Commands:
     case "init": return cmdInit();
     case "status": return cmdStatus();
     case "recall": return cmdRecall(restStr);
-    case "search": return cmdSearch(restStr);
+    case "search": return cmdSearch(rest);
+    case "projects": return cmdProjects();
+    case "migrate-fragments": return cmdMigrateFragments(rest);
     case "atoms": return cmdAtoms(rest);
     case "sessions": return cmdSessions();
     case "read-session": return cmdReadSession(restStr);
