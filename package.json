@@ -1,9 +1,9 @@
 {
   "name": "tencentdb-agent-memory",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "bin": {
-    "tmem": "./scripts/cli.js"
+    "tmem": "./scripts/tmem.js"
   },
   "dependencies": {
     "node-llama-cpp": "^3.16.2",
