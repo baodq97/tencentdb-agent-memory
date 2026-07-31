@@ -1,6 +1,7 @@
 ---
 name: memory-seed
-description: Extract L1 memory atoms from Claude Code conversation history. Triggers when the user says "seed memories", "extract memories", "backfill memory", "remember my history", "learn from past conversations", "what do you know about me", or after /memory-init when conversation history exists. Also use when asyncRewake pipeline flags pending sessions. This skill is about CREATING new memories from transcripts — for inspecting existing memories use tmem-cli instead.
+description: Extract L1 memory atoms from Claude Code conversation history. Run manually via /memory-seed.
+disable-model-invocation: true
 ---
 
 # Memory Seeding

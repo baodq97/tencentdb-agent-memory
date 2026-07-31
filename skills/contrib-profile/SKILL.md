@@ -1,6 +1,6 @@
 ---
 name: contrib-profile
-description: One-shot entry point for Contributor Intelligence — the user just drops a GitHub link or names an engineer and you take it from there. Use this whenever someone pastes a GitHub profile/repo URL (github.com/<user> or github.com/<user>/<repo>) or a handle and asks to "profile", "analyze how X works", "learn from X", "study this engineer", "phân tích người này", "học từ người này", or asks "how do I use /contrib". Drives the whole pipeline end-to-end (add → ingest → build → playbook), or guides the user through it if they'd rather drive. This is the orchestrator — the per-phase skills (contrib-ingest, contrib-consolidate, contrib-synthesize) do the actual work; do NOT use this one to inspect or synthesize an already-built persona (use contrib-synthesize) or for the self-memory feature.
+description: Orchestrator for Contributor Intelligence. Trigger when the user pastes a GitHub profile/repo URL or handle and asks to profile, analyze, learn from, or study an engineer (EN/VI — "phân tích người này", "học từ người này"). Runs add→ingest→build→playbook end-to-end via the per-phase contrib skills.
 ---
 
 # Contributor Profile — A→Z orchestrator

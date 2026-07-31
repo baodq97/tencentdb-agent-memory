@@ -1,6 +1,7 @@
 ---
 name: contrib-consolidate
-description: Consolidate a contributor's L1 atoms into an L3 persona across 11 dimensions. Triggers when the user says "build contributor persona", "consolidate <user>", or after contrib-ingest completes. This ORGANIZES existing atoms — for creating atoms use contrib-ingest.
+description: Internal phase — consolidate a contributor's L1 atoms into an L3 persona (11 dimensions). Invoked by contrib-profile / `/contrib build`.
+user-invocable: false
 ---
 
 # Contributor Consolidate

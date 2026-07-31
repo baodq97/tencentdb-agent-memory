@@ -210,6 +210,32 @@ function readState() {
   return {};
 }
 
+// Per-project recall toggle. Recall is ON by default; only an explicit
+// `recall: false` disables the UserPromptSubmit context injection for that
+// project. Ingest/consolidate (Stop hooks) are unaffected.
+function setRecallEnabled(projectHash, enabled) {
+  if (!projectHash) throw new Error("projectHash required");
+  const statePath = path.join(memoryBaseDir(), "state.json");
+  let state = {};
+  if (fs.existsSync(statePath)) {
+    try { state = JSON.parse(fs.readFileSync(statePath, "utf-8")); } catch {}
+  }
+  if (!state.projects) state.projects = {};
+  if (!state.projects[projectHash]) state.projects[projectHash] = {};
+  state.projects[projectHash].recall = !!enabled;
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  const tmp = statePath + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf-8");
+  fs.renameSync(tmp, statePath);
+  return !!enabled;
+}
+
+function getRecallEnabled(projectHash) {
+  const state = readState();
+  const p = state.projects && state.projects[projectHash];
+  return !(p && p.recall === false);
+}
+
 function slugify(name) {
   let s = name.toLowerCase().trim();
   s = s.replace(/[^\w\s-]/g, "");
@@ -269,6 +295,6 @@ module.exports = {
   memoryBaseDir, globalDir, projectDir, listProjectHashes,
   generateMemoryId, writeL1Record, writeL1Batch,
   writeSceneBlock, writePersona, readPersona,
-  updateState, readState, listScenes, parseSceneMeta,
+  updateState, readState, setRecallEnabled, getRecallEnabled, listScenes, parseSceneMeta,
   appendChangelog, META_START, META_END,
 };
