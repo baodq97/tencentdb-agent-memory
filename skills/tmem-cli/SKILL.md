@@ -1,6 +1,6 @@
 ---
 name: tmem-cli
-description: Use the tmem CLI to inspect and manage the local memory store — record/vector counts, keyword/hybrid search, view persona, list scenes, read one full scene block (tmem scene <name>), recent changes, sync vectors, configure thresholds. Also covers CROSS-PROJECT exploration — search every project store at once (tmem search <q> --all), list all memory stores (tmem projects), and collapse legacy cwd-keyed fragment stores into their project root (tmem migrate-fragments). Trigger when the user asks "how many memories do I have", "show my persona", "what scenes exist", "search memories for X", "search across all projects", "what projects/stores do I have", "my memory is fragmented", "open that scene", "recent memory changes", or when you need to check memory state before/after an operation. Do NOT use for extracting or consolidating memories — those have dedicated skills.
+description: Inspect/manage the local memory store via the tmem CLI — counts, keyword/hybrid search, view persona, list/open scenes (tmem scene <name>), recent changes, sync vectors, thresholds, and cross-project search (tmem search <q> --all, tmem projects). Trigger on "how many memories", "show my persona", "what scenes exist", "search memories for X", "search across all projects".
 ---
 
 # tmem CLI
@@ -75,11 +75,29 @@ If `tmem projects` shows many near-duplicate slugs that are subdirs/worktrees of
 | `tmem config` | Show effective config + stored values + env overrides |
 | `tmem config consolidate-every [N]` | Get/set consolidation threshold (default 20) |
 | `tmem config scene-max-tokens [N]` | Get/set scene-navigation token budget (default 200; `0` disables) |
+| `tmem config recall [on\|off]` | Per-project: get/set whether the UserPromptSubmit hook injects memory context. `off` stops the per-turn `<memory-context>` for THIS project only; ingest + consolidate keep running. Default: on. |
 | `tmem daemon status` | Health-ping the resident embed daemon → ready/warming/failed/stuck/down + pid (use when vector recall seems cold) |
 | `tmem daemon start` | Warm + serve the embed daemon in the foreground (like `ollama serve`); keeps vector recall hot |
 | `tmem daemon stop` | Stop the daemon + clear its pidfile (recovery: `status` → `stop` → `start`) |
 | `tmem mark-done` | Mark consolidation complete + release lock |
 | `tmem init` | Initialize memory store (normally via `/memory-init`) |
+
+## Disable per-turn context injection (per project)
+
+To stop the memory hook from injecting `<memory-context>` into the main thread every
+turn for the current project — while STILL capturing turns and consolidating in the
+background:
+
+```bash
+tmem config recall off      # this project: hook injects nothing; ingest + consolidate unaffected
+tmem config recall on       # re-enable (default)
+tmem config recall          # show current state (on/off)
+```
+
+The flag is stored per project-root in `state.json` (`projects.<hash>.recall`). It's
+additive and fail-open: projects without the flag keep recall ON, so existing stores are
+unaffected. Manual `tmem recall "<query>"` still works regardless — only the automatic
+per-turn injection is gated.
 
 ## Which binary runs?
 

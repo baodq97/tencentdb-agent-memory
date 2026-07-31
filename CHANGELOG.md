@@ -3,6 +3,18 @@
 All notable changes to this plugin are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.5] — 2026-07-31
+
+### Added
+- **Per-project recall toggle (`tmem config recall [on|off]`).** Disables the per-turn `<memory-context>` injection for a single project without touching capture or consolidation. The `UserPromptSubmit` hook now checks a per-project flag (`projects.<root-hash>.recall` in `state.json`) via a lightweight `isRecallDisabled()` reader on the hot path and returns nothing when recall is off; ingest (`on_stop` capture) and consolidation (`memory_pipeline` → memory-consolidator agent) are independent Stop-hook paths and keep running. The flag is **additive and fail-open** — projects without it (i.e. every existing store) keep recall ON, so there is no migration and no behavior change on upgrade. Manual `tmem recall "<query>"` still works regardless; only the automatic injection is gated. Toggle is scoped to the project root, exposed under the `tmem config` surface (no clash with the existing `tmem recall <query>` command), and documented in the `tmem-cli` skill. Tests: `test/recall_toggle.test.js`.
+
+### Changed
+- **Skill descriptions trimmed to cut always-on context (~1,020 → ~320 tokens across the 7 skills).** Skill descriptions load into every session, so long trigger lists were a recurring cost. `contrib-profile` (the orchestrator) and `tmem-cli` (the primary agent-facing skill) keep concise auto-trigger descriptions; the internal contrib phases (`contrib-ingest`, `contrib-consolidate`, `contrib-synthesize`) are now `user-invocable: false` — hidden from the `/` menu and never auto-triggered, while the orchestrator still invokes them by name; `memory-consolidate` keeps its now-minimal description (the memory-consolidator agent invokes it by name). No skill bodies or logic changed — only frontmatter descriptions and invocation flags.
+- **`memory-seed` set to `disable-model-invocation: true`.** It is a human-triggered `/memory-seed` workflow that nothing invokes programmatically, so its description is dropped from context entirely; run it manually.
+
+### Security
+- **Bump `tar` 7.5.16 → 7.5.22 (Dependabot #9).** Pulls in upstream hardening against unbounded list recursion and explosive decompression (`maxDecompressionRatio` guard), plus safer unzip teardown on abort. Transitive dependency — lockfile only.
+
 ## [0.4.4] — 2026-06-29
 
 ### Fixed

@@ -1,6 +1,6 @@
 ---
 name: memory-consolidate
-description: Consolidate L1 memory atoms into L2 scene blocks and L3 persona. Triggers when the user says "consolidate memories", "build persona", "update persona", "update scenes", "organize memories", or after memory-seed completes. Also triggers via asyncRewake pipeline after N conversation turns. This skill is about ORGANIZING existing memories into higher structures — for creating memories from transcripts use memory-seed instead.
+description: Consolidate L1 memory atoms into L2 scene blocks and L3 persona. Invoked by the memory-consolidator agent, or manually via /memory-consolidate.
 ---
 
 # Memory Consolidation

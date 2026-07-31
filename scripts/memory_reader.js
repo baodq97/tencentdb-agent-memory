@@ -63,6 +63,21 @@ function projectHashForCwd(cwd) {
   return slugForPath(root || resolved);
 }
 
+// Lightweight per-project recall gate for the UserPromptSubmit hot path.
+// True only when state.json explicitly marks this project's recall disabled;
+// any read error or missing flag means recall stays ON (fail-open).
+function isRecallDisabled(projectHash) {
+  if (!projectHash) return false;
+  try {
+    const statePath = path.join(os.homedir(), ".memory-tencentdb", "state.json");
+    const state = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+    const p = state.projects && state.projects[projectHash];
+    return !!(p && p.recall === false);
+  } catch {
+    return false;
+  }
+}
+
 // Reverse a store slug back to its original directory by probing the filesystem.
 // Slugs are lossy (both `/` and a literal `-` became `-`), so we walk the tree,
 // greedily consuming the LONGEST token-group that names a real directory, with
@@ -239,6 +254,7 @@ if (require.main === module) main();
 module.exports = {
   claudeProjectsDir,
   projectHashForCwd,
+  isRecallDisabled,
   findProjectRoot,
   pathFromSlugProbe,
   listProjects,

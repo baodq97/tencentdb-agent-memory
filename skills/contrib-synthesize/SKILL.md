@@ -1,6 +1,7 @@
 ---
 name: contrib-synthesize
-description: Use this skill when someone wants to LEARN from engineers they've already profiled — extracting actionable lessons from contributor personas. Trigger on intents like: "what do the top SWEs / engineers / contributors I've profiled have in common", "extract their shared / common capabilities", "turn a contributor's profile into copyable habits, heuristics, or a learnable playbook", "what habits should I copy from <person>", or "compare me / my style to <role-model> dimension-by-dimension and find my gap". Also covers surfacing exemplar teaching quotes across profiled engineers. Operates on existing personas (built via contrib-consolidate); cross-engineer comparison or common-capability synthesis needs ≥2 subjects. Do NOT use for: building, ingesting, or inspecting a single persona's raw contents; commit/trajectory stats; summarizing documents; recalling what you know about the user; or playbooks unrelated to engineer profiles (e.g. team incident-response runbooks).
+description: Internal phase — synthesize learnable playbooks, cross-engineer common capabilities, and you-vs-role-model comparisons from built personas. Invoked by contrib-profile / `/contrib playbook|compare`.
+user-invocable: false
 ---
 
 # Contributor Synthesize

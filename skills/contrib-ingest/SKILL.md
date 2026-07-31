@@ -1,6 +1,7 @@
 ---
 name: contrib-ingest
-description: Extract L1 contributor atoms from a GitHub subject's raw activity. Triggers after "tmem contrib raw <id>" or when the user says "ingest contributor", "profile <user>", "analyze how <user> works". This CREATES atoms from raw GitHub events — for synthesis use contrib-synthesize.
+description: Internal phase — extract L1 contributor atoms from a GitHub subject's raw activity. Invoked by contrib-profile / `/contrib ingest`.
+user-invocable: false
 ---
 
 # Contributor Ingest

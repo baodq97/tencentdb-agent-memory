@@ -620,15 +620,36 @@ function cmdConfig(args) {
   const key = args[0];
 
   if (!key) {
+    const { projectHashForCwd } = req("memory_reader.js");
+    const { getRecallEnabled } = req("memory_writer.js");
+    const pHash = projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || ".");
     console.log(JSON.stringify({
       consolidate_every: getConsolidateEvery(),
       scene_max_tokens: getSceneMaxTokens(),
+      recall: getRecallEnabled(pHash) ? "on" : "off",
+      recall_project: pHash,
       stored: loadConfig(),
       env_override: {
         MEMORY_CONSOLIDATE_EVERY: process.env.MEMORY_CONSOLIDATE_EVERY || null,
         MEMORY_SCENE_MAX_TOKENS: process.env.MEMORY_SCENE_MAX_TOKENS || null,
       },
     }, null, 2));
+    return;
+  }
+
+  if (key === "recall") {
+    const { projectHashForCwd } = req("memory_reader.js");
+    const { setRecallEnabled, getRecallEnabled } = req("memory_writer.js");
+    const pHash = projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || ".");
+    if (args[1] === undefined) { console.log(getRecallEnabled(pHash) ? "on" : "off"); return; }
+    const v = String(args[1]).toLowerCase();
+    if (!["on", "off", "true", "false"].includes(v)) {
+      console.error("usage: tmem config recall <on|off>");
+      process.exit(1);
+    }
+    const enabled = v === "on" || v === "true";
+    setRecallEnabled(pHash, enabled);
+    console.log(`recall ${enabled ? "on" : "off"} for this project (${pHash})`);
     return;
   }
 
@@ -656,7 +677,7 @@ function cmdConfig(args) {
     return;
   }
 
-  console.error(`Unknown config key: ${key}. Supported: consolidate-every, scene-max-tokens`);
+  console.error(`Unknown config key: ${key}. Supported: consolidate-every, scene-max-tokens, recall`);
   process.exit(1);
 }
 
@@ -998,7 +1019,7 @@ Commands:
   sync [--full]              Embed missing vectors (delta); --full rebuilds the index
   mark-done                  Mark consolidation complete + release lock
   unlock                     Release stale consolidation lock
-  config [consolidate-every [N] | scene-max-tokens [N]]  Show config, or get/set a setting
+  config [consolidate-every [N] | scene-max-tokens [N] | recall [on|off]]  Show config, or get/set a setting (recall = per-project context injection)
   daemon <start|status|stop>  Manage the resident embed daemon (warm vector recall)
   contrib <add|ingest|build|persona|playbook|compare|capabilities>  Contributor intelligence`);
     return;

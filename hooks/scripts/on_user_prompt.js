@@ -15,8 +15,12 @@ async function doRecall(prompt, cwd) {
       ensureDaemon();
     } catch {}
 
-    const { projectHashForCwd } = require(nodePath.join(scriptsDir, "memory_reader.js"));
+    const { projectHashForCwd, isRecallDisabled } = require(nodePath.join(scriptsDir, "memory_reader.js"));
     const projectHash = cwd ? projectHashForCwd(cwd) : "";
+
+    // Per-project opt-out: skip context injection when recall is disabled for
+    // this project. Ingest/consolidate (Stop hooks) keep running regardless.
+    if (isRecallDisabled(projectHash)) return "";
 
     try {
       const { recallAsync } = require(nodePath.join(scriptsDir, "memory_recall.js"));
