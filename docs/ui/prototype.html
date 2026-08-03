@@ -1,0 +1,1387 @@
+<!doctype html>
+<!-- GENERATED SHELL — regenerate with scaffold_prototype.mjs; the screens inside are hand-designed.
+     Every color resolves to a var(--c-*) derived from tokens.json, so check_prototype.mjs can
+     prove the prototype and the gated tokens still agree. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="design-surface" content="desktop" data-min-body="14" data-min-target="32" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>dashboard — prototype</title>
+<style>
+  :root {
+    --c-background: #f9f9f7;
+    --c-surface: #fcfcfb;
+    --c-foreground: #0b0b0b;
+    --c-secondary: #52514e;
+    --c-muted: #6f6d68;
+    --c-border: #e6e5df;
+    --c-grid: #e1e0d9;
+    --c-wash: #f2f1ec;
+    --c-primary: #1f66c0;
+    --c-onPrimary: #ffffff;
+    --c-good: #0ca30c;
+    --c-onGood: #0b0b0b;
+    --c-warning: #fab219;
+    --c-onWarning: #0b0b0b;
+    --c-critical: #b32828;
+    --c-onCritical: #ffffff;
+    --c-goodText: #006300;
+    --c-warningText: #7a5200;
+    --c-criticalText: #b32828;
+    --c-series1: #2a78d6;
+    --c-series2: #eb6834;
+    --c-series3: #1baf7a;
+    --c-dim1: #c3c2b7;
+    --c-dim2: #898781;
+    --c-hatchLine: #a9a79c;
+    --c-dark-background: #0d0d0d;
+    --c-dark-surface: #1a1a19;
+    --c-dark-foreground: #ffffff;
+    --c-dark-secondary: #c3c2b7;
+    --c-dark-muted: #9b9992;
+    --c-dark-border: #33332f;
+    --c-dark-grid: #2c2c2a;
+    --c-dark-wash: #232320;
+    --c-dark-primary: #6aa9f0;
+    --c-dark-onPrimary: #0b0b0b;
+    --c-dark-good: #0ca30c;
+    --c-dark-onGood: #0b0b0b;
+    --c-dark-warning: #fab219;
+    --c-dark-onWarning: #0b0b0b;
+    --c-dark-critical: #e05a5a;
+    --c-dark-onCritical: #0b0b0b;
+    --c-dark-goodText: #4cc94c;
+    --c-dark-warningText: #f0b429;
+    --c-dark-criticalText: #f4776f;
+    --c-dark-series1: #3987e5;
+    --c-dark-series2: #d95926;
+    --c-dark-series3: #199e70;
+    --c-dark-dim1: #383835;
+    --c-dark-dim2: #898781;
+    --c-dark-hatchLine: #6b695f;
+    --font-display: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --s-1: 4px;
+    --s-2: 8px;
+    --s-3: 12px;
+    --s-4: 16px;
+    --s-6: 24px;
+    --s-8: 32px;
+    --s-12: 48px;
+    --s-16: 64px;
+  }
+  /* GENERATED CHROME START
+     The neutral page around the device frames. Colors between this marker and its closing
+     counterpart below belong to the scaffold, not to the design system, and check_prototype.mjs
+     exempts exactly this region. Do not put design decisions here. */
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 40px 32px 64px; background: #eef0f3; color: #14171c;
+         font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header.doc { max-width: 900px; margin: 0 auto 36px; }
+  header.doc h1 { font-size: 26px; margin: 0 0 8px; }
+  header.doc p { margin: 0; color: #4b5563; font-size: 14px; line-height: 1.6; }
+  .fidelity { display: inline-block; margin-top: 12px; font-size: 12px; color: #6b7280;
+              border: 1px solid #d1d5db; border-radius: 20px; padding: 3px 12px; }
+  .frames { display: grid; grid-template-columns: repeat(auto-fit, minmax(1280px, max-content));
+            gap: 40px 32px; justify-content: center; }
+  .slot { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .slot-tag { order: -1; font-size: 12px; font-weight: 600; letter-spacing: .04em;
+              text-transform: uppercase; color: #374151; }
+  .slot-tag span { font-weight: 400; text-transform: none; letter-spacing: 0; color: #9ca3af; }
+  .device { width: var(--dev-w); height: var(--dev-h); border-radius: var(--dev-r);
+            background: #14171c; padding: 14px; box-shadow: 0 18px 40px rgba(0,0,0,.18); }
+  .screen { font-size: 14px; width: 100%; height: 100%; border-radius: calc(var(--dev-r) - 8px); overflow: hidden;
+            background: var(--c-background, #fff); color: var(--c-foreground, #111);
+            font-family: var(--font-body, inherit); display: flex; flex-direction: column; }
+  /* GENERATED CHROME END */
+</style>
+
+<!-- ─────────────────────────────────────────────────────────────────────────
+     DESIGN CSS — hand-written, everything below resolves to a var(--c-*) role
+     declared in tokens.json. Nothing here is scaffold chrome.
+     ───────────────────────────────────────────────────────────────────────── -->
+<style id="design">
+  /* Dark mode is SELECTED, not flipped: every role has its own dark step in
+     tokens.json and each declared pair is in contrastPairs as dark.<role>. */
+  @media (prefers-color-scheme: dark) { .screen { color-scheme: dark;
+    --c-background: var(--c-dark-background);   --c-surface: var(--c-dark-surface);
+    --c-foreground: var(--c-dark-foreground);   --c-secondary: var(--c-dark-secondary);
+    --c-muted: var(--c-dark-muted);             --c-border: var(--c-dark-border);
+    --c-grid: var(--c-dark-grid);               --c-wash: var(--c-dark-wash);
+    --c-primary: var(--c-dark-primary);         --c-onPrimary: var(--c-dark-onPrimary);
+    --c-good: var(--c-dark-good);               --c-onGood: var(--c-dark-onGood);
+    --c-warning: var(--c-dark-warning);         --c-onWarning: var(--c-dark-onWarning);
+    --c-critical: var(--c-dark-critical);       --c-onCritical: var(--c-dark-onCritical);
+    --c-goodText: var(--c-dark-goodText);       --c-warningText: var(--c-dark-warningText);
+    --c-criticalText: var(--c-dark-criticalText);
+    --c-series1: var(--c-dark-series1);         --c-series2: var(--c-dark-series2);
+    --c-series3: var(--c-dark-series3);
+    --c-dim1: var(--c-dark-dim1);               --c-dim2: var(--c-dark-dim2);
+    --c-hatchLine: var(--c-dark-hatchLine); } }
+  html[data-mode="dark"] .screen { color-scheme: dark;
+    --c-background: var(--c-dark-background);   --c-surface: var(--c-dark-surface);
+    --c-foreground: var(--c-dark-foreground);   --c-secondary: var(--c-dark-secondary);
+    --c-muted: var(--c-dark-muted);             --c-border: var(--c-dark-border);
+    --c-grid: var(--c-dark-grid);               --c-wash: var(--c-dark-wash);
+    --c-primary: var(--c-dark-primary);         --c-onPrimary: var(--c-dark-onPrimary);
+    --c-good: var(--c-dark-good);               --c-onGood: var(--c-dark-onGood);
+    --c-warning: var(--c-dark-warning);         --c-onWarning: var(--c-dark-onWarning);
+    --c-critical: var(--c-dark-critical);       --c-onCritical: var(--c-dark-onCritical);
+    --c-goodText: var(--c-dark-goodText);       --c-warningText: var(--c-dark-warningText);
+    --c-criticalText: var(--c-dark-criticalText);
+    --c-series1: var(--c-dark-series1);         --c-series2: var(--c-dark-series2);
+    --c-series3: var(--c-dark-series3);
+    --c-dim1: var(--c-dark-dim1);               --c-dim2: var(--c-dark-dim2);
+    --c-hatchLine: var(--c-dark-hatchLine); }
+
+  .app { display: flex; flex-direction: column; height: 100%; font-size: 15px; line-height: 1.5; }
+
+  /* ── chrome of the product itself (present on every screen) ─────────── */
+  .topbar { display: flex; align-items: center; gap: 14px; padding: 0 20px; height: 54px;
+            flex: none; background: var(--c-surface); border-bottom: 1px solid var(--c-border); }
+  .topbar > *, .tabs a { white-space: nowrap; }
+  .wordmark { display: inline-flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 600; }
+  .wordmark i { width: 9px; height: 9px; border-radius: 50%; background: var(--c-primary); }
+  .rootpath { font-size: 14px; color: var(--c-muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .tabs { display: flex; gap: 4px; margin-left: 6px; }
+  .tabs a { font-size: 14px; text-decoration: none; color: var(--c-secondary);
+            padding: 0 13px; min-height: 32px; display: inline-flex; align-items: center;
+            border-radius: 999px; border: 1px solid transparent; }
+  .tabs a[aria-current="page"] { background: var(--c-wash); border-color: var(--c-border);
+                                 color: var(--c-foreground); font-weight: 600; }
+  .tabs a .n { color: var(--c-muted); margin-left: 6px; }
+  .grow { flex: 1 1 auto; }
+  .live { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; color: var(--c-muted); }
+  .live i { width: 8px; height: 8px; border-radius: 50%; background: var(--c-good); }
+  .live.off i { background: var(--c-dim1); }
+
+  .btn { font: inherit; font-size: 14px; min-height: 32px; padding: 0 14px; cursor: pointer;
+         display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+         border-radius: 6px; border: 1px solid var(--c-border);
+         background: var(--c-surface); color: var(--c-foreground); }
+  .btn.primary { background: var(--c-primary); border-color: var(--c-primary);
+                 color: var(--c-onPrimary); font-weight: 600; }
+  .btn:focus-visible { outline: 2px solid var(--c-primary); outline-offset: 2px; }
+  .btn.primary:focus-visible { outline-color: var(--c-foreground); }
+
+  .body { flex: 1; padding: 16px 26px; overflow: hidden; }
+
+  /* ── the signature element: a verdict written as a sentence ─────────── */
+  .verdict { font-family: var(--font-display); font-size: 28px; font-weight: 600;
+             letter-spacing: -0.02em; line-height: 1.2; margin: 0; max-width: 62ch; }
+  .verdict .ok { color: var(--c-goodText); }
+  .verdict .bad { color: var(--c-criticalText); }
+  .verdict-sub { font-size: 15px; color: var(--c-secondary); margin: 6px 0 0; max-width: 96ch; }
+
+  /* ── problem rows ───────────────────────────────────────────────────── */
+  .issues { margin-top: 13px; border: 1px solid var(--c-border); border-radius: 8px;
+            background: var(--c-surface); overflow: hidden; }
+  .strip { display: grid; grid-template-columns: 4px 1fr auto; gap: 0 16px; align-items: center;
+           padding: 10px 18px; margin-top: 10px; border: 1px solid var(--c-border);
+           border-radius: 8px; background: var(--c-surface); }
+  .strip .rule { align-self: stretch; border-radius: 2px;
+      background-image: repeating-linear-gradient(45deg, var(--c-hatchLine) 0 2px, transparent 2px 6px);
+      box-shadow: inset 0 0 0 1px var(--c-hatchLine); }
+  .strip p { margin: 3px 0 0; font-size: 15px; color: var(--c-secondary); }
+  .strip h3 { margin: 0; font-size: 16px; font-weight: 600; }
+  .issue { display: grid; grid-template-columns: 4px 1fr auto; gap: 0 16px;
+           padding: 11px 18px; border-bottom: 1px solid var(--c-grid); align-items: start; }
+  .issue:last-child { border-bottom: 0; }
+  .issue .rule { border-radius: 2px; align-self: stretch; }
+  .issue[data-sev="critical"] .rule { background: var(--c-critical); }
+  .issue[data-sev="warning"]  .rule { background: var(--c-warning); }
+  .issue[data-sev="ok"] .rule { background: var(--c-good); }
+  .issue[data-sev="unchecked"] .rule {
+      background-image: repeating-linear-gradient(45deg, var(--c-hatchLine) 0 2px, transparent 2px 6px);
+      box-shadow: inset 0 0 0 1px var(--c-hatchLine); }
+  .issue h3 { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.35; }
+  .issue p { margin: 5px 0 0; font-size: 15px; color: var(--c-secondary); max-width: 92ch; }
+  .issue .act { display: flex; align-items: center; gap: 10px; padding-top: 2px; }
+  .cmd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px;
+         background: var(--c-wash); border: 1px solid var(--c-border); border-radius: 6px;
+         padding: 4px 9px; color: var(--c-foreground); white-space: nowrap; }
+  .sev { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 600;
+         color: var(--c-secondary); margin-bottom: 2px; }
+  .sev .mk { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+  .sev[data-sev="critical"] .mk { background: var(--c-critical); }
+  .sev[data-sev="critical"] { color: var(--c-criticalText); }
+  .sev[data-sev="warning"] .mk { background: var(--c-warning); }
+  .sev[data-sev="warning"] { color: var(--c-warningText); }
+  .sev[data-sev="unchecked"] .mk {
+      background-image: repeating-linear-gradient(45deg, var(--c-hatchLine) 0 1.5px, transparent 1.5px 5px);
+      box-shadow: inset 0 0 0 1px var(--c-hatchLine); }
+  .sev[data-sev="ok"] .mk { background: var(--c-good); }
+  .sev[data-sev="ok"] { color: var(--c-goodText); }
+
+  /* ── totals that carry their own gap, in the same box ───────────────── */
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 11px; }
+  .tot { border: 1px solid var(--c-border); border-radius: 8px; background: var(--c-surface);
+         padding: 10px 15px 11px; }
+  .tot .v { font-size: 24px; font-weight: 600; line-height: 1.15; }
+  .tot .l { font-size: 15px; color: var(--c-secondary); }
+  .tot .gapline { font-size: 15px; margin-top: 7px; padding-top: 7px;
+                  border-top: 1px solid var(--c-grid); color: var(--c-foreground); }
+  .tot .gapline b { font-weight: 600; }
+
+  .footnote { margin-top: 11px; font-size: 14px; color: var(--c-muted);
+              display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .footnote .id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+  /* ── generic pieces ─────────────────────────────────────────────────── */
+  .h2 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  .lede { font-size: 15px; color: var(--c-secondary); margin: 6px 0 0; max-width: 84ch; }
+  .card { border: 1px solid var(--c-border); border-radius: 8px; background: var(--c-surface);
+          padding: 14px 18px; margin-top: 12px; }
+  .kv { display: grid; grid-template-columns: 210px 1fr; gap: 4px 18px; font-size: 15px; margin-top: 4px; }
+  .kv dt { color: var(--c-secondary); margin: 0; }
+  .kv dd { margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .quote { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px;
+           background: var(--c-wash); border: 1px solid var(--c-border); border-radius: 6px;
+           padding: 9px 12px; color: var(--c-secondary); white-space: pre-wrap; margin: 0; line-height: 1.5; }
+  .note { display: flex; gap: 12px; align-items: flex-start; font-size: 15px;
+          border: 1px solid var(--c-border); border-radius: 8px; padding: 12px 14px;
+          background: var(--c-surface); color: var(--c-secondary); }
+  .note.warn { box-shadow: inset 4px 0 0 var(--c-warning); }
+  .note.bad  { box-shadow: inset 4px 0 0 var(--c-critical); }
+  .note.hatched { box-shadow: inset 4px 0 0 var(--c-hatchLine); }
+  .note b { color: var(--c-foreground); }
+
+  /* delivered / not-delivered, three-way tags — colour never travels alone */
+  .tag { display: inline-flex; align-items: center; gap: 6px; font-size: 14px;
+         padding: 2px 9px; border-radius: 999px; border: 1px solid var(--c-border);
+         color: var(--c-secondary); background: var(--c-surface); white-space: nowrap; }
+  .tag .mk { width: 8px; height: 8px; border-radius: 2px; flex: none; background: var(--c-dim1); }
+  .tag[data-t="meaning"] .mk { background: var(--c-series1); }
+  .tag[data-t="words"] .mk { background: var(--c-series2); }
+  .tag[data-t="unchecked"] .mk {
+      background-image: repeating-linear-gradient(45deg, var(--c-hatchLine) 0 1.5px, transparent 1.5px 5px);
+      box-shadow: inset 0 0 0 1px var(--c-hatchLine); background-color: transparent; }
+  .tag[data-t="clutter"] .mk { background: var(--c-dim2); }
+  .tag.strong { color: var(--c-foreground); font-weight: 600; }
+
+  /* search + result rows */
+  .search { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+  .search input, .search select { font: inherit; font-size: 15px; min-height: 36px;
+      padding: 0 12px; border-radius: 6px; border: 1px solid var(--c-dim1);
+      background: var(--c-surface); color: var(--c-foreground); }
+  .search input { flex: 1 1 420px; }
+  .search input::placeholder { color: var(--c-muted); }
+  .filters { display: flex; gap: 10px; align-items: center; margin-top: 12px; font-size: 15px;
+             color: var(--c-secondary); flex-wrap: wrap; }
+  .rows { margin-top: 12px; border: 1px solid var(--c-border); border-radius: 8px;
+          background: var(--c-surface); overflow: hidden; }
+  .row { display: grid; grid-template-columns: minmax(0,1fr) 250px; gap: 0 18px; padding: 12px 16px;
+         border-bottom: 1px solid var(--c-grid); align-items: start; }
+  .row:last-child { border-bottom: 0; }
+  .row .txt { font-size: 15px; line-height: 1.45; }
+  .row .meta { font-size: 14px; color: var(--c-muted); margin-top: 5px; }
+  .row .side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; min-width: 0; }
+  .row .side .tag { max-width: 100%; }
+  .row[data-clutter="1"] .txt { color: var(--c-muted); }
+
+  /* persona delivery groups */
+  .group { margin-top: 13px; }
+  .group > .head { display: flex; align-items: center; gap: 12px; }
+  .group > .head .t { font-size: 17px; font-weight: 600; }
+  .group > .head .c { font-size: 15px; color: var(--c-secondary); }
+  .plist { list-style: none; margin: 8px 0 0; padding: 0; border: 1px solid var(--c-border);
+           border-radius: 8px; background: var(--c-surface); overflow: hidden; }
+  .plist li { display: grid; grid-template-columns: 4px 1fr auto; gap: 0 14px; padding: 9px 16px;
+              border-bottom: 1px solid var(--c-grid); align-items: center; }
+  .plist li:last-child { border-bottom: 0; }
+  .plist .rule { align-self: stretch; border-radius: 2px; background: var(--c-dim1); }
+  .plist li[data-reach="every"] .rule { background: var(--c-series1); }
+  .plist li[data-reach="never"] .rule { background: var(--c-critical); }
+  .plist .t { font-size: 15px; }
+  .plist li[data-reach="never"] .t { color: var(--c-secondary); }
+  .claim { font-size: 14px; font-weight: 600; padding: 2px 10px; border-radius: 999px;
+           border: 1px dashed var(--c-dim1); color: var(--c-secondary);
+           background: var(--c-surface); cursor: pointer; min-height: 32px;
+           display: inline-flex; align-items: center; }
+
+  /* skeletons — hold the layout so nothing moves when data lands */
+  .sk { background: var(--c-wash); border-radius: 4px; display: block; }
+  .sk.line { height: 15px; }
+  .sk.big { height: 34px; }
+  .sk.title { height: 20px; }
+
+  .empty { margin-top: 40px; max-width: 62ch; }
+  .empty h2 { font-family: var(--font-display); font-size: 26px; font-weight: 600; margin: 0; letter-spacing: -0.015em; }
+  .empty p { font-size: 16px; color: var(--c-secondary); margin: 10px 0 0; line-height: 1.55; }
+  .empty .acts { display: flex; gap: 10px; margin-top: 18px; align-items: center; }
+
+  .hits { margin-top: 12px; }
+  .hit { display: grid; grid-template-columns: 26px 1fr 150px; gap: 0 14px; padding: 10px 0;
+         border-bottom: 1px solid var(--c-grid); font-size: 15px; align-items: start; }
+  .hit:last-child { border-bottom: 0; }
+  .hit .n { color: var(--c-muted); font-variant-numeric: tabular-nums; }
+  .hit .why { font-size: 14px; color: var(--c-muted); text-align: right; }
+  .hit[data-dropped="1"] .c { color: var(--c-muted); }
+</style>
+</head>
+<body>
+<header class="doc">
+  <h1>dashboard — tencentdb-agent-memory — tmem view</h1>
+  <p>For the person whose memory this is — a bilingual senior engineer opening tmem view between coding sessions, not the plugin's author debugging it. The one job: fix the one thing that is quietly degrading their memory right now.</p>
+  <span class="fidelity">desktop · wireframe-to-visual fidelity · not final pixels</span>
+</header>
+<main class="frames">
+      <figure class="slot" id="health-check--default">
+        <figcaption class="slot-tag">Health check <span>default</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--default" aria-current="page">Health</a>
+                  <a href="#your-memories--default">Your memories<span class="n">5 542</span></a>
+                  <a href="#what-the-agent-knows-about-you--default">What it knows about you</a>
+                  <a href="#trace-a-prompt--default">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live"><i></i>watching for changes</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <h1 class="verdict">Your memory is <span class="ok">working</span> — 3 things need attention.</h1>
+                <p class="verdict-sub">Checked 51 projects a moment ago. Nothing has been lost. The first fix takes about a minute.</p>
+
+                <div class="issues">
+                  <div class="issue" data-sev="critical">
+                    <span class="rule"></span>
+                    <div>
+                      <span class="sev" data-sev="critical"><span class="mk"></span>Fix this first</span>
+                      <h3>23 projects can only find memories that use your exact words.</h3>
+                      <p>3 327 memories there have no meaning-index, so asking “how do we handle auth errors” will not find one saved as “401 retry policy”.</p>
+                    </div>
+                    <div class="act">
+                      <code class="cmd">tmem sync</code>
+                      <button class="btn primary">Copy command</button>
+                    </div>
+                  </div>
+
+                  <div class="issue" data-sev="warning">
+                    <span class="rule"></span>
+                    <div>
+                      <span class="sev" data-sev="warning"><span class="mk"></span>Worth a look</span>
+                      <h3>33 of the 47 rules you set as “always apply” never reach the assistant.</h3>
+                      <p>All of <b>Preferences</b> (17) and most of <b>Working Style</b> (14) are dropped before it ever sees them; 11 are too long to fit. A rule the assistant cannot see is not a rule.</p>
+                    </div>
+                    <div class="act">
+                      <a class="btn" href="#what-the-agent-knows-about-you--default">Show the 33</a>
+                    </div>
+                  </div>
+
+                  <div class="issue" data-sev="warning">
+                    <span class="rule"></span>
+                    <div>
+                      <span class="sev" data-sev="warning"><span class="mk"></span>Worth a look</span>
+                      <h3>2 165 of your 5 542 memories are clutter that was saved by mistake.</h3>
+                      <p>Sub-agent finish notices, slash commands, and 1 735 pastes cut off mid-sentence — competing with the real ones for the few lines handed over each turn.</p>
+                    </div>
+                    <div class="act">
+                      <a class="btn" href="#your-memories--default">See what they are</a>
+                    </div>
+                  </div>
+
+                </div>
+
+                <div class="strip">
+                  <span class="rule"></span>
+                  <div>
+                    <h3><span class="sev" data-sev="unchecked" style="margin:0 8px 0 0"><span class="mk"></span>Not checked yet</span>24 projects have never been checked — which is not the same as scoring zero.</h3>
+                    <p>No index was ever built there, so their 238 memories are left out of the figures above rather than counted as failures in them.</p>
+                  </div>
+                  <a class="btn" href="#problem-detail--not-checked-yet">Which projects</a>
+                </div>
+
+                <div class="tiles">
+                  <div class="tot">
+                    <div class="l">Memories saved</div>
+                    <div class="v">5 542</div>
+                    <div class="gapline">About <b>3 reach the assistant</b> each turn.</div>
+                  </div>
+                  <div class="tot">
+                    <div class="l">Topic summaries</div>
+                    <div class="v">219</div>
+                    <div class="gapline"><b>141 are never offered</b> to it.</div>
+                  </div>
+                  <div class="tot">
+                    <div class="l">Things it knows about you</div>
+                    <div class="v">81</div>
+                    <div class="gapline"><b>13 arrive each session</b>; 33 never.</div>
+                  </div>
+                </div>
+
+                <div class="footnote">
+                  <span>Read at 12:07 today · reading <span class="id">s1-b41d81cf395452e7</span> · nothing on this page changes your memory, it only reads.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="health-check--empty">
+        <figcaption class="slot-tag">Health check <span>empty</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--empty" aria-current="page">Health</a>
+                  <a href="#your-memories--empty">Your memories<span class="n">0</span></a>
+                  <a href="#what-the-agent-knows-about-you--empty">What it knows about you</a>
+                  <a href="#trace-a-prompt--empty">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live"><i></i>watching for changes</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <div class="empty">
+                  <h2>Nothing saved yet — and nothing wrong.</h2>
+                  <p>Your assistant starts remembering after your first real conversation in a project: what you decided, what you rejected, and how you like things done. There is one project set up (<b>tencentdb-agent-memory</b>) and no memories in it.</p>
+                  <p>If you want it to start now rather than after the next session, run the set-up once. It creates the two small database files under <span class="rootpath">~/.memory-tencentdb</span> and writes nothing else.</p>
+                  <div class="acts">
+                    <code class="cmd">/memory-init</code>
+                    <button class="btn primary">Copy command</button>
+                    <a class="btn" href="#trace-a-prompt--empty">Or try a prompt anyway</a>
+                  </div>
+                </div>
+                <div class="tiles">
+                  <div class="tot">
+                    <div class="l">Memories saved</div>
+                    <div class="v">0</div>
+                    <div class="gapline">This is a real zero — the store was read and it is empty.</div>
+                  </div>
+                  <div class="tot">
+                    <div class="l">Topic summaries</div>
+                    <div class="v">0</div>
+                    <div class="gapline">Summaries are written once there is enough to summarise.</div>
+                  </div>
+                  <div class="tot">
+                    <div class="l">Things it knows about you</div>
+                    <div class="v">0</div>
+                    <div class="gapline">Built after a few sessions, or on demand with <span class="rootpath">/memory-consolidate</span>.</div>
+                  </div>
+                </div>
+                <div class="footnote">
+                  <span>Read at 12:07 today · reading <span class="id">s1-0000000000000000</span></span>
+                  <span>·</span>
+                  <span>Nothing on this page changes your memory. It only reads.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="health-check--loading">
+        <figcaption class="slot-tag">Health check <span>loading</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--loading" aria-current="page">Health</a>
+                  <a href="#your-memories--loading">Your memories</a>
+                  <a href="#what-the-agent-knows-about-you--default">What it knows about you</a>
+                  <a href="#trace-a-prompt--loading">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live off"><i></i>reading 51 projects…</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <p class="verdict-sub" style="margin-top:0">Reading 51 projects — 38 done. The path and the project count are known already; the verdict is not.</p>
+                <span class="sk big" style="width:620px;margin-top:10px"></span>
+                <span class="sk line" style="width:430px;margin-top:12px"></span>
+
+                <div class="issues">
+                  <div class="issue" data-sev="unchecked">
+                    <span class="rule"></span>
+                    <div>
+                      <span class="sk line" style="width:140px"></span>
+                      <span class="sk title" style="width:560px;margin-top:8px"></span>
+                      <span class="sk line" style="width:720px;margin-top:9px"></span>
+                      <span class="sk line" style="width:640px;margin-top:6px"></span>
+                    </div>
+                    <div class="act"><span class="sk line" style="width:160px;height:32px"></span></div>
+                  </div>
+                  <div class="issue" data-sev="unchecked">
+                    <span class="rule"></span>
+                    <div>
+                      <span class="sk line" style="width:140px"></span>
+                      <span class="sk title" style="width:600px;margin-top:8px"></span>
+                      <span class="sk line" style="width:700px;margin-top:9px"></span>
+                      <span class="sk line" style="width:520px;margin-top:6px"></span>
+                    </div>
+                    <div class="act"><span class="sk line" style="width:160px;height:32px"></span></div>
+                  </div>
+                  <div class="issue" data-sev="unchecked">
+                    <span class="rule"></span>
+                    <div>
+                      <span class="sk line" style="width:140px"></span>
+                      <span class="sk title" style="width:520px;margin-top:8px"></span>
+                      <span class="sk line" style="width:680px;margin-top:9px"></span>
+                      <span class="sk line" style="width:600px;margin-top:6px"></span>
+                    </div>
+                    <div class="act"><span class="sk line" style="width:160px;height:32px"></span></div>
+                  </div>
+                </div>
+
+                <div class="tiles">
+                  <div class="tot">
+                    <div class="l">Memories saved</div>
+                    <span class="sk big" style="width:120px;margin-top:2px"></span>
+                    <div class="gapline"><span class="sk line" style="width:230px"></span></div>
+                  </div>
+                  <div class="tot">
+                    <div class="l">Topic summaries</div>
+                    <span class="sk big" style="width:90px;margin-top:2px"></span>
+                    <div class="gapline"><span class="sk line" style="width:250px"></span></div>
+                  </div>
+                  <div class="tot">
+                    <div class="l">Things it knows about you</div>
+                    <span class="sk big" style="width:80px;margin-top:2px"></span>
+                    <div class="gapline"><span class="sk line" style="width:210px"></span></div>
+                  </div>
+                </div>
+                <div class="footnote"><span>Reading… nothing on this page changes your memory.</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="health-check--error">
+        <figcaption class="slot-tag">Health check <span>error</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--error" aria-current="page">Health</a>
+                  <a href="#your-memories--default">Your memories<span class="n">5 231</span></a>
+                  <a href="#what-the-agent-knows-about-you--default">What it knows about you</a>
+                  <a href="#trace-a-prompt--default">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live off"><i></i>not live · read once</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <h1 class="verdict">3 projects <span class="bad">could not be opened</span>.</h1>
+                <p class="verdict-sub">Everything below is measured from the other 48. The memories in those 3 are not counted anywhere on this page — not as zero, not at all.</p>
+
+                <div class="issues">
+                  <div class="issue" data-sev="critical">
+                    <span class="rule"></span>
+                    <div>
+                      <span class="sev" data-sev="critical"><span class="mk"></span>Could not read</span>
+                      <h3>orchard-api — the memory file is locked by another program.</h3>
+                      <p>The operating system said: <code class="cmd">EBUSY: resource busy or locked, open 'index.db'</code>. Usually another <span class="rootpath">tmem</span> or a Claude session is mid-write. Nothing is damaged; try again in a moment.</p>
+                    </div>
+                    <div class="act"><button class="btn primary">Try again</button></div>
+                  </div>
+                  <div class="issue" data-sev="critical">
+                    <span class="rule"></span>
+                    <div>
+                      <span class="sev" data-sev="critical"><span class="mk"></span>Could not read</span>
+                      <h3>pbi-demo — the folder is on a drive that is not mounted.</h3>
+                      <p>The operating system said: <code class="cmd">ENOENT: no such file or directory, open '/mnt/d/pbi-demo'</code>. Mount the drive, or remove this project from your memory folder if it is gone for good.</p>
+                    </div>
+                    <div class="act"><button class="btn">Show the folder</button></div>
+                  </div>
+                  <div class="issue" data-sev="critical">
+                    <span class="rule"></span>
+                    <div>
+                      <span class="sev" data-sev="critical"><span class="mk"></span>Could not read</span>
+                      <h3>f1probe-empty — the memory file is not a database.</h3>
+                      <p>The operating system said: <code class="cmd">SQLITE_NOTADB: file is not a database</code>. This one is a leftover test folder, so it is safe to delete; if it is not yours to delete, leave it and it stays excluded.</p>
+                    </div>
+                    <div class="act"><button class="btn">Show the folder</button></div>
+                  </div>
+                </div>
+
+                <div class="note bad" style="margin-top:16px">
+                  <span aria-hidden="true">⚠</span>
+                  <span><b>Read the totals with that in mind.</b> 5 231 memories across 48 projects, not 5 542 across 51. The difference is unknown, not zero — the three projects above were never opened, so nobody knows what is in them.</span>
+                </div>
+
+                <div class="footnote">
+                  <span>Read at 12:07 today · reading <span class="id">s1-b41d81cf395452e7</span></span>
+                  <span>·</span>
+                  <span>Nothing on this page changes your memory. It only reads.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="health-check--all-clear">
+        <figcaption class="slot-tag">Health check <span>all clear</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--all-clear" aria-current="page">Health</a>
+                  <a href="#your-memories--default">Your memories<span class="n">5 542</span></a>
+                  <a href="#what-the-agent-knows-about-you--default">What it knows about you</a>
+                  <a href="#trace-a-prompt--default">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live"><i></i>watching for changes</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <h1 class="verdict">Your memory is <span class="ok">in good shape</span>. Nothing to do.</h1>
+                <p class="verdict-sub">All 51 projects can search by meaning, every rule you marked “always apply” reaches the assistant, and no memories are missing. Last change: 4 minutes ago.</p>
+
+                <div class="issues">
+                  <div class="issue" data-sev="ok">
+                    <span class="rule"></span>
+                    <div>
+                      <span class="sev" data-sev="ok"><span class="mk"></span>Checked and fine</span>
+                      <h3>All 51 projects can find memories by meaning, not just by exact words.</h3>
+                      <p>5 542 of 5 542 memories are indexed. Last built 4 minutes ago; new memories are indexed as they are written.</p>
+                    </div>
+                    <div class="act"><a class="btn" href="#trace-a-prompt--default">Try a prompt</a></div>
+                  </div>
+                  <div class="issue" data-sev="ok">
+                    <span class="rule"></span>
+                    <div>
+                      <span class="sev" data-sev="ok"><span class="mk"></span>Checked and fine</span>
+                      <h3>All 47 of your “always apply” rules reach the assistant.</h3>
+                      <p>They fit inside what the assistant is given at the start of each session, with room to spare.</p>
+                    </div>
+                    <div class="act"><a class="btn" href="#what-the-agent-knows-about-you--default">Read them</a></div>
+                  </div>
+                  <div class="issue" data-sev="ok">
+                    <span class="rule"></span>
+                    <div>
+                      <span class="sev" data-sev="ok"><span class="mk"></span>Checked and fine</span>
+                      <h3>No clutter above the level worth cleaning.</h3>
+                      <p>184 of 5 542 memories look machine-generated — under the 5% where it starts crowding out real ones.</p>
+                    </div>
+                    <div class="act"><a class="btn" href="#your-memories--default">See them</a></div>
+                  </div>
+                </div>
+
+                <div class="tiles">
+                  <div class="tot">
+                    <div class="l">Memories saved</div>
+                    <div class="v">5 542</div>
+                    <div class="gapline">The assistant is handed about <b>3 of them per turn</b> — by design; that is the budget.</div>
+                  </div>
+                  <div class="tot">
+                    <div class="l">Topic summaries</div>
+                    <div class="v">219</div>
+                    <div class="gapline"><b>All 219 are offered</b> to the assistant.</div>
+                  </div>
+                  <div class="tot">
+                    <div class="l">Things it knows about you</div>
+                    <div class="v">81</div>
+                    <div class="gapline"><b>47 arrive each session</b>; the other 34 are reference, fetched on demand.</div>
+                  </div>
+                </div>
+
+                <div class="footnote">
+                  <span>Read at 12:07 today · reading <span class="id">s1-7c1af0d2e9b34411</span></span>
+                  <span>·</span>
+                  <span>Every number on this screen is an example of the healthy state, not a live reading.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="problem-detail--default">
+        <figcaption class="slot-tag">Problem detail <span>default</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--default" aria-current="page">Health</a>
+                  <a href="#your-memories--default">Your memories<span class="n">5 542</span></a>
+                  <a href="#what-the-agent-knows-about-you--default">What it knows about you</a>
+                  <a href="#trace-a-prompt--default">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live"><i></i>watching for changes</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <a class="btn" href="#health-check--default" style="margin-bottom:10px">← Back to health</a>
+                <h1 class="verdict" style="font-size:24px;max-width:62ch">23 projects can only find memories that use your exact words.</h1>
+                <p class="verdict-sub">Search still works everywhere. The part that matches <i>meaning</i> is missing, so a memory phrased differently from your question is not found.</p>
+
+                <div class="card">
+                  <h2 class="h2">What that looks like when you use it</h2>
+                  <p class="lede">You ask “how do we handle auth errors here?”. In <b>quarry</b> this memory exists and is not returned — no shared words:</p>
+                  <p class="quote">401 from the gateway → refresh once, then surface to the user. Never silent-retry.</p>
+                </div>
+
+                <div class="card">
+                  <h2 class="h2">Where it applies</h2>
+                  <dl class="kv">
+                    <dt>Projects affected</dt>
+                    <dd><b>23</b> of 51 — 20 with an empty index, 3 partly built — and <b>3 327</b> of the 5 304 memories checked</dd>
+                    <dt>Worst affected</dt>
+                    <dd>orchard-api 1 125 of 2 826 · quarry 240 of 240</dd>
+                    <dt>When they piled up</dt>
+                    <dd>1 430 in June, 1 765 in July, 132 so far in August — still growing, not a one-off backlog</dd>
+                    <dt>What fixes it</dt>
+                    <dd><code class="cmd">tmem sync</code> <button class="btn primary">Copy command</button> <span class="tag">one index entry per memory · about 4 minutes</span></dd>
+                  </dl>
+                </div>
+
+                <div class="card">
+                  <h2 class="h2" style="margin-bottom:2px">What the tool measured</h2>
+                  <p class="quote">vectors_missing · critical · orchard-api: 1125 of 2826 records without embeddings · { withVector: 1701, withoutVector: 1125, ratio: 0.6019, vectorState: "populated" } → tmem sync</p>
+                </div>
+
+                <div class="footnote">
+                  <span>Reading <span class="id">s1-b41d81cf395452e7</span></span>
+                  <span>·</span>
+                  <span>The block above is the exact text the command line prints — quote it in a bug report.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="problem-detail--not-checked-yet">
+        <figcaption class="slot-tag">Problem detail <span>not checked yet</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--default" aria-current="page">Health</a>
+                  <a href="#your-memories--default">Your memories<span class="n">5 542</span></a>
+                  <a href="#what-the-agent-knows-about-you--default">What it knows about you</a>
+                  <a href="#trace-a-prompt--default">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live"><i></i>watching for changes</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <a class="btn" href="#health-check--default" style="margin-bottom:14px">← Back to health</a>
+                <h1 class="verdict" style="font-size:26px;max-width:34ch">24 projects have never been checked.</h1>
+                <p class="verdict-sub">Nothing here is known to be wrong — or right. Those are different things, so this page refuses to score them.</p>
+
+                <div class="note hatched" style="margin-top:16px">
+                  <span aria-hidden="true">⧅</span>
+                  <span><b>Not checked is not zero.</b> These 24 projects have no index file at all, so their 238 memories were left out of the “23 projects” figure on the health screen rather than counted as failures in it. Averaging them in as zeros would have made that figure read worse than the truth — which is exactly the mistake this tool was built after.</span>
+                </div>
+
+                <div class="card">
+                  <h2 class="h2">The 24, and why each was skipped</h2>
+                  <div class="rows" style="margin-top:10px">
+                    <div class="row">
+                      <div>
+                        <div class="txt"><b>tidepool</b> and 14 other project folders</div>
+                        <div class="meta">No index file has ever been created here. 234 memories between them.</div>
+                      </div>
+                      <div class="side"><span class="tag" data-t="unchecked"><span class="mk"></span>not checked</span></div>
+                    </div>
+                    <div class="row">
+                      <div>
+                        <div class="txt"><b>/tmp/f1probe-empty</b> and 8 other throwaway folders</div>
+                        <div class="meta">Left over from a test run. 4 memories between them; safe to leave alone. 234 + 4 = the 238 above.</div>
+                      </div>
+                      <div class="side"><span class="tag" data-t="unchecked"><span class="mk"></span>not checked</span></div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="card">
+                  <h2 class="h2">If you want them checked</h2>
+                  <p class="lede">The same command builds an index in each one. After that they get a real reading — “fine” or “nothing indexed”. Either answer beats the current silence.</p>
+                  <div class="acts" style="display:flex;gap:10px;margin-top:14px;align-items:center">
+                    <code class="cmd">tmem sync --all</code>
+                    <button class="btn primary">Copy command</button>
+                    <span class="tag">238 memories · about 25 seconds</span>
+                  </div>
+                </div>
+
+                <div class="footnote">
+                  <span>Reading <span class="id">s1-b41d81cf395452e7</span></span>
+                  <span>·</span>
+                  <span>Reason recorded for all 24: “vectors.db not present — embeddings were never written for this store”.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="what-the-agent-knows-about-you--default">
+        <figcaption class="slot-tag">What the agent knows about you <span>default</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--default">Health<span class="n">3</span></a>
+                  <a href="#your-memories--default">Your memories<span class="n">5 542</span></a>
+                  <a href="#what-the-agent-knows-about-you--default" aria-current="page">What it knows about you</a>
+                  <a href="#trace-a-prompt--default">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live"><i></i>watching for changes</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <h1 class="verdict" style="font-size:26px;max-width:40ch">Of the 81 things written about you, <span class="bad">13 actually reach</span> the assistant.</h1>
+                <p class="verdict-sub">Grouped by what happens to each one, not by how it was filed: what arrives, what might, what never does.</p>
+
+                <div class="group">
+                  <div class="head"><span class="t">Arrives at the start of every session</span><span class="c">13 of 81</span></div>
+                  <ul class="plist">
+                    <li data-reach="every">
+                      <span class="rule"></span>
+                      <span class="t">Dev Aster — solo engineer who owns a handful of small services end to end…</span>
+                      <span class="claim">must always know</span>
+                    </li>
+                    <li data-reach="every">
+                      <span class="rule"></span>
+                      <span class="t">Diagnose before prescribe: proposals start from measurements on the repo…</span>
+                      <span class="claim">must always know</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div class="group">
+                  <div class="head"><span class="t">Only if the assistant goes looking</span><span class="c">34 of 81</span></div>
+                  <ul class="plist">
+                    <li>
+                      <span class="rule"></span>
+                      <span class="t">WSL2 memory ceiling is a live constraint: .wslconfig memory=16GB + swap=8GB…</span>
+                      <span class="claim">look up if asked</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div class="group">
+                  <div class="head"><span class="t">Never reaches it</span><span class="c">33 of 81 — and every one of these is marked “always apply”</span><span class="grow"></span><button class="btn primary">Shorten the longest one</button></div>
+                  <ul class="plist">
+                    <li data-reach="never">
+                      <span class="rule"></span>
+                      <span class="t">Fix at the root, not the branch — “sửa ở gốc không sửa ở ngọn”: when a consumer repo is blocked by tooling…</span>
+                      <span class="claim">must always know</span>
+                    </li>
+                    <li data-reach="never">
+                      <span class="rule"></span>
+                      <span class="t">Distrusts near-perfect eval scores: ~100% on an LLM eval is a smell (“khá bất ổn”) — suspect leakage…</span>
+                      <span class="claim">must always know</span>
+                    </li>
+                    <li data-reach="never">
+                      <span class="rule"></span>
+                      <span class="t">Governed docs: default posture is NEVER self-flip status or self-assign/approve — human authorisation…</span>
+                      <span class="claim">must always know</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div class="note warn" style="margin-top:16px">
+                  <span aria-hidden="true">⚠</span>
+                  <span><b>Why they are dropped: there is room for 4 800 characters and the 13 that arrive already use 4 566.</b> The 33 are not less important — they sit further down the file, and 11 are over 700 characters on their own. Shortening one is the fastest way to get it delivered.</span>
+                </div>
+                <div class="footnote">
+                  <span><b style="color:var(--c-foreground)">“must always know”, “look up if asked” — these are the tool's guesses, not your labels.</b> The dashed outline says so. Click one to see why it guessed that, and correct it.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="what-the-agent-knows-about-you--empty">
+        <figcaption class="slot-tag">What the agent knows about you <span>empty</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--default">Health</a>
+                  <a href="#your-memories--default">Your memories<span class="n">312</span></a>
+                  <a href="#what-the-agent-knows-about-you--empty" aria-current="page">What it knows about you</a>
+                  <a href="#trace-a-prompt--default">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live"><i></i>watching for changes</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <div class="empty">
+                  <h2>Your assistant has not formed a picture of you yet.</h2>
+                  <p>It has 312 memories from your conversations, but it has not yet worked out the standing pattern behind them — how you like proposals structured, what you always reject, which words you use for things.</p>
+                  <p>That happens automatically after enough sessions. You can also ask for it now; it reads the memories already saved and writes a summary you can edit by hand afterwards.</p>
+                  <div class="acts">
+                    <code class="cmd">/memory-consolidate</code>
+                    <button class="btn primary">Copy command</button>
+                    <a class="btn" href="#your-memories--default">Read the 312 memories instead</a>
+                  </div>
+                </div>
+                <div class="note hatched" style="margin-top:26px;max-width:78ch">
+                  <span aria-hidden="true">⧅</span>
+                  <span><b>Nothing is missing or broken.</b> There is simply no file to read yet, which is different from a file that was read and found empty. When one exists, this screen shows which parts of it reach the assistant and which do not.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="your-memories--default">
+        <figcaption class="slot-tag">Your memories <span>default</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--default">Health<span class="n">3</span></a>
+                  <a href="#your-memories--default" aria-current="page">Your memories<span class="n">5 542</span></a>
+                  <a href="#what-the-agent-knows-about-you--default">What it knows about you</a>
+                  <a href="#trace-a-prompt--default">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live"><i></i>watching for changes</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <h1 class="h2" style="font-size:22px">5 542 memories across 51 projects</h1>
+                <p class="lede">Everything your assistant has saved. Search it the way you would ask a question — this searches the same way the assistant does.</p>
+                <div class="search">
+                  <input type="search" value="recall budget" aria-label="Search your memories" />
+                  <select aria-label="Project"><option>orchard-api — 2 826</option></select>
+                  <button class="btn primary">Search</button>
+                </div>
+                <div class="filters">
+                  <span><b>41 matches</b> in orchard-api</span>
+                  <span class="tag" data-t="meaning"><span class="mk"></span>28 found by meaning</span>
+                  <span class="tag" data-t="words"><span class="mk"></span>13 by exact words only</span>
+                  <span class="grow"></span>
+                  <label><input type="checkbox" /> Hide clutter (2 165)</label>
+                </div>
+
+                <div class="rows">
+                  <div class="row">
+                    <div>
+                      <div class="txt">Recall budget bug: hybrid search was returning 12 hits but only 3 survived the character budget, so the last 9 were computed and thrown away. Fix is to budget before ranking, not after.</div>
+                      <div class="meta">2026-07-28 · topic: recall-pipeline · saved on purpose</div>
+                    </div>
+                    <div class="side">
+                      <span class="tag strong" data-t="meaning"><span class="mk"></span>findable by meaning</span>
+                      <span class="tag">handed to the assistant 6 times</span>
+                    </div>
+                  </div>
+                  <div class="row">
+                    <div>
+                      <div class="txt">fix the recall budget bug</div>
+                      <div class="meta">2026-07-28 · topic: auto-capture · saved in the background</div>
+                    </div>
+                    <div class="side">
+                      <span class="tag strong" data-t="meaning"><span class="mk"></span>findable by meaning</span>
+                      <span class="tag">handed to the assistant twice</span>
+                    </div>
+                  </div>
+                  <div class="row" data-clutter="1">
+                    <div>
+                      <div class="txt">&lt;task-notification&gt; Agent “memory-consolidator” finished. 4 scenes rewritten, 1 persona section updated. See transcript for details…</div>
+                      <div class="meta">2026-07-28 · topic: auto-capture · saved in the background</div>
+                    </div>
+                    <div class="side">
+                      <span class="tag" data-t="clutter"><span class="mk"></span>clutter — a finish notice</span>
+                      <span class="tag">never handed over</span>
+                    </div>
+                  </div>
+                  <div class="row" data-clutter="1">
+                    <div>
+                      <div class="txt">Budget: the injected block is capped at 420 characters per turn and the ranker sorts by priority then recency, which means a long high-priority memory can push out three short ones that would each have b…</div>
+                      <div class="meta">2026-07-27 · topic: recall-pipeline · saved in the background</div>
+                    </div>
+                    <div class="side">
+                      <span class="tag" data-t="clutter"><span class="mk"></span>clutter — cut off mid-sentence</span>
+                      <span class="tag">handed over once</span>
+                    </div>
+                  </div>
+                  <div class="row">
+                    <div>
+                      <div class="txt">Budget decision: keep the per-turn cap at 420 chars. Raising it made answers worse in the eval — more context, less obedience.</div>
+                      <div class="meta">2026-07-26 · topic: recall-pipeline · saved on purpose</div>
+                    </div>
+                    <div class="side">
+                      <span class="tag strong" data-t="words"><span class="mk"></span>exact words only</span>
+                      <span class="tag">handed to the assistant 9 times</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="footnote">
+                  <span>Showing 5 of 41 · 2 of these 5 are clutter · <b style="color:var(--c-foreground)">“exact words only”</b> means the meaning-index here is incomplete — <code class="cmd">tmem sync</code> fixes it.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="your-memories--empty">
+        <figcaption class="slot-tag">Your memories <span>empty</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--default">Health<span class="n">3</span></a>
+                  <a href="#your-memories--empty" aria-current="page">Your memories<span class="n">5 542</span></a>
+                  <a href="#what-the-agent-knows-about-you--default">What it knows about you</a>
+                  <a href="#trace-a-prompt--default">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live"><i></i>watching for changes</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <h1 class="h2" style="font-size:22px">5 542 memories across 51 projects</h1>
+                <p class="lede">Everything your assistant has saved. Search it the way you would ask a question — this searches the same way the assistant does.</p>
+                <div class="search">
+                  <input type="search" value="kubernetes rollout" aria-label="Search your memories" />
+                  <select aria-label="Project"><option>quarry — 240</option></select>
+                  <button class="btn primary">Search</button>
+                </div>
+
+                <div class="empty" style="margin-top:28px">
+                  <h2>No memory matches “kubernetes rollout” in quarry.</h2>
+                  <p>That may be the honest answer — or it may be this project's fault. <b>quarry can only match your exact words right now</b>, so a memory saved as “blue/green cutover for the cluster” is invisible to this search and to the assistant.</p>
+                  <div class="acts">
+                    <code class="cmd">tmem sync</code>
+                    <button class="btn primary">Copy command</button>
+                    <button class="btn">Search all 51 projects instead</button>
+                  </div>
+                </div>
+
+                <div class="note warn" style="margin-top:26px;max-width:86ch">
+                  <span aria-hidden="true">⚠</span>
+                  <span><b>240 of 240 memories here have no meaning-index.</b> The index file exists and is completely empty — that is a measured zero, not an unknown. It is the same problem as the first one on your health screen, and one command fixes both.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="your-memories--loading">
+        <figcaption class="slot-tag">Your memories <span>loading</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--default">Health<span class="n">3</span></a>
+                  <a href="#your-memories--loading" aria-current="page">Your memories<span class="n">5 542</span></a>
+                  <a href="#what-the-agent-knows-about-you--default">What it knows about you</a>
+                  <a href="#trace-a-prompt--default">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live"><i></i>watching for changes</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <h1 class="h2" style="font-size:22px">5 542 memories across 51 projects</h1>
+                <p class="lede">Everything your assistant has saved. Search it the way you would ask a question — this searches the same way the assistant does.</p>
+                <div class="search">
+                  <input type="search" value="recall budget" aria-label="Search your memories" />
+                  <select aria-label="Project"><option>orchard-api — 2 826</option></select>
+                  <button class="btn primary">Searching…</button>
+                </div>
+                <div class="filters">
+                  <span>Searching 2 826 memories in orchard-api…</span>
+                  <span class="grow"></span>
+                  <label><input type="checkbox" /> Hide clutter (2 165)</label>
+                </div>
+                <div class="rows">
+                  <div class="row">
+                    <div>
+                      <span class="sk line" style="width:78%"></span>
+                      <span class="sk line" style="width:52%;margin-top:7px"></span>
+                      <span class="sk line" style="width:230px;margin-top:9px;height:14px"></span>
+                    </div>
+                    <div class="side"><span class="sk line" style="width:150px;height:24px"></span><span class="sk line" style="width:120px;height:24px"></span></div>
+                  </div>
+                  <div class="row">
+                    <div>
+                      <span class="sk line" style="width:44%"></span>
+                      <span class="sk line" style="width:210px;margin-top:9px;height:14px"></span>
+                    </div>
+                    <div class="side"><span class="sk line" style="width:150px;height:24px"></span><span class="sk line" style="width:120px;height:24px"></span></div>
+                  </div>
+                  <div class="row">
+                    <div>
+                      <span class="sk line" style="width:86%"></span>
+                      <span class="sk line" style="width:61%;margin-top:7px"></span>
+                      <span class="sk line" style="width:240px;margin-top:9px;height:14px"></span>
+                    </div>
+                    <div class="side"><span class="sk line" style="width:150px;height:24px"></span><span class="sk line" style="width:120px;height:24px"></span></div>
+                  </div>
+                  <div class="row">
+                    <div>
+                      <span class="sk line" style="width:70%"></span>
+                      <span class="sk line" style="width:220px;margin-top:9px;height:14px"></span>
+                    </div>
+                    <div class="side"><span class="sk line" style="width:150px;height:24px"></span><span class="sk line" style="width:120px;height:24px"></span></div>
+                  </div>
+                </div>
+                <div class="footnote"><span>The rows keep their height while they fill, so nothing jumps under your cursor.</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="trace-a-prompt--default">
+        <figcaption class="slot-tag">Trace a prompt <span>default</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--default">Health<span class="n">3</span></a>
+                  <a href="#your-memories--default">Your memories<span class="n">5 542</span></a>
+                  <a href="#what-the-agent-knows-about-you--default">What it knows about you</a>
+                  <a href="#trace-a-prompt--default" aria-current="page">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live"><i></i>watching for changes</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <h1 class="h2" style="font-size:22px">What your assistant would actually be handed</h1>
+                <p class="lede">Type anything you would say to it. This runs the same lookup it runs — not a copy — and shows the result.</p>
+                <div class="search">
+                  <input type="search" value="fix the recall budget bug" aria-label="A prompt to trace" />
+                  <select aria-label="Project"><option>orchard-api — 2 826</option></select>
+                  <button class="btn primary">Trace it</button>
+                </div>
+
+                <div class="card">
+                  <h2 class="h2">This is what your assistant is handed</h2>
+                  <p class="lede">3 memories, 361 characters, found in 42 ms.</p>
+                  <p class="quote">&lt;memory-context&gt;
+- Recall budget bug: hybrid search returned 12 hits but only 3 survived the character budget — budget before ranking, not after.
+- Budget decision: keep the per-turn cap at 420 chars. Raising it made answers worse in the eval.
+- Topic: recall-pipeline (active this week)
+&lt;/memory-context&gt;</p>
+                </div>
+
+                <div class="card">
+                  <h2 class="h2">What was found but not handed over</h2>
+                  <p class="lede">9 more matched and were dropped — this is where “why didn't it remember that?” gets answered.</p>
+                  <div class="hits">
+                    <div class="hit" data-dropped="1">
+                      <span class="n">4</span>
+                      <span class="c">Budget: the injected block is capped at 420 characters per turn and the ranker sorts by priority then recency, which means…</span>
+                      <span class="why">no room left — 361 of 420 used</span>
+                    </div>
+                    <div class="hit" data-dropped="1">
+                      <span class="n">5</span>
+                      <span class="c">Eval run 2026-07-26: raising the cap to 800 chars dropped obedience 6 points on the held-out set.</span>
+                      <span class="why">no room left</span>
+                    </div>
+                    <div class="hit" data-dropped="1">
+                      <span class="n">6</span>
+                      <span class="c">&lt;task-notification&gt; Agent “eval-runner” finished. 40 cases, 2 regressions…</span>
+                      <span class="why">clutter — a finish notice</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="footnote">
+                  <span>12 matched — 5 by meaning, 4 by exact words, 3 by both</span>
+                  <span>·</span>
+                  <span>This project has a complete meaning-index, so this trace is the real thing.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="trace-a-prompt--empty">
+        <figcaption class="slot-tag">Trace a prompt <span>empty</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--default">Health<span class="n">3</span></a>
+                  <a href="#your-memories--default">Your memories<span class="n">5 542</span></a>
+                  <a href="#what-the-agent-knows-about-you--default">What it knows about you</a>
+                  <a href="#trace-a-prompt--empty" aria-current="page">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live"><i></i>watching for changes</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <h1 class="h2" style="font-size:22px">What your assistant would actually be handed</h1>
+                <p class="lede">Type anything you would say to it. This runs the same lookup it runs — not a copy of it — and shows you the result before you ever have to wonder.</p>
+                <div class="search">
+                  <input type="search" placeholder="for example: why did we drop the Postgres plan?" aria-label="A prompt to trace" />
+                  <select aria-label="Project"><option>All 51 projects</option></select>
+                  <button class="btn primary">Trace it</button>
+                </div>
+
+                <div class="empty" style="margin-top:24px;max-width:none">
+                  <h2>Start with one of your own.</h2>
+                  <p>These three are real things you said in the last week. Clicking one traces it.</p>
+                  <div class="acts" style="flex-wrap:wrap">
+                    <button class="btn">fix the recall budget bug</button>
+                    <button class="btn">tạo agent riêng review change cái đi</button>
+                    <button class="btn">push → create pr</button>
+                  </div>
+                </div>
+
+                <div class="card" style="max-width:88ch">
+                  <h2 class="h2">Why this screen exists</h2>
+                  <p class="lede">Your assistant is handed about three lines of memory per turn, chosen automatically out of 5 542. When it forgets something you know you told it, the reason is almost always visible here: the memory was never saved, was saved as clutter, or was found and then dropped for lack of room. This screen shows which.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="trace-a-prompt--loading">
+        <figcaption class="slot-tag">Trace a prompt <span>loading</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--default">Health<span class="n">3</span></a>
+                  <a href="#your-memories--default">Your memories<span class="n">5 542</span></a>
+                  <a href="#what-the-agent-knows-about-you--default">What it knows about you</a>
+                  <a href="#trace-a-prompt--loading" aria-current="page">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live"><i></i>watching for changes</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <h1 class="h2" style="font-size:22px">What your assistant would actually be handed</h1>
+                <p class="lede">Type anything you would say to it. This runs the same lookup it runs — not a copy of it — and shows you the result before you ever have to wonder.</p>
+                <div class="search">
+                  <input type="search" value="fix the recall budget bug" aria-label="A prompt to trace" />
+                  <select aria-label="Project"><option>orchard-api — 2 826</option></select>
+                  <button class="btn primary">Tracing…</button>
+                </div>
+
+                <div class="card">
+                  <h2 class="h2">This is what your assistant is handed</h2>
+                  <p class="lede">Running the same lookup the assistant runs…</p>
+                  <p class="quote"><span class="sk line" style="width:62%"></span>
+<span class="sk line" style="width:88%;margin-top:8px"></span>
+<span class="sk line" style="width:74%;margin-top:8px"></span>
+<span class="sk line" style="width:40%;margin-top:8px"></span></p>
+                </div>
+
+                <div class="card">
+                  <h2 class="h2">What was found but not handed over</h2>
+                  <div class="hits">
+                    <div class="hit"><span class="n">4</span><span class="c"><span class="sk line" style="width:80%"></span></span><span class="why"><span class="sk line" style="width:110px"></span></span></div>
+                    <div class="hit"><span class="n">5</span><span class="c"><span class="sk line" style="width:66%"></span></span><span class="why"><span class="sk line" style="width:110px"></span></span></div>
+                    <div class="hit"><span class="n">6</span><span class="c"><span class="sk line" style="width:73%"></span></span><span class="why"><span class="sk line" style="width:110px"></span></span></div>
+                  </div>
+                </div>
+                <div class="footnote"><span>The panel keeps its height, so the answer appears in place instead of pushing the page down.</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+      <figure class="slot" id="trace-a-prompt--error">
+        <figcaption class="slot-tag">Trace a prompt <span>error</span></figcaption>
+        <div class="device" style="--dev-w:1280px;--dev-h:800px;--dev-r:10px">
+          <div class="screen">
+            <div class="app">
+              <div class="topbar">
+                <span class="wordmark"><i></i>tmem</span>
+                <span class="rootpath">~/.memory-tencentdb</span>
+                <nav class="tabs">
+                  <a href="#health-check--default">Health<span class="n">3</span></a>
+                  <a href="#your-memories--default">Your memories<span class="n">5 542</span></a>
+                  <a href="#what-the-agent-knows-about-you--default">What it knows about you</a>
+                  <a href="#trace-a-prompt--error" aria-current="page">Try a prompt</a>
+                </nav>
+                <span class="grow"></span>
+                <span class="live off"><i></i>not live · read once</span>
+                <button class="btn">Theme: auto</button>
+              </div>
+              <div class="body">
+                <h1 class="h2" style="font-size:22px">What your assistant would actually be handed</h1>
+                <p class="lede">Type anything you would say to it. This runs the same lookup it runs — not a copy of it — and shows you the result before you ever have to wonder.</p>
+                <div class="search">
+                  <input type="search" value="how do we handle auth errors" aria-label="A prompt to trace" />
+                  <select aria-label="Project"><option>quarry — 240</option></select>
+                  <button class="btn primary">Trace it</button>
+                </div>
+
+                <div class="note bad" style="margin-top:16px">
+                  <span aria-hidden="true">⚠</span>
+                  <span><b>The lookup failed: the embedding service did not answer within 5 seconds.</b> Your memories are not affected — nothing was written and nothing was lost. This happens when the local model is still starting up.</span>
+                </div>
+                <div class="acts" style="display:flex;gap:10px;margin-top:14px;align-items:center">
+                  <button class="btn primary">Try again</button>
+                  <button class="btn">Search exact words only</button>
+                  <span class="tag">Failed at 12:09:41</span>
+                </div>
+
+                <div class="card">
+                  <h2 class="h2">Meanwhile, here is what exact-word matching found</h2>
+                  <p class="lede">2 memories, 188 characters. This is what the assistant would get right now if it asked — the meaning half is missing, so treat it as a floor, not the answer.</p>
+                  <p class="quote">&lt;memory-context&gt;
+- Auth errors from the gateway are logged with the request id; do not log the token.
+- Standing rule: never silent-retry an authorisation failure twice.
+&lt;/memory-context&gt;</p>
+                </div>
+
+                <div class="note hatched" style="margin-top:14px">
+                  <span aria-hidden="true">⧅</span>
+                  <span><b>Meaning-matching was not attempted, so it is unknown — not empty.</b> quarry has no meaning-index either, so even a successful lookup would have matched exact words only. <code class="cmd">tmem sync</code> fixes that half; the service timing out is separate.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+</main>
+</body>
+</html>
