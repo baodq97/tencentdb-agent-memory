@@ -29,7 +29,7 @@ Invoke the memory-consolidate skill via the Skill tool, then follow its workflow
 - Read existing persona before writing — merge new insights, don't replace
 - Group scenes by topic, not by session — each scene should be a coherent narrative
 - Deduplicate: skip scenes that overlap heavily with existing ones
-- Keep persona under 500 words for efficient recall injection
+- Keep every tier-0 `always` bullet under 160 chars (~25 words) and split the ones that run over — see the bullet-length rule in the memory-consolidate skill
 - Work silently — this is background maintenance, not user-facing
 
 ## When done

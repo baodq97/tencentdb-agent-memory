@@ -72,7 +72,7 @@ Read existing persona:
 tmem persona
 ```
 
-Merge new insights from persona-type and instruction-type atoms. Don't replace — evolve.
+Merge new insights from persona-type and instruction-type atoms. Don't replace — evolve. Evolving includes shortening: apply the bullet-length rule below to the bullets you carry forward, not only to the ones you add.
 
 **Priority cap (don't amplify on merge):** merging combines evidence; it must NOT inflate importance beyond the strongest source. When you fold several atoms into one persona point or standing instruction, the merged item's weight (priority/prominence) MUST be `≤ max(priority)` of the contributing atoms — never higher just because it was repeated or merged. A single scene-local instruction must not be promoted into a dominant global rule unless the source atoms' own priority already justifies it. Likewise, scene `--heat` reflects recency, not merge count: repetition across sessions is not evidence of higher priority.
 
@@ -102,9 +102,40 @@ Nothing is injected wholesale any more. Every bullet is classified by duty and s
 - **tier 1 `conditional`** — situational rules (`When…`, `Before…`). Injected **per turn**, only when the prompt matches, into ~420 chars.
 - **tier 2 `reference`** — paths, versions, inventory. **Never injected**; read on demand via `tmem persona --section <name>`.
 
-So the 4 800 chars is a real contract, and only tier-0 content competes for it. Today the persona holds ~22 000 chars of `always`-duty against that budget — ~4x oversubscribed — and the reader can only truncate or drop, never condense. Overflow is therefore silent data loss, and it lands on standing instructions.
+So the 4 800 chars is a real contract, and only tier-0 content competes for it. The reader can only truncate or drop — never condense. Overflow is therefore silent data loss, and it lands on standing instructions.
+
+Last measurement: the persona carried **47 `always`-duty bullets**; **14** were delivered (**4 566** chars of the 4 800 budget) and **33 were dropped**. Notice what that says — the budget was ~95% spent and still two thirds of the standing rules never reached the agent. Raising the budget cannot fix this. The persona averaged **478 chars per bullet**, and 4 800 ÷ 478 ≈ 10 bullets, so at that length roughly ten rules fit *whatever* the budget is tuned to. This is a bullet-length problem, and it is only fixable here, on the write side.
+
+**Bullet-length rule (tier-0 `always` bullets): 160 characters — about 25 words — hard ceiling.**
+
+The derivation: a persona should be able to deliver on the order of **30** standing rules, and 4 800 ÷ 30 = **160**. Aim at ~120 chars so a section can carry a couple of longer ones without pushing the set over. A bullet at today's 478-char average consumes the tier-0 slot of three rules.
+
+Check your own output before writing it — no tool needed:
+
+- A 160-char bullet is **two wrapped lines at 80 columns**. Three lines means it is over.
+- Or count words: **≤ 25**. If you cannot count them at a glance, it is too long.
+- Same test on `## Standing Instructions` as a whole: more than ~30 `always` bullets across the whole persona means the set is over budget even if every bullet passes. Demote the least operative ones to reference-y sections.
+
+**A long bullet is not a long rule — it is two rules.** When one runs over, split it into separate bullets, or move the explanatory half to tier 2; do not truncate it and do not shave it down to a cryptic fragment. "Prefers pnpm over npm; also wants lockfiles committed; and CI must run on Node 20" is three bullets, not one.
 
 Write accordingly: **one rule per bullet, operative clause first**, so a bullet that has to be cut still says the right thing; put paths/versions/inventory under reference-y headings where they cost nothing rather than crowding the tier-0 budget. Prefer merging near-duplicate rules over appending another one.
+
+**This applies to bullets you are only re-reading, not just to new ones.** Consolidation rewrites the whole persona, so every over-long bullet you carry through unchanged stays over-long forever. When merging (step 5), pass each existing `always` bullet through the same 160-char test and split or tighten the failures as you go — that is the only path by which an already-bloated persona improves. Splitting one bullet into two does **not** count as amplification under the priority cap above: both halves inherit the original's priority, neither is promoted.
+
+Example of the rewrite, using synthetic data:
+
+```
+before (312 chars, one bullet):
+- Dev Aster prefers TypeScript with strict mode enabled for all new services and
+  dislikes `any`; when reviewing code he wants the reviewer to flag missing return
+  types, and his projects live under -home-dev-projects-orchard-api so that is where
+  the tsconfig baseline lives.
+
+after (three bullets, tier-separated):
+- Use TypeScript strict mode for new services; never `any`.            (always, 62)
+- When reviewing code, flag missing return types.                      (conditional, 47)
+- tsconfig baseline: -home-dev-projects-orchard-api/tsconfig.json      (reference, 62)
+```
 
 ### 6. Mark complete
 
