@@ -517,7 +517,7 @@ test("tier0: no always-content at all yields an empty projection, not a throw", 
 // This replaced a "keep at least half the source" ratio, which was a PROXY for
 // the property actually wanted — "the operative clause survived" — and the proxy
 // does not hold. Standing Instructions #6 was delivered at 594 of 1145 chars
-// (51,9%), passing the ratio while cutting away its "**Amended for govkit only**"
+// (51,9%), passing the ratio while cutting away its "**Amended for orchard-flow only**"
 // carve-out: the agent received a STRICTER rule than the user wrote, with no
 // signal that anything had been removed. Clause position does not correlate with
 // length, so no ratio can detect that. A partial standing instruction is not a

@@ -32,7 +32,7 @@ snapshot s2-12f246b66c7e650b (175.6 ms)
 Opens on "Try a prompt", tracing: how do I like tests written
 
 Open this URL verbatim — the session key is required:
-  http://localhost:45261/?key=0f2c8a17be5d43906c1e77aa2b4d8e51&view=trace&q=how+do+I+like+tests+written
+  http://localhost:45261/?key=3b7d1f4a9c2e05846d1fba37c9e0d215&view=trace&q=how+do+I+like+tests+written
 
 Session dir: /home/dev/.memory-tencentdb/view
 Stop with Ctrl-C, or: kill 363161   (auto-stops after 240m idle)

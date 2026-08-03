@@ -82,7 +82,7 @@ const MIN_BULLET_CHARS = 60;            // below this a bullet is noise, not a s
 // That ratio was a proxy for the property actually wanted ("the operative clause
 // survived"), and it does not hold: Standing Instructions #6 was delivered at
 // 594 of 1145 chars (51,9%), which passed the ratio while cutting away its
-// "**Amended for govkit only**" carve-out — so the agent received a STRICTER
+// "**Amended for orchard-flow only**" carve-out — so the agent received a STRICTER
 // rule than the user wrote. Clause position does not correlate with length, so
 // no ratio can detect that. A partial standing instruction is not a shorter
 // instruction, it is a different one, and being different is worse than being

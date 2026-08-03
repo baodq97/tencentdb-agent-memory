@@ -5,16 +5,16 @@
  * Zero dependency by construction — Node built-ins only (http, fs, path, crypto, os).
  * Nothing is vendored, so there is no third-party code to audit or patch.
  *
- * Architecture adapted from the live preview server in the `ddd-flow` plugin, which
+ * Architecture adapted from the live preview server in a sibling plugin of ours, which
  * in turn adapted the brainstorm companion server in the `superpowers` plugin
  * (https://github.com/obra/superpowers, MIT, Jesse Vincent): a session directory, a
  * session key on every route, SSE push to an already-open browser, and the user's
  * clicks recorded as JSONL for the agent's next turn. All three of those survive here
  * verbatim in spirit. What changed is the thing being served.
  *
- * THE DEPARTURE FROM ddd-flow
- * ---------------------------
- * ddd-flow serves a FROZEN `model.json` snapshot: the agent rewrites the file, the
+ * THE DEPARTURE FROM THAT DESIGN
+ * ------------------------------
+ * That server serves a FROZEN `model.json` snapshot: the agent rewrites the file, the
  * server watches that one path, the browser re-renders. There is no such file here.
  * This server is a thin HTTP skin over a LIVE read-only backend — a full aggregate
  * pass over all 49 stores measures ~65 ms, so every query runs per-request and there

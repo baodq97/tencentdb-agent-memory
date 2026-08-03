@@ -214,7 +214,7 @@ const _labelCache = new Map();
  * Best-effort display name for a project slug.
  *
  * A slug is the project root path with every `/` and `:` flattened to `-`
- * (memory_reader.slugForPath), which is lossy: `-home-dev-personal-projects-govkit`
+ * (memory_reader.slugForPath), which is lossy: `-home-dev-personal-projects-orchard-kg`
  * could split at a dozen places, and `tencentdb-agent-memory` is proof that the
  * naive "text after the last dash" is wrong. memory_reader already owns the
  * inversion — `pathFromSlugProbe()` walks the tree taking the longest real
