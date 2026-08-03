@@ -698,10 +698,175 @@ function insuranceScore(bulletText) {
   return countSignals(bulletText, INSURANCE_SIGNALS);
 }
 
+// ── Project scope (tier 1 only) ──
+//
+// persona.md is ONE GLOBAL document while L1 and L2 are per project, so a
+// `conditional` bullet written for one repo arrives as a standing rule in every
+// other repo. Measured: the prompt "run the eval suite and report numbers"
+// selected a rule about `tools/kg.py` — a file that exists only in a KG repo —
+// while the working project was this one. That is a CORRECTNESS defect, not a
+// budget one: a rule from the wrong project is not a smaller persona, it is a
+// wrong one, and the agent cannot tell the difference from inside the block.
+//
+// Scope is read out of what authors ALREADY write; there is no new file format,
+// no frontmatter and no new section:
+//   - a parenthetical project tag on the label — `**X** (orchard-ops): …`, which
+//     several bullets already carry, and
+//   - a repo-relative artifact path in the body — `tools/kg.py`.
+//
+// This stays PURE (see the module header): whether a path exists in the current
+// project is injected by the caller as `scope.hasPath`, so nothing here touches
+// disk and the visualiser can replay the same decision offline.
+//
+// The matcher is deliberately ASYMMETRIC. Dropping a genuine standing rule is
+// far worse than occasionally injecting a foreign one, so every "cannot tell"
+// resolves to KEEP: no hints, no scope context, no resolvable project root, a
+// tag that does not parse as a name — all universal. Only a POSITIVE mismatch
+// (a named project that is not this one, or an artifact path with no trace of it
+// here) drops a bullet.
+//
+// TIER 0 IS NOT SCOPED. Measured across 6 projects, filtering there freed 0
+// chars and admitted 0 extra bullets — 12 of the 13 project-scoped bullets are
+// reference/conditional duty, and the single `always` one is not selected today
+// anyway. So tier 0 would pay the risk of a wrong drop for no gain.
+
+// The scope tag lives on the LABEL — `**X** (orchard-ops): body` — so only the label
+// is searched, and only its tail. A parenthetical anywhere else is prose:
+// "Never pipe a gate through head/tail/grep (swallows exit codes)" names no
+// project, and reading one out of it would drop a real rule everywhere.
+const SCOPE_HEAD_MAX_CHARS = 120;
+// Even in the label position, a parenthetical of running prose ("(granted
+// 2026-07-27: …)") is an aside. Real tags are 1-3 words.
+const SCOPE_TAG_MAX_WORDS = 4;
+const SCOPE_TAG_RE = /\(([^)\n]{1,60})\)\s*\*{0,2}\s*$/;
+// A name-shaped token: opens alphanumeric, ≥3 chars, only identifier punctuation.
+const SCOPE_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N}._-]{2,}$/u;
+const SCOPE_DATE_RE = /^\d{4}(?:-\d{1,2}){0,2}$/;
+// Words that appear INSIDE a tag without naming anything: containers
+// ("(orchard-lessons repo)") and modes ("(invokable)", "(optional)"). A mode read
+// as a project name would scope a rule to a project that does not exist, which
+// drops it everywhere — the one outcome this design must not produce.
+const SCOPE_GENERIC_TOKENS = new Set([
+  "repo", "repos", "repository", "project", "projects", "plugin", "package",
+  "app", "and", "the", "for", "only", "wip", "todo", "draft", "new", "old",
+  "invokable", "optional", "experimental", "deprecated", "internal", "manual",
+  "auto", "global", "default", "amended", "granted", "added", "updated",
+]);
+// A path segment that is itself a filename ("AGENTS.md") cannot be a directory.
+const FILENAME_SEGMENT_RE = /\.[a-z]{1,6}$/i;
+// A repo-relative artifact path: ≥2 segments, a file extension, and NOT rooted
+// at `/` or `~` (an absolute path names the machine, not the repo — those are
+// reference-class facts and never reach tier 1 anyway).
+const REPO_REL_PATH_RE =
+  /(?:^|[\s(`"'*])((?![/~])[\w.-]+(?:\/[\w.-]+)+\.[a-z]{1,6})(?=$|[\s)`"'*,.;:!?])/gi;
+
+// The bullet's label, or "" when it has none (no `: ` separator) or when it is
+// too long to be a label.
+function scopeHead(text) {
+  const s = String(text || "").normalize("NFKC").trim();
+  const i = s.search(/:\s/);
+  if (i < 0) return "";
+  const head = s.slice(0, i);
+  return head.length <= SCOPE_HEAD_MAX_CHARS ? head : "";
+}
+
+/** Project names tagged on the bullet's label, lowercased. */
+function projectNamesIn(text) {
+  const head = scopeHead(text);
+  if (!head) return [];
+  const m = SCOPE_TAG_RE.exec(head);
+  if (!m) return [];
+  const tag = m[1].trim();
+  if (!tag || tag.split(/\s+/).length > SCOPE_TAG_MAX_WORDS) return [];
+  const names = [];
+  // `/` and `,` separate co-tagged projects: "(2026-07, orchard-api/orchard-flow)".
+  for (const raw of tag.split(/[\s,;/|+]+/)) {
+    const t = raw.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+    if (!t || SCOPE_DATE_RE.test(t)) continue;
+    if (SCOPE_GENERIC_TOKENS.has(t) || !SCOPE_NAME_RE.test(t)) continue;
+    if (!names.includes(t)) names.push(t);
+  }
+  return names;
+}
+
+/** Repo-relative artifact paths named anywhere in the bullet. */
+function repoPathsIn(text) {
+  const out = [];
+  for (const m of String(text || "").normalize("NFKC").matchAll(REPO_REL_PATH_RE)) {
+    const rel = m[1];
+    const segs = rel.split("/");
+    // No traversal: these strings are fed to a caller-supplied fs probe.
+    if (segs.some((seg) => seg === "." || seg === "..")) continue;
+    // `AGENTS.md/CLAUDE.md` is an ALTERNATION, not a path — and the bullet it
+    // appears in is a universal rule about every repo, so reading it as an
+    // artifact would have dropped a standing rule everywhere. A directory
+    // segment that looks like a filename means this is not a path.
+    if (segs.slice(0, -1).some((seg) => FILENAME_SEGMENT_RE.test(seg))) continue;
+    if (!out.includes(rel)) out.push(rel);
+  }
+  return out;
+}
+
+/** `{names, paths}` — the scope evidence a bullet carries in its own text. */
+function projectScopeHints(text) {
+  return { names: projectNamesIn(text), paths: repoPathsIn(text) };
+}
+
+// The project slug is a path with separators flattened to "-", so a project name
+// is present iff it sits on a token boundary inside it.
+function slugMatchesName(slug, name) {
+  const s = String(slug || "").toLowerCase();
+  if (!s || !name) return false;
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[-_/\\\\.])${esc}(?:$|[-_/\\\\.])`).test(s);
+}
+
+/**
+ * Does `hints` admit the current project? See the asymmetry note above: this
+ * returns true whenever scope cannot be determined.
+ *
+ * `scope` is `{slug, hasPath}` — `slug` is the project store slug (a flattened
+ * absolute path), `hasPath(rel)` answers whether a repo-relative path exists in
+ * the current project, or is absent when the project root could not be resolved.
+ */
+function admitsProject(hints, scope) {
+  if (!hints || !scope) return true;
+  const slug = scope.slug || "";
+  const hasPath = typeof scope.hasPath === "function" ? scope.hasPath : null;
+  if (!slug && !hasPath) return true;
+
+  const names = hints.names || [];
+  const paths = hints.paths || [];
+  if (!names.length && !paths.length) return true;
+
+  if (names.length) {
+    // An explicit tag is the author's own statement of scope, so it decides —
+    // including against a path that happens to resolve here.
+    if (!slug) return true; // cannot tell
+    return names.some((n) => slugMatchesName(slug, n));
+  }
+
+  if (!hasPath) return true; // project root unresolvable → cannot tell
+  for (const p of paths) {
+    if (hasPath(p)) return true;
+    // The directory alone is enough: a repo that HAS `tools/` but not
+    // `tools/kg.py` may simply not have written the file yet, and keeping the
+    // rule there is the cheap error.
+    const top = p.split("/")[0];
+    if (top && hasPath(top)) return true;
+  }
+  return false;
+}
+
 /**
  * Per-turn projection: an always-on insurance line (the 1-2 strongest `always`
  * items, cover for a compaction that dropped tier 0) plus the `conditional`
  * items that the current prompt actually triggers.
+ *
+ * `options.projectScope` ({slug, hasPath}) additionally drops conditional items
+ * that name a DIFFERENT project — see the project-scope note above. Omitting it
+ * reproduces the unscoped behaviour exactly, so callers with no project context
+ * (the CLI outside a repo) need do nothing.
  */
 function projectTier1(sections, options = {}) {
   const budgetChars = Math.max(0, options.maxChars ?? DEFAULT_TIER1_MAX_CHARS);
@@ -775,8 +940,13 @@ function projectTier1(sections, options = {}) {
   // a raw NUL makes the file "binary" to file(1) and grep, which then reports
   // "no matches" for patterns that are in fact present.
   const seen = new Set(chosen.map((c) => `${c.sectionName}\x00${c.index}`));
+  // Scope is checked BEFORE scoring, not after: a foreign rule that outranks a
+  // universal one would otherwise take the budget and then be discarded, and the
+  // universal one would never be reconsidered.
+  const scope = options.projectScope || null;
+  const inScope = scope ? (b) => admitsProject(projectScopeHints(b.text), scope) : () => true;
   const ranked = flat
-    .filter((b) => b.duty === "conditional" && !seen.has(`${b.sectionName}\x00${b.index}`))
+    .filter((b) => b.duty === "conditional" && !seen.has(`${b.sectionName}\x00${b.index}`) && inScope(b))
     .map((b) => ({ b, s: relevanceScore(b.text, qTokens, idf, bulletTokens && bulletTokens.get(b)) }))
     .filter((x) => x.s >= minScore)
     .sort((x, y) => y.s - x.s || x.b.sectionIndex - y.b.sectionIndex || x.b.index - y.b.index);
@@ -849,6 +1019,11 @@ module.exports = {
   // require the items to carry a `.text`.
   buildIdf,
   relevanceScore,
+  // Project scoping: extractor and matcher are exported separately so the
+  // caller that owns the filesystem (memory_recall) can build the scope context
+  // and the visualiser can explain a drop without re-deriving either half.
+  projectScopeHints,
+  admitsProject,
   CHARS_PER_TOKEN,
   DEFAULT_TIER0_MAX_TOKENS,
   DEFAULT_TIER0_MAX_CHARS,
