@@ -24,18 +24,14 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 
-const DEFAULT_CONSOLIDATE_EVERY = 20;
-const DEFAULT_SCENE_MAX_TOKENS = 200;
 // Governs the TIER-0 persona projection injected once per session by the
-// SessionStart hook, which multiplies it back by 4 chars/token.
+// SessionStart hook, which multiplies it back by CHARS_PER_TOKEN.
 //
-// DERIVED, not a literal: this and persona_projection's DEFAULT_TIER0_MAX_CHARS
-// are the same budget expressed in two units, and two literals in two modules
-// coupled only by comments WILL drift — a comment cannot fail a build. Importing
-// is safe here: persona_projection is pure (its only dependency is grounding.js,
-// which has none) and does no I/O, so this adds no cycle and loads nothing new.
-// Tokens are the primitive over there, so this is an alias, not a conversion —
-// no rounding, and the hook's tokens*CHARS_PER_TOKEN round trip is exact.
+// IMPORTED, not copied: this and persona_projection's DEFAULT_TIER0_MAX_CHARS are
+// the same budget expressed in two units, and two literals in two modules coupled
+// only by comments WILL drift — a comment cannot fail a build. Tokens are the
+// primitive, so this is an alias, not a conversion: no rounding, and the hook's
+// tokens*CHARS_PER_TOKEN round trip is exact.
 //
 // This is a ONCE-PER-SESSION cost, not per turn: the per-turn channel is tier 1
 // (DEFAULT_TIER1_MAX_CHARS = 420, ~105 tok) and it was deliberately NOT widened.
@@ -43,29 +39,17 @@ const DEFAULT_SCENE_MAX_TOKENS = 200;
 // cut mid-rule; standing instructions truncated before their operative clause are
 // worse than absent, because they read as a different rule.
 //
-// GUARDED, and it fails OPEN to the literal — same rule as noiseClassesFor()
-// below. This file is on the Stop hook's capture path, and an unguarded
-// top-level require makes every future turn's capture depend on a second file
-// being present: one missing sibling (a partial install, a half-finished
-// upgrade) threw at load time and took the whole path down, to read ONE number
-// that has never changed. A stale default costs a wider-or-narrower persona
-// preamble for one session; throwing costs every memory of it.
-//
-// The fallback literal is the one exception to "no second literal" above, and it
-// only applies when the module it would have drifted from is not there to be
-// drifted from. It is still pinned by test/noise_gate.test.js so that a change
-// to DEFAULT_TIER0_MAX_TOKENS cannot leave a stale number sitting here.
-const DEFAULT_PERSONA_MAX_TOKENS = (() => {
-  const FALLBACK = 1200; // copy of persona_projection.DEFAULT_TIER0_MAX_TOKENS
-  try {
-    const v = require("./persona_projection.js").DEFAULT_TIER0_MAX_TOKENS;
-    // A present-but-renamed export is the same outage as a missing file, and it
-    // would arrive here as `undefined` rather than as a throw.
-    return Number.isInteger(v) && v > 0 ? v : FALLBACK;
-  } catch {
-    return FALLBACK;
-  }
-})();
+// UNGUARDED, and deliberately so. It used to be a guarded require of
+// persona_projection.js with a hand-copied `1200` fallback, because this file is
+// on the Stop hook's capture path and a missing sibling must never cost a turn.
+// constants.js is a different kind of dependency: a leaf that requires nothing,
+// has no code to fail and no transitive surface to go missing independently of
+// this file. Guarding it would buy nothing and cost a second copy of the number —
+// which is the drift the import exists to prevent.
+const { DEFAULT_TIER0_MAX_TOKENS: DEFAULT_PERSONA_MAX_TOKENS } = require("./constants.js");
+
+const DEFAULT_CONSOLIDATE_EVERY = 20;
+const DEFAULT_SCENE_MAX_TOKENS = 200;
 const MAX_CONTENT_LENGTH = 500;
 const DEFAULT_NOISE_GATE = true;
 
@@ -192,7 +176,13 @@ function getNoiseGateEnabled() {
   return DEFAULT_NOISE_GATE;
 }
 
-/** null = "not set / unparseable", which is what lets env fall through to config. */
+/**
+ * null = "not set / unparseable", which is what lets env fall through to config.
+ *
+ * Exported because `tmem config` must accept the same on/off vocabulary for every
+ * key it has — a CLI that takes `yes` for `noise-gate` and exits 1 for `recall`
+ * is a bug the user meets before any test does.
+ */
 function parseBoolish(v) {
   if (v === true || v === false) return v;
   const s = String(v == null ? "" : v).trim().toLowerCase();
@@ -460,4 +450,4 @@ Commands:
 
 if (require.main === module) main();
 
-module.exports = { autoCapture, checkConsolidationDue, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, loadConfig };
+module.exports = { autoCapture, checkConsolidationDue, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, parseBoolish, loadConfig };

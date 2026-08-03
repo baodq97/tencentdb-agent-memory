@@ -290,20 +290,16 @@ const runIn = (capture, home, body) => JSON.parse(execFileSync("node", ["-e",
   `const c = require(${JSON.stringify(capture)}); ${body}`,
 ], { env: { ...process.env, HOME: home, USERPROFILE: home, MEMORY_PERSONA_MAX_TOKENS: "" }, encoding: "utf-8" }));
 
-test("the persona-budget fallback literal is the real DEFAULT_TIER0_MAX_TOKENS", () => {
-  // memory_auto_capture.js carries a literal copy for the degraded path. It is
-  // only reachable when persona_projection.js is absent, which means nothing
-  // else can catch it drifting — this assertion is the only thing that can.
-  const { DEFAULT_TIER0_MAX_TOKENS } = require("../scripts/persona_projection.js");
-  const src = fs.readFileSync(
-    path.join(__dirname, "..", "scripts", "memory_auto_capture.js"), "utf-8");
-  const m = src.match(/const FALLBACK = (\d+);/);
-  assert.ok(m, "the degraded persona budget must stay a single named literal");
-  assert.strictEqual(Number(m[1]), DEFAULT_TIER0_MAX_TOKENS,
-    "fallback drifted from persona_projection.DEFAULT_TIER0_MAX_TOKENS");
-});
+// The test that used to stand here regexed memory_auto_capture.js for
+// `const FALLBACK = (\d+);` and compared it to DEFAULT_TIER0_MAX_TOKENS. It was
+// pinning a hand-copied literal that only the degraded path could reach — and the
+// literal is gone: both modules now read the number from scripts/constants.js, a
+// leaf that requires nothing, so there is no second copy to drift and nothing for
+// a source scrape to find. The test below is what survives it, and it is the
+// stronger statement: it checks the OBSERVABLE budget through a real capture run
+// with persona_projection.js deleted from the tree.
 
-test("a missing persona_projection.js degrades the budget and keeps capturing", () => {
+test("a missing persona_projection.js does not touch the budget, and capture continues", () => {
   const { DEFAULT_TIER0_MAX_TOKENS } = require("../scripts/persona_projection.js");
   withScriptsMissing("persona_projection.js", ({ capture, home, root }) => {
     const proj = path.join(root, "proj");
