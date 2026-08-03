@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-08-03
+
+### Fixed
+- **The recall (read) path could create schema, turning an honest "unmeasured" store into a manufactured "measured 0%".** `MemoryStore` and `VectorStore` opened *read-write* on every recall, so their constructors ran `PRAGMA journal_mode=WAL`, `CREATE TABLE`/`CREATE VIRTUAL TABLE` and the `schema_version` insert unconditionally on open — meaning a recall against a **missing** or **never-synced** store silently *created* it (empty `l1_records`/`l1_fts`/`l1_vec`), so a store that had never been measured started reporting as present-and-empty. Both constructors now take a `{ readOnly }` option (default `false`, so the writer path is byte-for-byte unchanged), and all five recall sites in `memory_recall.js` — in both `recall()` and `recallAsync()`, which must move together because `on_user_prompt.js` calls `recallAsync` and falls back to `recall` on throw — open read-only: no `mkdir`, no WAL pragma, no `CREATE`. Verified against 52 live stores (all already schema'd + WAL): a real recall returns byte-identical content and writes nothing new to the store files.
+- **Behaviour change — graceful per-store degradation.** Closing the write path unmasks three failure modes schema-creation used to hide: the DB file does not exist (`SQLITE_CANTOPEN`), it exists but has no `l1_fts`/`l1_vec` table (`no such table`), or `sqlite-vec` fails to load. A new `openMemoryStoreRO()` helper opens read-only and probes once, returning `null` on any failure so **that** store degrades to "contributes nothing" while its sibling still answers — a missing PROJECT store no longer suppresses the GLOBAL store, and vice versa — and `recall()`/`recallAsync()` never throw (the result is injected into every turn). Net effect: a schemaless or missing store now contributes nothing instead of being silently created. Tests: `test/recall_read_only.test.js`.
+
 ## [0.5.1] — 2026-08-03
 
 ### Fixed
