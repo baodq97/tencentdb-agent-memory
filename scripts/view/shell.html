@@ -16,9 +16,9 @@
   sentence a person reads. That table is `VOCAB` and `PROBLEMS` below, and every
   row of it traces to a typedef or constant in contract.js.
 
-  Design: docs/ui/design-brief.md (candidate A, "plain report"), the screen
-  inventory in docs/ui/screens/memory-health.md, the audit in docs/ui/audit.md,
-  the token roles in docs/ui/tokens.json. Three rules outrank aesthetics here:
+  Design: candidate A, "plain report" — a UI audit, a screen inventory for the
+  memory-health surface, and an audited token palette, all kept as local design
+  notes outside the published plugin. Three rules outrank aesthetics here:
 
     1. No number stands alone. Every figure sits inside a sentence that says what
        it means. `.issue` is a grid of severity-rule / sentence / command and has
@@ -53,7 +53,7 @@
 
   Zero dependencies: no CDN, no framework, no build step.
 
-  Colour: the roles below are docs/ui/tokens.json, which is the audited palette
+  Colour: the roles below are the audited token palette
   with two contrast fixes carried forward — `primary` darkened #2a78d6 → #1f66c0
   (the old value is 4.30:1 on the light surface: fine as a chart mark, short of AA
   as a button fill or as text) and `muted` #898781 → #6f6d68 (3.41:1, and it was
@@ -70,7 +70,7 @@
 
 <style>
 /* ══════════════════════════════════════════════════════════════════════
-   1. Tokens — docs/ui/tokens.json, role for role
+   1. Tokens — the audited token palette, role for role
    ══════════════════════════════════════════════════════════════════════ */
 :root {
   color-scheme: light;
@@ -2531,7 +2531,7 @@ const ROUTES = {
 /**
  * The vocabulary table. Left column is contract.js; right column is the words a
  * person reads. Nothing here is a concept that was not already in the contract —
- * see docs/ui/design-brief.md § Vocabulary for the citation of each row.
+ * every row cites a typedef or constant in contract.js.
  */
 const VOCAB = {
   tier: {

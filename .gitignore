@@ -9,6 +9,7 @@ node_modules/
 
 # local working docs (plans, specs, design notes) — not part of the published plugin
 docs/superpowers/
+docs/ui/
 
 # tooling scratch — not project content
 .playwright-cli/
