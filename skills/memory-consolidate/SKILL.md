@@ -170,6 +170,14 @@ after (three bullets, tier-separated):
 - tsconfig baseline: -home-dev-projects-orchard-api/tsconfig.json      (reference, 62)
 ```
 
+**Project tags: a `conditional` bullet that applies to only one project MUST end its label with `(<project-name>)`.**
+
+The persona is ONE global document, but tier-1 bullets are injected into every repo you work in. An untagged rule about one project's build script arrives in every other project as a standing instruction, and the agent cannot tell from inside the block that it does not apply here. Measured: a rule about a `tools/kg.py` that exists in one repo alone was selected while working in a different one — not a smaller persona, a wrong one.
+
+So write the tag on the label, at the end, before the colon: `- **Eval runs** (orchard-api): always run the suite twice and report both numbers.` One to three words, the project's name as you would say it. Body prose is not searched, and a parenthetical anywhere else is read as an aside, not a tag.
+
+**No tag means the rule is universal, and that default is deliberate.** The reader keeps everything it cannot confidently place — an untagged bullet, an unparseable tag, a project it cannot identify all resolve to "apply it". Dropping a real standing rule is far worse than occasionally injecting a foreign one, so the tag is the only thing that can ever narrow a bullet's reach. If a rule truly is project-specific, it is on you to say so; if it is general, say nothing.
+
 ### 6. Mark complete
 
 ```bash
