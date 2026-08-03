@@ -26,6 +26,24 @@ const crypto = require("node:crypto");
 
 const DEFAULT_CONSOLIDATE_EVERY = 20;
 const DEFAULT_SCENE_MAX_TOKENS = 200;
+// Governs the TIER-0 persona projection injected once per session by the
+// SessionStart hook, which multiplies it back by 4 chars/token.
+//
+// DERIVED, not a literal: this and persona_projection's DEFAULT_TIER0_MAX_CHARS
+// are the same budget expressed in two units, and two literals in two modules
+// coupled only by comments WILL drift — a comment cannot fail a build. Importing
+// is safe here: persona_projection is pure (its only dependency is grounding.js,
+// which has none) and does no I/O, so this adds no cycle and loads nothing new.
+// Tokens are the primitive over there, so this is an alias, not a conversion —
+// no rounding, and the hook's tokens*CHARS_PER_TOKEN round trip is exact.
+//
+// This is a ONCE-PER-SESSION cost, not per turn: the per-turn channel is tier 1
+// (DEFAULT_TIER1_MAX_CHARS = 420, ~105 tok) and it was deliberately NOT widened.
+// At the old 300 tok this budget delivered 5 of 47 always-duty bullets, 4 of them
+// cut mid-rule; standing instructions truncated before their operative clause are
+// worse than absent, because they read as a different rule.
+const { DEFAULT_TIER0_MAX_TOKENS } = require("./persona_projection.js");
+const DEFAULT_PERSONA_MAX_TOKENS = DEFAULT_TIER0_MAX_TOKENS;
 const MAX_CONTENT_LENGTH = 500;
 
 function memoryBaseDir() {
@@ -103,6 +121,32 @@ function setSceneMaxTokens(n) {
   if (!Number.isInteger(v) || v < 0) throw new Error("scene-max-tokens must be a non-negative integer (0 disables)");
   const cfg = loadConfig();
   cfg.scene_max_tokens = v;
+  saveConfig(cfg);
+  return v;
+}
+
+/**
+ * Effective persona-projection byte budget: env override > persisted config > default.
+ *
+ * Unlike scene-max-tokens, 0 is rejected rather than treated as "disable": the persona
+ * preamble is what conditions the agent's behaviour, and a silently-empty projection
+ * looks identical to "no persona learned yet" from the agent's side — the exact failure
+ * mode this store exists to fix. Trimming the budget is fine; switching it off is not.
+ */
+function getPersonaMaxTokens() {
+  const env = parseInt(process.env.MEMORY_PERSONA_MAX_TOKENS || "", 10);
+  if (Number.isInteger(env) && env > 0) return env;
+  const stored = parseInt(loadConfig().persona_max_tokens, 10);
+  if (Number.isInteger(stored) && stored > 0) return stored;
+  return DEFAULT_PERSONA_MAX_TOKENS;
+}
+
+/** Persist the persona-projection byte budget. Throws on non-positive/non-int input. */
+function setPersonaMaxTokens(n) {
+  const v = parseInt(n, 10);
+  if (!Number.isInteger(v) || v < 1) throw new Error("persona-max-tokens must be a positive integer (0 is not allowed — it would silently disable persona conditioning)");
+  const cfg = loadConfig();
+  cfg.persona_max_tokens = v;
   saveConfig(cfg);
   return v;
 }
@@ -282,4 +326,4 @@ Commands:
 
 if (require.main === module) main();
 
-module.exports = { autoCapture, checkConsolidationDue, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, loadConfig };
+module.exports = { autoCapture, checkConsolidationDue, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, loadConfig };

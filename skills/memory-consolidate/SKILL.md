@@ -94,7 +94,17 @@ cat <<'PERSONA_EOF' | tmem write-persona
 PERSONA_EOF
 ```
 
-Keep under 500 words — this gets injected into every turn's recall context.
+**How this persona is delivered** (write for the reader, it cannot summarise you):
+
+Nothing is injected wholesale any more. Every bullet is classified by duty and sent on one of three channels:
+
+- **tier 0 `always`** — standing rules, preferences, register. Injected **once per session**, into a hard **4 800-char** budget (`tmem persona-max-tokens`, default 1200 tok).
+- **tier 1 `conditional`** — situational rules (`When…`, `Before…`). Injected **per turn**, only when the prompt matches, into ~420 chars.
+- **tier 2 `reference`** — paths, versions, inventory. **Never injected**; read on demand via `tmem persona --section <name>`.
+
+So the 4 800 chars is a real contract, and only tier-0 content competes for it. Today the persona holds ~22 000 chars of `always`-duty against that budget — ~4x oversubscribed — and the reader can only truncate or drop, never condense. Overflow is therefore silent data loss, and it lands on standing instructions.
+
+Write accordingly: **one rule per bullet, operative clause first**, so a bullet that has to be cut still says the right thing; put paths/versions/inventory under reference-y headings where they cost nothing rather than crowding the tier-0 budget. Prefer merging near-duplicate rules over appending another one.
 
 ### 6. Mark complete
 

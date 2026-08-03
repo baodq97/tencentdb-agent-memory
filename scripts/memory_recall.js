@@ -16,19 +16,32 @@ const { MemoryStore } = require("./memory_store.js");
 const { globalDir, projectDir, readPersona, listScenes } = require("./memory_writer.js");
 const { VectorStore, rrfMerge } = require("./vector_store.js");
 const { getSceneMaxTokens } = require("./memory_auto_capture.js");
+// Pure renderer, shared with view/transform.js so the block the agent receives and
+// the block the visualiser measures can never be two different algorithms.
+const { renderSceneNav } = require("./scene_nav.js");
+const {
+  parsePersona,
+  projectTier1,
+  legacyProjection,
+  DEFAULT_TIER1_MAX_CHARS,
+  DEFAULT_INSURANCE_MAX_CHARS,
+  CHARS_PER_TOKEN,
+} = require("./persona_projection.js");
 
-const CHARS_PER_TOKEN = 4;
 const DEFAULT_MAX_TOKENS = 280;
 
-/** Fire-emoji cue based on scene heat (visual priority for the agent). */
-function heatEmoji(heat) {
-  if (heat >= 1000) return " 🔥🔥🔥🔥🔥";
-  if (heat >= 500) return " 🔥🔥🔥🔥";
-  if (heat >= 200) return " 🔥🔥🔥";
-  if (heat >= 100) return " 🔥🔥";
-  if (heat >= 50) return " 🔥";
-  return "";
-}
+/**
+ * Per-turn persona budget (chars), OWN pool — see getPersona().
+ *
+ * Deliberately not `getPersonaMaxTokens()`: that (1200 tok ≈ 4800 chars) is the
+ * tier-0 budget, paid once per session by the SessionStart hook. Tier 1 is paid
+ * on EVERY turn, so it is sized for what a turn actually needs — an insurance
+ * line plus the conditional bullets this prompt triggers.
+ */
+const PERSONA_TIER1_MAX_CHARS = DEFAULT_TIER1_MAX_CHARS;
+
+/* `heatEmoji()` and the summary `truncate()` used by the scene-nav block now live
+ * in scene_nav.js alongside the renderer that uses them — see buildSceneNav(). */
 
 /**
  * Build the L2 scene-navigation block (progressive disclosure): an index of
@@ -43,29 +56,29 @@ function heatEmoji(heat) {
  */
 function buildSceneNav(projectHash, sceneMaxTokens = getSceneMaxTokens()) {
   if (!sceneMaxTokens || sceneMaxTokens <= 0) return "";
-  const sceneMaxChars = sceneMaxTokens * CHARS_PER_TOKEN;
   const byHeat = (arr) => arr.slice().sort((x, y) => (parseInt(y.heat, 10) || 0) - (parseInt(x.heat, 10) || 0));
   const project = projectHash ? byHeat(listScenes(projectDir(projectHash))) : [];
   const global = byHeat(listScenes(globalDir()));
   const ordered = [...project, ...global]; // project first → global dropped first under budget
   if (!ordered.length) return "";
 
-  const GUIDE = "Load a full scene on demand: `tmem scene <name>`.";
-  const header = "<scene-navigation>";
-  const footer = "</scene-navigation>";
-  let used = header.length + GUIDE.length + footer.length + 2; // 2 newline joiners
-  const lines = [];
-  for (const s of ordered) {
-    const heat = parseInt(s.heat, 10) || 0;
-    const name = (s.filename || "").replace(/\.md$/, "");
-    const summary = truncate((s.summary || "").trim(), 80);
-    const line = `- ${name} (heat=${heat}${heatEmoji(heat)})${summary ? " " + summary : ""}`;
-    if (used + line.length + 1 > sceneMaxChars) break; // top-down fill; tail (global) drops first
-    lines.push(line);
-    used += line.length + 1;
-  }
-  if (!lines.length) return "";
-  return `${header}\n${GUIDE}\n${lines.join("\n")}\n${footer}`;
+  // What stays here: the I/O, and the project-before-global order (a recall
+  // policy — it decides who drops first under budget). What moved to
+  // scene_nav.js: the rendering and the budgeted fill, because the view needs the
+  // same arithmetic to report how many scenes the agent can actually see, and it
+  // was previously a hand copy that nothing forced to stay in step.
+  //
+  // Normalised here, at the boundary: `listScenes` yields `filename`, the block
+  // prints a bare name, so the extension is stripped on the way in rather than
+  // inside the shared core.
+  return renderSceneNav(
+    ordered.map((s) => ({
+      name: (s.filename || "").replace(/\.md$/, ""),
+      heat: s.heat,
+      summary: s.summary || "",
+    })),
+    sceneMaxTokens * CHARS_PER_TOKEN,
+  ).text;
 }
 
 function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 5) {
@@ -73,12 +86,11 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
   const parts = [];
   let used = 0;
 
-  const persona = getPersona();
-  if (persona) {
-    const summary = truncate(persona, 400);
-    parts.push(`<persona>\n${summary}\n</persona>`);
-    used += summary.length + 24;
-  }
+  // L3 persona, tier 1 (own budget — NOT charged to atoms' `used`, same
+  // convention as the scene-nav block below). Charging it used to eat 425 of
+  // the 1120-char atom pool before a single memory was considered.
+  const persona = getPersona(query);
+  if (persona) parts.push(`<persona>\n${persona}\n</persona>`);
 
   // L2 scene navigation (own budget — NOT charged to atoms' `used`)
   const sceneNav = buildSceneNav(projectHash);
@@ -109,7 +121,11 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
     const memLines = [];
     for (const m of memories) {
       const line = `- [${m.type || "?"}] ${m.content}`;
-      if (used + line.length + 2 > maxChars) break;
+      // Skip, don't break: one oversized atom used to abort every lower-ranked
+      // atom behind it, leaving hundreds of chars of the pool unspent (a single
+      // 509-char line could be the ONLY memory injected out of five candidates).
+      // Rank order is preserved for everything that does fit.
+      if (used + line.length + 2 > maxChars) continue;
       memLines.push(line);
       used += line.length + 1;
     }
@@ -122,19 +138,39 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
   return "<memory-context>\n" + parts.join("\n") + "\n</memory-context>";
 }
 
-function getPersona() {
+/**
+ * Tier-1 (per-turn) persona slice for `query`.
+ *
+ * Was: the first 5 non-heading lines cut at 400 chars — ~1% of a 39k-char
+ * persona, all of it `## Identity`, byte-identical on every turn, while the
+ * sections that actually govern behaviour got nothing. Now the projection is
+ * delegated to persona_projection.projectTier1: a small always-on insurance
+ * line (cover in case compaction dropped the tier-0 session preamble) plus the
+ * `conditional` bullets this prompt actually reaches for, so the block varies
+ * with the turn instead of re-billing the same 400 chars forever.
+ *
+ * Pure + sync (one file read, no I/O beyond it) so `recall()` stays sync and
+ * the hot path stays inside the 8s hook timeout.
+ *
+ * Falls back to `legacyProjection` — today's exact output — whenever the tiered
+ * projection comes back empty (unparseable persona, nothing classified as
+ * always/conditional): never emit nothing where we used to emit something.
+ */
+function getPersona(query = "", maxChars = PERSONA_TIER1_MAX_CHARS) {
   const persona = readPersona(globalDir());
-  if (!persona) return "";
-  const lines = persona.trim().split("\n");
-  const summary = [];
-  for (const line of lines) {
-    if (line.startsWith("#")) continue;
-    const trimmed = line.trim();
-    if (trimmed.startsWith("- ")) summary.push(trimmed.slice(2));
-    else if (trimmed) summary.push(trimmed);
-    if (summary.length >= 5) break;
+  if (!persona || !persona.trim()) return "";
+  try {
+    const sections = parsePersona(persona);
+    const projection = projectTier1(sections, {
+      query,
+      maxChars,
+      insuranceChars: DEFAULT_INSURANCE_MAX_CHARS,
+    });
+    if (projection.text.trim()) return projection.text;
+  } catch {
+    // A malformed persona must degrade, not throw: recall is a hook.
   }
-  return summary.join("; ");
+  return legacyProjection(persona);
 }
 
 function dedupeAndRank(memories, limit) {
@@ -150,24 +186,19 @@ function dedupeAndRank(memories, limit) {
   return unique.slice(0, limit);
 }
 
-function truncate(text, maxChars) {
-  if (text.length <= maxChars) return text;
-  const cut = text.slice(0, maxChars);
-  const last = cut.lastIndexOf(" ");
-  return (last > 0 ? cut.slice(0, last) : cut) + "...";
-}
+/* `truncate()` moved to scene_nav.js: the scene-nav summary cut was its only
+ * caller, and the renderer that needs it now lives there. */
 
 async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 5) {
   const maxChars = maxTokens * CHARS_PER_TOKEN;
   const parts = [];
   let used = 0;
 
-  const persona = getPersona();
-  if (persona) {
-    const summary = truncate(persona, 400);
-    parts.push(`<persona>\n${summary}\n</persona>`);
-    used += summary.length + 24;
-  }
+  // L3 persona, tier 1 (own budget — NOT charged to atoms' `used`, same
+  // convention as the scene-nav block below). Charging it used to eat 425 of
+  // the 1120-char atom pool before a single memory was considered.
+  const persona = getPersona(query);
+  if (persona) parts.push(`<persona>\n${persona}\n</persona>`);
 
   // L2 scene navigation (own budget — NOT charged to atoms' `used`)
   const sceneNav = buildSceneNav(projectHash);
@@ -227,7 +258,11 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
     const memLines = [];
     for (const m of memories) {
       const line = `- [${m.type || "?"}] ${m.content}`;
-      if (used + line.length + 2 > maxChars) break;
+      // Skip, don't break: one oversized atom used to abort every lower-ranked
+      // atom behind it, leaving hundreds of chars of the pool unspent (a single
+      // 509-char line could be the ONLY memory injected out of five candidates).
+      // Rank order is preserved for everything that does fit.
+      if (used + line.length + 2 > maxChars) continue;
       memLines.push(line);
       used += line.length + 1;
     }
