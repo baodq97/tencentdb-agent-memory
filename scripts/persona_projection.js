@@ -843,6 +843,11 @@ module.exports = {
   projectPersona,
   legacyProjection,
   truncateAtWord,
+  // Exported as a PAIR: buildIdf's `{idf, tokens}` is relevanceScore's input, and
+  // scene_nav.js reuses both to rank scenes rather than growing a second scorer
+  // that would drift from this one. Both are pure and corpus-agnostic — they only
+  // require the items to carry a `.text`.
+  buildIdf,
   relevanceScore,
   CHARS_PER_TOKEN,
   DEFAULT_TIER0_MAX_TOKENS,

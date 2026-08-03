@@ -47,16 +47,19 @@
  * `gap()` refuses to let an unmeasured finding be marked critical; that guard is
  * deliberate and is not worked around anywhere below.
  *
- * TWO SCALES THAT DISAGREE, MEASURED NOT FIXED
- * --------------------------------------------
- * `memory_recall.heatEmoji()` starts rendering flames at heat >= 50; the
- * `memory-consolidate` skill writes heat on a 1-5 scale, and all 216 scenes obey
- * it ({2:9, 3:30, 4:50, 5:127}). The flame ladder has therefore never rendered
- * once. We mirror the reader's ladder exactly in {@link readerHeatEmoji} — because
- * nav visibility depends on the rendered line length, so an idealised version
- * would compute the wrong answer — and report the disagreement as
- * {@link GAP_KIND.HEAT_SCALE_MISMATCH}. Fixing `heatEmoji()` is deferred work in
- * the recall path (R2) and explicitly not this module's business.
+ * TWO SCALES THAT DISAGREED — NOW ONE, STILL MEASURED
+ * ---------------------------------------------------
+ * `scene_nav.heatEmoji()` used to start rendering flames at heat >= 50 while the
+ * `memory-consolidate` skill writes heat on a 1-5 scale, and all 216 scenes obeyed
+ * it ({2:9, 3:30, 4:50, 5:127}), so the ladder had never rendered once. R2 moved
+ * the ladder onto the written scale (first flame at 4, "active this week").
+ *
+ * The measurement stays. We do not assume the two agree: {@link readerHeatEmoji}
+ * is still the reader's REAL function, not an idealised copy — nav visibility
+ * depends on rendered line length, so a copy would compute the wrong answer — and
+ * {@link GAP_KIND.HEAT_SCALE_MISMATCH} still fires whenever a store's whole heat
+ * population sits below the first rung, or above the documented scale. What
+ * changed is that the real store no longer trips it.
  */
 "use strict";
 
@@ -369,9 +372,9 @@ function heatBucketKey(heat) {
  * so the real function is reachable without giving that up. It matters because
  * this is not decoration: the emoji decide the rendered LINE LENGTH the nav budget
  * is spent on, so a mirror that drifted would change how many scenes we report as
- * visible without changing what the agent sees.
- *
- * Its output is `""` for every heat value in the store, which is the finding.
+ * visible without changing what the agent sees. That is now load-bearing in a way
+ * it was not before: since R2 the ladder actually fires on 82% of scenes, so its
+ * chars come out of the nav budget and change `visibleInNav`.
  */
 const readerHeatEmoji = navHeatEmoji;
 
@@ -1244,7 +1247,7 @@ function buildGaps({ stores, persona, state, config, captureState, heat }) {
       severity: SEVERITY.WARN,
       subject: { scope: "root", slug: null, id: null, label: "scene heat" },
       title: `all ${heat.scenes} scenes are written on a ${heat.observedMin}-${heat.observedMax} heat scale, ` +
-        `but memory_recall.heatEmoji() renders its first flame at ${HEAT_SCALE.READER_FIRST_FLAME_AT}`,
+        `but scene_nav.heatEmoji() renders its first flame at ${HEAT_SCALE.READER_FIRST_FLAME_AT}`,
       evidence: {
         scenes: heat.scenes,
         observedMin: heat.observedMin,

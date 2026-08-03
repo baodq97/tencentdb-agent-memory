@@ -23,19 +23,29 @@
  * It could not simply be exported from memory_recall.js: transform.js is pure by
  * test (`view_transform.test.js` asserts memory_recall.js never enters
  * require.cache, and requiring it pulls in memory_store.js -> node:sqlite). So the
- * core lives here, in a module with no requires at all, and BOTH sides import it —
- * the same arrangement persona_projection.js already has with the projection.
+ * core lives here and BOTH sides import it — the same arrangement
+ * persona_projection.js already has with the projection.
+ *
+ * The module used to require nothing at all. It now requires grounding.js and
+ * persona_projection.js, and only those: both are pure string math with no fs, no
+ * db and no config, and transform.js already imports persona_projection.js, so
+ * the dependency the purity test actually guards (memory_store -> node:sqlite) is
+ * still nowhere near this file. The reason for taking them is `rankScenes` below:
+ * the alternative was a second, subtly different relevance scorer.
  *
  * WHAT LIVES HERE AND WHAT DOES NOT
  * ---------------------------------
- * Here: rendering a list of scenes into a budgeted block. Not here: finding the
- * scenes (fs), deciding their order (`buildSceneNav` puts project scenes before
- * global ones so global drops first under budget — a recall policy, not a
- * rendering rule), or resolving the budget from config. Callers hand in an
- * ALREADY-ORDERED, ALREADY-NORMALISED list, so neither caller's row shape leaks
+ * Here: ranking a list of scenes against a query and rendering it into a budgeted
+ * block. Not here: finding the scenes (fs), deciding GROUP order (`buildSceneNav`
+ * puts project scenes before global ones so global drops first under budget — a
+ * recall policy, not a rendering rule), or resolving the budget from config.
+ * Callers hand in an ALREADY-NORMALISED list, so neither caller's row shape leaks
  * in here and the core cannot start special-casing one of them.
  */
 "use strict";
+
+const { significantTokens } = require("./grounding.js");
+const { buildIdf, relevanceScore } = require("./persona_projection.js");
 
 /** Token→char factor shared with memory_recall.js and the persona budgets. */
 const CHARS_PER_TOKEN = 4;
@@ -57,18 +67,27 @@ const NAV = Object.freeze({
 /**
  * Fire-emoji cue based on scene heat (visual priority for the agent).
  *
- * The ladder starts at 50 while the writer's heat scale is 1–5, so it renders
- * nothing for every scene in the real store — a known finding the view reports.
- * It is reproduced here EXACTLY, not improved: the ladder decides rendered line
- * length, so "fixing" it would silently change how many scenes fit the budget.
- * That change is R2 and deliberately not this one.
+ * THE LADDER NOW MATCHES THE SCALE THAT IS ACTUALLY WRITTEN. It used to start at
+ * 50 and climb to 1000, while `skills/memory-consolidate/SKILL.md` tells the
+ * writer "heat 4-5: active this week, 2-3: recent, 1: historical" — so across
+ * 219 real scenes it rendered exactly zero flames and the cue was dead code
+ * (the view reports this as `heat_scale_mismatch`).
+ *
+ * Two rungs, not five. Every rung costs chars on the per-turn nav line, and the
+ * live distribution is degenerate — 130 of 219 scenes sit at heat 5 and 50 at
+ * heat 4 — so a rung per heat value would spend budget on a cue that does not
+ * discriminate. "Active this week" (4-5) is the only distinction the documented
+ * scale actually makes, so that is the only distinction drawn: 5 gets two
+ * flames, 4 gets one, 1-3 get none. Ranking is `rankScenes`'s job, not the
+ * emoji's.
+ *
+ * `scripts/view/contract.js:HEAT_SCALE.READER_FIRST_FLAME_AT` states the first
+ * rung independently and transform.js asserts the two agree at load — change
+ * both or neither.
  */
 function heatEmoji(heat) {
-  if (heat >= 1000) return " 🔥🔥🔥🔥🔥";
-  if (heat >= 500) return " 🔥🔥🔥🔥";
-  if (heat >= 200) return " 🔥🔥🔥";
-  if (heat >= 100) return " 🔥🔥";
-  if (heat >= 50) return " 🔥";
+  if (heat >= 5) return " 🔥🔥";
+  if (heat >= 4) return " 🔥";
   return "";
 }
 
@@ -91,6 +110,62 @@ function navLine(scene) {
   const name = String((scene && scene.name) || "");
   const summary = truncate(String((scene && scene.summary) || "").trim(), NAV.SUMMARY_MAX_CHARS);
   return `- ${name} (heat=${heat}${heatEmoji(heat)})${summary ? " " + summary : ""}`;
+}
+
+/** The text a scene is scored on: what the nav line itself shows. */
+function sceneText(scene) {
+  return `${(scene && scene.name) || ""} ${(scene && scene.summary) || ""}`.trim();
+}
+
+/**
+ * Order one group of scenes by relevance to `query`.
+ *
+ * WHY: the nav block was byte-identical on every turn. With 219 scenes and an
+ * 800-char budget it showed the same 78 and the other 141 were unreachable —
+ * ~557 chars/turn of context that could not, even in principle, respond to what
+ * was being asked. Heat cannot fix that on its own: 180 of the 219 scenes are
+ * heat 4 or 5, so 82% of the store is tied for first place and the sort
+ * degenerates into "whatever the directory listing happened to yield".
+ *
+ * So relevance is primary and heat is the tiebreak, not the other way round. The
+ * scorer is persona_projection's — the same idf + weighted-coverage function
+ * tier 1 ranks persona bullets with — rather than a second one written here.
+ * The idf corpus is the scene list itself, which is what makes it discriminate:
+ * "memory" appears in most scene names and is worth ~nothing, "tencentdb" or
+ * "vector" appears in a handful and decides the slice.
+ *
+ * NO DECAY. Heat is used exactly as written; recomputing or ageing it is the
+ * writer's business, not the reader's.
+ *
+ * EMPTY QUERY IS AN EXACT NO-OP — the caller's order is returned untouched, so
+ * a turn with no prompt text renders byte-for-byte what it rendered before.
+ * That is also why this ranks ONE GROUP: `buildSceneNav` ranks project scenes
+ * and global scenes separately and concatenates, because which group drops first
+ * under budget is a recall policy that relevance must not be able to overturn.
+ *
+ * @param {Array<{name: string, heat: number|string, summary: string}>} scenes
+ *   Normalised rows, already in the caller's fallback order (heat desc).
+ * @param {string} query The current prompt.
+ * @returns {Array} A new array; the input is never mutated.
+ */
+function rankScenes(scenes, query) {
+  const list = Array.isArray(scenes) ? scenes : [];
+  const qTokens = new Set(significantTokens(query || ""));
+  if (!qTokens.size || list.length < 2) return list.slice();
+
+  const heatOf = (s) => parseInt(s && s.heat, 10) || 0;
+  // buildIdf reads `.text` off each item and keys its token cache by identity,
+  // so the wrapper is what gets passed in and what gets looked up.
+  const docs = list.map((s, i) => ({ scene: s, i, text: sceneText(s) }));
+  const { idf, tokens } = buildIdf(docs);
+
+  return docs
+    .map((d) => ({ d, score: relevanceScore(d.text, qTokens, idf, tokens.get(d)) }))
+    // Relevance first; heat only separates scenes the query cannot tell apart —
+    // which includes every scene scoring 0, so an unmatched tail keeps exactly
+    // the order it arrived in.
+    .sort((x, y) => y.score - x.score || heatOf(y.d.scene) - heatOf(x.d.scene) || x.d.i - y.d.i)
+    .map((x) => x.d.scene);
 }
 
 /**
@@ -142,4 +217,6 @@ function renderSceneNav(orderedScenes, maxChars) {
   };
 }
 
-module.exports = { CHARS_PER_TOKEN, NAV, heatEmoji, truncate, navLine, renderSceneNav };
+module.exports = {
+  CHARS_PER_TOKEN, NAV, heatEmoji, truncate, navLine, sceneText, rankScenes, renderSceneNav,
+};

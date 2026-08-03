@@ -405,18 +405,22 @@ test("heatBucketKey: the writer's 1-5 scale, plus an offScale catch-all", () => 
   assert.deepEqual(HEAT_BUCKETS.map((b) => b.key), ["historical", "recent", "active", "hot", "offScale"]);
 });
 
-test("readerHeatEmoji: the reader's ladder renders nothing on the writer's scale", () => {
-  // A byte-exact mirror of memory_recall.heatEmoji(). Its emptiness across 1-5
-  // IS the finding: no scene has ever rendered a flame.
-  for (const h of [0, 1, 2, 3, 4, 5, 49]) assert.equal(T.readerHeatEmoji(h), "");
+test("readerHeatEmoji: the reader's ladder now fires on the writer's scale", () => {
+  // The real scene_nav.heatEmoji(), not a copy. It used to return "" for every
+  // heat value in the store — that emptiness WAS the finding, and R2 fixed it by
+  // moving the ladder onto the 1-5 scale the consolidator documents.
+  for (const h of [0, 1, 2, 3]) assert.equal(T.readerHeatEmoji(h), "");
   assert.equal(T.readerHeatEmoji(HEAT_SCALE.READER_FIRST_FLAME_AT), " 🔥");
-  assert.equal(T.readerHeatEmoji(100), " 🔥🔥");
-  assert.equal(T.readerHeatEmoji(1000), " 🔥🔥🔥🔥🔥");
+  assert.equal(T.readerHeatEmoji(4), " 🔥");
+  assert.equal(T.readerHeatEmoji(5), " 🔥🔥");
+  // Two rungs only: the cue marks "active this week", it does not re-rank.
+  assert.equal(T.readerHeatEmoji(1000), " 🔥🔥");
 });
 
-test("heat: scenes on the observed 1-5 scale emit HEAT_SCALE_MISMATCH", () => {
+test("heat: the live 1-5 distribution no longer emits HEAT_SCALE_MISMATCH", () => {
   // Shaped like the live distribution ({2:9, 3:30, 4:50, 5:130}) without pinning
-  // its counts, which move with every consolidation.
+  // its counts, which move with every consolidation. Before R2 this store tripped
+  // the gap in full; the ladder now reaches it.
   const scenes = [
     ...Array.from({ length: 2 }, (_, i) => scene(`h2_${i}`, { heat: 2 })),
     ...Array.from({ length: 3 }, (_, i) => scene(`h3_${i}`, { heat: 3 })),
@@ -425,18 +429,31 @@ test("heat: scenes on the observed 1-5 scale emit HEAT_SCALE_MISMATCH", () => {
   ];
   const snap = T.transformRoot(rootExtract([storeExtract("global", { records: [rec("m_1")], scenes })]));
 
+  assert.equal(snap.gaps.find((x) => x.kind === GAP_KIND.HEAT_SCALE_MISMATCH), undefined);
+  assert.equal(snap.totals.heat.buckets.offScale, 0);
+  // The lens still draws four distinctions where the reader draws two.
+  assert.deepEqual(snap.totals.heat.buckets, { historical: 0, recent: 5, active: 5, hot: 13, offScale: 0 });
+});
+
+test("heat: a store written entirely below the reader's first rung still emits the mismatch", () => {
+  // The gap did not go away, it went quiet. A store whose whole heat population
+  // sits under READER_FIRST_FLAME_AT gets no cue on any scene, which is the same
+  // failure the 50-rung ladder produced — just from the writer's side.
+  const scenes = [
+    ...Array.from({ length: 4 }, (_, i) => scene(`h1_${i}`, { heat: 1 })),
+    ...Array.from({ length: 6 }, (_, i) => scene(`h3_${i}`, { heat: 3 })),
+  ];
+  const snap = T.transformRoot(rootExtract([storeExtract("global", { records: [rec("m_1")], scenes })]));
+
   const g = snap.gaps.find((x) => x.kind === GAP_KIND.HEAT_SCALE_MISMATCH);
-  assert.ok(g, "a store written entirely on the 1-5 scale must report the mismatch");
+  assert.ok(g, "no scene can render a cue, so the disagreement must be reported");
   assert.equal(g.severity, SEVERITY.WARN);
   assert.equal(g.unmeasured, false);
-  assert.equal(g.evidence.observedMin, 2);
-  assert.equal(g.evidence.observedMax, 5);
+  assert.equal(g.evidence.observedMin, 1);
+  assert.equal(g.evidence.observedMax, 3);
   assert.equal(g.evidence.readerFirstFlameAt, HEAT_SCALE.READER_FIRST_FLAME_AT);
   assert.equal(g.evidence.scenesWithACue, 0);
   assert.equal(snap.totals.heat.scenesWithACue, 0);
-  assert.equal(snap.totals.heat.buckets.offScale, 0);
-  // The lens's own buckets still separate the population the reader flattens.
-  assert.deepEqual(snap.totals.heat.buckets, { historical: 0, recent: 5, active: 5, hot: 13, offScale: 0 });
 });
 
 test("heat: the mirror-image mismatch — a writer above the documented scale", () => {

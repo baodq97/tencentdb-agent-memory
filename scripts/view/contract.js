@@ -357,22 +357,24 @@ const DUPLICATE_TIERS = Object.freeze(["exact", "normalised"]);
  *   - The writer's scale. The `memory-consolidate` skill instructs
  *     "Heat 4-5: active this week, 2-3: recent, 1: historical", and all 216
  *     scenes in the real store obey it: `{2: 9, 3: 30, 4: 50, 5: 127}`.
- *   - The reader's scale. `heatEmoji()` in memory_recall.js ladders at
+ *   - The reader's scale. `heatEmoji()` in scene_nav.js USED TO ladder at
  *     50/100/200/500/1000. Nothing has ever been written above 5, so that
- *     function has **never rendered a single flame for any scene** and the
- *     scene-navigation block ships a cue that is dead code.
+ *     function had **never rendered a single flame for any scene** and the
+ *     scene-navigation block shipped a cue that was dead code. R2 moved it onto
+ *     the writer's scale — see READER_FIRST_FLAME_AT below.
  *
  * We calibrate to the writer, because that is where the data lives — mirroring
- * the reader would file all 216 scenes as `cold` and make the lens's heat
- * encoding uniformly meaningless, which is the exact failure this tool exists
- * to catch. The mismatch itself is reported as
- * {@link GAP_KIND.HEAT_SCALE_MISMATCH} rather than papered over. Fixing
- * `heatEmoji()` is an R2 change to the recall path and explicitly NOT this
- * module's business.
+ * the old reader would have filed all 216 scenes as `cold` and made the lens's
+ * heat encoding uniformly meaningless, which is the exact failure this tool
+ * exists to catch. A residual mismatch (a store written entirely below the first
+ * rung, or above the documented scale) is still reported as
+ * {@link GAP_KIND.HEAT_SCALE_MISMATCH} rather than papered over.
  *
  * `min`/`max` both inclusive; `Infinity` on the top bucket absorbs any future
  * writer that adopts the larger scale. `flames` is this lens's own display cue
- * and is intentionally not sourced from `heatEmoji()`.
+ * and is intentionally not sourced from `heatEmoji()`: the lens draws four
+ * distinctions because it has the room, the reader draws two because every rung
+ * costs per-turn context.
  */
 const HEAT_BUCKETS = Object.freeze([
   Object.freeze({ key: "historical", min: 0, max: 1, flames: 0, label: "historical" }),
@@ -386,9 +388,17 @@ const HEAT_BUCKETS = Object.freeze([
  * The scale the writer is documented to use. `offScale` above catches anything
  * outside it, and a non-empty `offScale` bucket is what triggers
  * {@link GAP_KIND.HEAT_SCALE_MISMATCH} from the writer's side; the reader's
- * ladder in memory_recall.js triggers it from the other side.
+ * ladder in scene_nav.js triggers it from the other side.
+ *
+ * READER_FIRST_FLAME_AT is where `scene_nav.heatEmoji()` renders its first
+ * flame. It was 50 — above everything ever written, which is why the gap fired
+ * on the whole store — and is now 4, the bottom of the documented "active this
+ * week" band. It is declared HERE and not read off the ladder on purpose: two
+ * independent statements are what let transform.js assert at load that the
+ * reader and the contract still agree, and that assertion is the only thing
+ * standing between a silently-drifted ladder and a gap that measures nothing.
  */
-const HEAT_SCALE = Object.freeze({ MIN: 1, MAX: 5, READER_FIRST_FLAME_AT: 50 });
+const HEAT_SCALE = Object.freeze({ MIN: 1, MAX: 5, READER_FIRST_FLAME_AT: 4 });
 
 /**
  * "Stale hot": a scene the nav ladder still ranks near the top but whose file
@@ -787,11 +797,14 @@ const GAP_KIND = Object.freeze({
   // The evidence is in transform.buildGaps(). If L1→L2 linkage is ever really
   // implemented, measure THAT link — do not restore this string comparison.
   /**
-   * Writer and reader disagree about what `heat` means: every scene is written on
-   * the 1–5 scale but memory_recall.heatEmoji() ladders at 50/100/200/500/1000,
-   * so a scene at heat 5 ("active this week") is read as cold and gets no cue.
-   * Reported, not silently normalised — a scale mismatch that nobody can see is
-   * how the nav budget quietly ranks the wrong scenes.
+   * Writer and reader disagree about what `heat` means. This fired on the whole
+   * store when scene_nav.heatEmoji() laddered at 50/100/200/500/1000 while every
+   * scene was written on the 1–5 scale, so a scene at heat 5 ("active this week")
+   * was read as cold and got no cue. R2 realigned the ladder; the gap remains
+   * because the disagreement can recur from either side — a store whose entire
+   * heat population sits below the reader's first rung, or a writer that adopts a
+   * larger scale. Reported, not silently normalised: a scale mismatch that nobody
+   * can see is how the nav budget quietly ranks the wrong scenes.
    */
   HEAT_SCALE_MISMATCH: "heat_scale_mismatch",
   PERSONA_UNPROJECTED: "persona_unprojected",   // always-duty bullet never injected
