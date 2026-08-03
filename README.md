@@ -30,6 +30,7 @@ claude plugin install tencentdb-agent-memory
 
 | Hook | Action |
 |------|--------|
+| `SessionStart` | Inject the tier-0 persona core once per session (`<persona-core>`) + keep the global `tmem` shim current |
 | `UserPromptSubmit` | Hybrid recall (FTS5 + vector + RRF) + L2 scene-navigation index → inject `<memory-context>` |
 | `Stop` | Auto-capture turn + background consolidation after N turns |
 | `SessionEnd` | Mark session as pending for later seeding |
@@ -40,21 +41,59 @@ Hooks never block — failures degrade to no injection.
 
 Each turn, the `UserPromptSubmit` hook builds a `<memory-context>` block from three layers:
 
-1. **L3 persona** — a short summary of who you are / your standing preferences.
+1. **L3 persona** — the `conditional` persona bullets this prompt actually reaches for, plus a short always-on insurance line (see [How the persona reaches the agent](#how-the-persona-reaches-the-agent)).
 2. **L1 atoms** — hybrid search (FTS5 keyword + EmbeddingGemma vector, merged via RRF) over the most relevant memories, within a token budget.
 3. **L2 scene-navigation** — a heat-ranked *index* of scene blocks (name + heat + summary), project scenes first then global, with its own token budget. Full scene content is **not** inlined; load it on demand with `tmem scene <name>` (progressive disclosure — cheap always-on index, full read only when needed).
 
 Tune the scene-navigation budget with `tmem config scene-max-tokens N` (`0` disables it).
+
+## How the persona reaches the agent
+
+A consolidated persona grows well past what any per-turn budget can carry (~39k chars here). Rather than truncate it, each bullet is classified by **duty** and delivered on the channel that duty needs:
+
+| Duty | Tier | Channel | Budget |
+|------|------|---------|--------|
+| `always` | 0 | `SessionStart` hook → `<persona-core>`, once per session | `persona-max-tokens` (default 1200) |
+| `conditional` | 1 | `UserPromptSubmit` recall → `<persona>`, query-matched per turn | ~105 tokens |
+| `reference` | 2 | on demand — `tmem persona --section <name>` | none (never injected) |
+
+Tier 0 is paid **once per session**, not per turn, which is what makes a budget that size affordable. The tier-0 block also carries a one-line index of *every* section name — including sections it delivered nothing from — so the tier-2 pointer is something the agent can actually act on.
+
+**Tier 0 delivers a bullet whole or not at all** — bullets over 600 chars are skipped, never truncated. A rule cut before its exceptions reads as a *different, stricter rule*, which is worse than its absence. Tier 1 still truncates, deliberately: tier 1 is cover, tier 0 is contract. Write persona bullets one rule at a time, operative clause first.
+
+Inspect the split with `tmem persona --sections`; tune tier 0 with `tmem config persona-max-tokens N` (`0` is rejected — trimming is fine, switching persona conditioning off silently is not).
+
+**This does not fully solve persona delivery.** On a 39k-char / 81-bullet persona, tier 0 delivers 13 of the 47 `always`-duty bullets — the `always` class alone is ~22k source chars against a 4,800-char budget, and 11 of those bullets are over the 600-char eligibility threshold. Closing that needs a synthesised core section on the consolidator side, which is not built yet.
+
+## Memory visualiser (`tmem view`)
+
+```bash
+tmem view                      # start a session-keyed localhost server, print the URL
+tmem view --query "<q>"        # preselect the Context lens with a recall query
+tmem view --snapshot           # export the payload JSON once and exit (before/after measurement)
+```
+
+A read-only lens on the store, answering *"does the agent actually know me?"* — which persona bullets reach the agent, on which tier, and what the store's health gaps are. It opens every database with `DatabaseSync(..., { readOnly: true })`, so "never writes" is enforced by SQLite rather than by discipline.
+
+The URL carries a per-session key and is required verbatim: the page renders raw captured prompts from every project, so `localhost` alone is not the boundary. Session output goes to `<root>/view/`, never inside a repo. Use `--static` to pin the numbers while you read them.
 
 ## Components
 
 | Type | Name | Purpose |
 |------|------|---------|
 | Command | `/memory-init` | Install deps, link tmem CLI, init store |
+| Command | `/contrib` | Contributor intelligence (see below) |
 | Skill | `memory-seed` | Agent extracts L1 atoms from conversation history |
 | Skill | `memory-consolidate` | Agent builds L2 scenes + L3 persona |
+| Skill | `memory-view` | Opens the `tmem view` visualiser and reads the feedback back |
 | Skill | `tmem-cli` | CLI reference for memory inspection/management |
+| Skill | `contrib-profile` | Orchestrates the `/contrib` pipeline end to end |
+| Skill | `contrib-ingest` / `contrib-consolidate` / `contrib-synthesize` | Internal `/contrib` phases (not user-invocable) |
 | Agent | `memory-consolidator` | Background worker dispatched by asyncRewake |
+| Module | `scripts/persona_projection.js` | Pure persona duty classification + tier 0/1 projection; shared by the hook, the CLI and the visualiser |
+| Module | `scripts/scene_nav.js` | Pure `<scene-navigation>` renderer + budget arithmetic; shared by recall and the visualiser |
+
+The two `Module` rows are shared **pure** cores (no `require`, no I/O). They exist because recall and the visualiser must agree on the same arithmetic, and the visualiser cannot import the recall path — doing so would pull `node:sqlite` into a layer whose contract is that it does no I/O (a test enforces it). One renderer, one projection, two callers.
 
 ## tmem CLI
 
@@ -68,6 +107,10 @@ tmem projects                   List all memory stores (slug, records, scenes)
 tmem migrate-fragments [--apply]  Collapse legacy cwd-keyed fragment stores into their project root
 tmem recall <query>             Hybrid recall (FTS5 + vector + RRF) + L2 scene-navigation
 tmem persona                    Show persona
+tmem persona --sections         List persona sections (bullets + always/conditional/reference split)
+tmem persona --section <name>   Print one persona section on demand (tier 2)
+tmem view [--query <q>]         Open the memory visualiser (session-keyed localhost server)
+tmem view --snapshot [--stdout] Export the visualiser payload JSON once and exit
 tmem scenes list                List scene blocks
 tmem scene <name>               Print one full scene block (project-first, then global)
 tmem scenes dedup [--dry-run]   Remove duplicate scenes
@@ -79,6 +122,8 @@ tmem init                       Initialize memory store
 tmem mark-done                  Mark consolidation complete
 tmem config consolidate-every N Set consolidation threshold (default 20)
 tmem config scene-max-tokens N  Set L2 scene-navigation token budget (default 200, 0 disables)
+tmem config persona-max-tokens N  Set the tier-0 persona budget (default 1200; 0 rejected)
+tmem config recall [on|off]     Toggle per-turn recall injection for this project
 tmem daemon start               Warm + serve the embed daemon (foreground, like `ollama serve`)
 tmem daemon status              Health-ping the daemon (ready/warming/failed/down + pid)
 tmem daemon stop                Stop the daemon + clear its pidfile
@@ -154,8 +199,13 @@ PR diff size (the GitHub search API omits it).
 
 ```
 ~/.memory-tencentdb/
-├── global/           index.db (FTS5) + vectors.db (sqlite-vec) + persona.md + scenes/
-├── projects/{hash}/  index.db + vectors.db + scenes/
+├── global/           index.db (FTS5) + vectors.db (sqlite-vec) + persona.md
+│   ├── records/      raw L1 atoms, one JSONL per day
+│   ├── scene_blocks/ L2 scene markdown
+│   └── contributors/ /contrib store (isolated from self-memory)
+├── projects/{hash}/  index.db + vectors.db + records/ + scene_blocks/
+├── view/             `tmem view` session + snapshot output (never inside a repo)
+├── config.json       consolidate-every, scene-max-tokens, persona-max-tokens, per-project recall
 └── models/           embeddinggemma-300m (~80MB, downloaded on first init)
 ```
 

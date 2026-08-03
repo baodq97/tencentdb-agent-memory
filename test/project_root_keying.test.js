@@ -1,7 +1,7 @@
 "use strict";
 // Regression: a subdir or a linked worktree MUST key the same memory store as the
 // repo root, otherwise recall fragments per-cwd (30 scenes were stranded across 47
-// aiquinta fragment stores before this fix). Root cause: projectHashForCwd slugified
+// per-cwd fragment stores before this fix). Root cause: projectHashForCwd slugified
 // the raw path with no project-root normalization.
 
 const { test } = require("node:test");

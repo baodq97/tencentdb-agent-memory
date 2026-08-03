@@ -1,0 +1,4219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tmem view — is my memory OK?</title>
+
+<!--
+  THE SHELL.
+
+  Every screen renders from the API declared in ./contract.js. Nothing in this file
+  knows about a particular store, project, persona or number: it knows ROUTES, the
+  {ok, data, error} envelope, and the typedefs. Changing WHAT is measured means
+  changing the DATA (extract/transform/serve), never adding a special case here.
+  What this file owns is the WORDS — the mapping from a contract term to the
+  sentence a person reads. That table is `VOCAB` and `PROBLEMS` below, and every
+  row of it traces to a typedef or constant in contract.js.
+
+  Design: candidate A, "plain report" — a UI audit, a screen inventory for the
+  memory-health surface, and an audited token palette, all kept as local design
+  notes outside the published plugin. Three rules outrank aesthetics here:
+
+    1. No number stands alone. Every figure sits inside a sentence that says what
+       it means. `.issue` is a grid of severity-rule / sentence / command and has
+       no slot for a bare number; do not add one.
+    2. "not checked yet" is not "zero", and neither is "could not be read".
+       Three-way Status (contract.js:56) survives into the marks: solid dot =
+       measured, 45° hatch = unmeasured, filled critical square = error.
+    3. A total never renders without its gap. `.tot` has no variant without
+       `.gapline`.
+
+  Screens (the `?view=` values; renamed from Context/Signal/Scenes/Gaps by the
+  owner's decision, no aliases — the feature is unreleased):
+
+    ?view=health      Health check — the verdict, the problems, the totals (default)
+    ?view=memories    Your memories — search and read what was saved
+    ?view=about-you   What it knows about you — which standing rules reach the agent
+    ?view=trace       Try a prompt — the literal block the assistant would receive
+    ?view=problem&gap=<kind|unchecked>   one problem, its evidence, the way out
+
+  Query parameters
+    ?key=…       session key, forwarded on every request (required by serve.js)
+    ?view=…      screen, as above
+    ?static=1    skip the SSE channel entirely (screenshots, CI)
+    ?demo=1      render the inline development fixture instead of fetching.
+                 Implies ?static=1. The fixture exists so this file can be
+                 developed and screenshotted without a store; it is clearly
+                 fenced below and is NOT a fallback — a real API failure renders
+                 an honest error naming what failed, never the fixture.
+    ?theme=…     light | dark | auto (default auto). Deterministic screenshots.
+    ?q=…         pre-fill and run the prompt trace
+    ?slug=…      store to scope the trace / the memory search to
+
+  Zero dependencies: no CDN, no framework, no build step.
+
+  Colour: the roles below are the audited token palette
+  with two contrast fixes carried forward — `primary` darkened #2a78d6 → #1f66c0
+  (the old value is 4.30:1 on the light surface: fine as a chart mark, short of AA
+  as a button fill or as text) and `muted` #898781 → #6f6d68 (3.41:1, and it was
+  labelling the one affordance this whole tool exists to protect). Every colour is
+  a custom property referenced by ROLE; dark values are declared under BOTH the
+  prefers-color-scheme media query (scoped so an explicit light stamp wins) and
+  the [data-theme="dark"] scope. The validator lives in the bundled `dataviz`
+  skill, not in this repo.
+
+  MOTION: there is none, deliberately. The page re-renders under the reader when
+  the store changes, so movement on this surface must mean "your data changed" —
+  and even that is a badge the reader dismisses, never a silent re-render.
+-->
+
+<style>
+/* ══════════════════════════════════════════════════════════════════════
+   1. Tokens — the audited token palette, role for role
+   ══════════════════════════════════════════════════════════════════════ */
+:root {
+  color-scheme: light;
+
+  --c-background: #f9f9f7;
+  --c-surface:    #fcfcfb;
+  --c-foreground: #0b0b0b;
+  --c-secondary:  #52514e;
+  --c-muted:      #6f6d68;
+  --c-border:     #e6e5df;
+  --c-grid:       #e1e0d9;
+  --c-wash:       #f2f1ec;
+
+  --c-primary:    #1f66c0;
+  --c-onPrimary:  #ffffff;
+
+  --c-good:       #0ca30c;
+  --c-onGood:     #0b0b0b;
+  --c-warning:    #fab219;
+  --c-onWarning:  #0b0b0b;
+  --c-critical:   #b32828;
+  --c-onCritical: #ffffff;
+
+  --c-goodText:     #006300;
+  --c-warningText:  #7a5200;
+  --c-criticalText: #b32828;
+
+  --c-series1: #2a78d6;
+  --c-series2: #eb6834;
+  --c-series3: #1baf7a;
+  --c-dim1:    #c3c2b7;
+  --c-dim2:    #898781;
+  --c-hatchLine: #a9a79c;
+
+  --radius: 6px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --c-background: #0d0d0d;
+    --c-surface:    #1a1a19;
+    --c-foreground: #ffffff;
+    --c-secondary:  #c3c2b7;
+    --c-muted:      #9b9992;
+    --c-border:     #33332f;
+    --c-grid:       #2c2c2a;
+    --c-wash:       #232320;
+    --c-primary:    #6aa9f0;
+    --c-onPrimary:  #0b0b0b;
+    --c-good:       #0ca30c;
+    --c-onGood:     #0b0b0b;
+    --c-warning:    #fab219;
+    --c-onWarning:  #0b0b0b;
+    --c-critical:   #e05a5a;
+    --c-onCritical: #0b0b0b;
+    --c-goodText:     #4cc94c;
+    --c-warningText:  #f0b429;
+    --c-criticalText: #f4776f;
+    --c-series1: #3987e5;
+    --c-series2: #d95926;
+    --c-series3: #199e70;
+    --c-dim1:    #383835;
+    --c-dim2:    #898781;
+    --c-hatchLine: #6b695f;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --c-background: #0d0d0d;
+  --c-surface:    #1a1a19;
+  --c-foreground: #ffffff;
+  --c-secondary:  #c3c2b7;
+  --c-muted:      #9b9992;
+  --c-border:     #33332f;
+  --c-grid:       #2c2c2a;
+  --c-wash:       #232320;
+  --c-primary:    #6aa9f0;
+  --c-onPrimary:  #0b0b0b;
+  --c-good:       #0ca30c;
+  --c-onGood:     #0b0b0b;
+  --c-warning:    #fab219;
+  --c-onWarning:  #0b0b0b;
+  --c-critical:   #e05a5a;
+  --c-onCritical: #0b0b0b;
+  --c-goodText:     #4cc94c;
+  --c-warningText:  #f0b429;
+  --c-criticalText: #f4776f;
+  --c-series1: #3987e5;
+  --c-series2: #d95926;
+  --c-series3: #199e70;
+  --c-dim1:    #383835;
+  --c-dim2:    #898781;
+  --c-hatchLine: #6b695f;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   2. Base — five type sizes: 15 / 17 / 20 / 26 / 34. Body floor 14px,
+      target floor 32px (desktop surface floors).
+   ══════════════════════════════════════════════════════════════════════ */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--c-background);
+  color: var(--c-foreground);
+  font: 15px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--c-primary); }
+b, strong { font-weight: 600; }
+:focus-visible { outline: 2px solid var(--c-primary); outline-offset: 2px; }
+.mono { font-family: var(--mono); }
+.hidden { display: none !important; }
+.grow { flex: 1 1 auto; }
+
+/* ── top bar: on every screen, never inside a screen's body ─────────── */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 8px 20px; min-height: 54px;
+  background: var(--c-surface); border-bottom: 1px solid var(--c-border);
+}
+.topbar > *, .tabs a { white-space: nowrap; }
+.wordmark { display: inline-flex; align-items: center; gap: 8px; font-size: 17px; font-weight: 600; }
+.wordmark i { width: 9px; height: 9px; border-radius: 50%; background: var(--c-primary); }
+.rootpath { font-family: var(--mono); font-size: 14px; color: var(--c-muted); user-select: all; }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.tabs a {
+  font-size: 15px; text-decoration: none; color: var(--c-secondary);
+  padding: 0 13px; min-height: 32px; display: inline-flex; align-items: center;
+  border-radius: 999px; border: 1px solid transparent;
+}
+.tabs a:hover { background: var(--c-wash); }
+.tabs a[aria-current="page"] {
+  background: var(--c-wash); border-color: var(--c-border);
+  color: var(--c-foreground); font-weight: 600;
+}
+.tabs a .n { color: var(--c-muted); margin-left: 6px; font-variant-numeric: tabular-nums; }
+.live { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; color: var(--c-muted); }
+.live i { width: 8px; height: 8px; border-radius: 50%; background: var(--c-dim1); flex: none; }
+.live[data-state="live"] i { background: var(--c-good); }
+.live[data-state="lost"] i { background: var(--c-critical); }
+.live[data-state="static"] i {
+  background-image: repeating-linear-gradient(45deg, var(--c-hatchLine) 0 1.5px, transparent 1.5px 5px);
+  box-shadow: inset 0 0 0 1px var(--c-hatchLine);
+}
+
+.changed-badge {
+  display: inline-flex; align-items: center; gap: 10px;
+  font-size: 14px; font-weight: 600; color: var(--c-onWarning);
+  background: var(--c-warning); border-radius: 999px; padding: 3px 6px 3px 14px;
+}
+
+/* ── controls ───────────────────────────────────────────────────────── */
+.btn {
+  font: inherit; font-size: 15px; min-height: 32px; padding: 0 14px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+  text-decoration: none; border-radius: var(--radius);
+  border: 1px solid var(--c-border); background: var(--c-surface); color: var(--c-foreground);
+}
+.btn:hover { background: var(--c-wash); }
+.btn.primary {
+  background: var(--c-primary); border-color: var(--c-primary);
+  color: var(--c-onPrimary); font-weight: 600;
+}
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.primary:focus-visible { outline-color: var(--c-foreground); }
+.btn[disabled] { cursor: default; color: var(--c-muted); }
+
+input[type="search"], input[type="text"], select {
+  font: inherit; font-size: 15px; min-height: 36px; padding: 0 12px;
+  border-radius: var(--radius); border: 1px solid var(--c-dim1);
+  background: var(--c-surface); color: var(--c-foreground); max-width: 100%;
+}
+input::placeholder { color: var(--c-muted); }
+label { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; }
+
+/* ── page body ──────────────────────────────────────────────────────── */
+.body { padding: 18px 26px 56px; max-width: 1240px; }
+
+/* the signature element: a verdict written as a sentence */
+.verdict {
+  font-size: 34px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2;
+  margin: 0; max-width: 30ch;
+}
+.verdict.sm { font-size: 26px; max-width: 46ch; }
+.verdict .ok  { color: var(--c-goodText); }
+.verdict .bad { color: var(--c-criticalText); }
+.verdict-sub { font-size: 15px; color: var(--c-secondary); margin: 8px 0 0; max-width: 96ch; }
+
+/* ── problem rows: severity rule / sentence / command. No number slot. ── */
+.issues {
+  margin-top: 14px; border: 1px solid var(--c-border); border-radius: 8px;
+  background: var(--c-surface); overflow: hidden;
+}
+.issue {
+  display: grid; grid-template-columns: 4px minmax(0,1fr) auto; gap: 0 16px;
+  padding: 12px 18px; border-bottom: 1px solid var(--c-grid); align-items: start;
+}
+.issue:last-child { border-bottom: 0; }
+.issue .rule { border-radius: 2px; align-self: stretch; min-height: 34px; }
+.issue[data-sev="critical"] .rule { background: var(--c-critical); }
+.issue[data-sev="warn"] .rule     { background: var(--c-warning); }
+.issue[data-sev="info"] .rule     { background: var(--c-dim2); }
+.issue[data-sev="ok"] .rule       { background: var(--c-good); }
+.issue[data-sev="unchecked"] .rule, .strip .rule {
+  background-image: repeating-linear-gradient(45deg, var(--c-hatchLine) 0 2px, transparent 2px 6px);
+  box-shadow: inset 0 0 0 1px var(--c-hatchLine);
+}
+.issue h3 { margin: 0; font-size: 17px; font-weight: 600; line-height: 1.35; }
+.issue h3 a { color: inherit; text-decoration: none; }
+.issue h3 a:hover { text-decoration: underline; }
+.issue p { margin: 5px 0 0; font-size: 15px; color: var(--c-secondary); max-width: 88ch; }
+.issue .act { display: flex; align-items: center; gap: 10px; padding-top: 2px; flex-wrap: wrap; }
+
+.sev {
+  display: inline-flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 600;
+  color: var(--c-secondary); margin-bottom: 3px;
+}
+.mk { width: 9px; height: 9px; border-radius: 2px; flex: none; background: var(--c-dim1); display: inline-block; }
+.sev[data-sev="critical"] .mk { background: var(--c-critical); }
+.sev[data-sev="critical"]     { color: var(--c-criticalText); }
+.sev[data-sev="warn"] .mk     { background: var(--c-warning); }
+.sev[data-sev="warn"]         { color: var(--c-warningText); }
+.sev[data-sev="info"] .mk     { background: var(--c-dim2); }
+.sev[data-sev="ok"] .mk       { background: var(--c-good); }
+.sev[data-sev="ok"]           { color: var(--c-goodText); }
+.mk.hatch, .sev[data-sev="unchecked"] .mk {
+  background-color: transparent;
+  background-image: repeating-linear-gradient(45deg, var(--c-hatchLine) 0 1.5px, transparent 1.5px 5px);
+  box-shadow: inset 0 0 0 1px var(--c-hatchLine);
+}
+.mk.err { background: var(--c-critical); }
+
+.cmd {
+  font-family: var(--mono); font-size: 14px; background: var(--c-wash);
+  border: 1px solid var(--c-border); border-radius: var(--radius);
+  padding: 4px 9px; color: var(--c-foreground); white-space: nowrap; user-select: all;
+}
+
+/* the unchecked strip: a different mark, a different verb, its own row */
+.strip {
+  display: grid; grid-template-columns: 4px minmax(0,1fr) auto; gap: 0 16px; align-items: center;
+  padding: 11px 18px; margin-top: 10px; border: 1px solid var(--c-border);
+  border-radius: 8px; background: var(--c-surface);
+}
+.strip .rule { align-self: stretch; border-radius: 2px; min-height: 34px; }
+.strip h3 { margin: 0; font-size: 17px; font-weight: 600; line-height: 1.35; }
+.strip p { margin: 4px 0 0; font-size: 15px; color: var(--c-secondary); max-width: 88ch; }
+
+/* ── totals that carry their own gap, in the same box ───────────────── */
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px; }
+.tot {
+  border: 1px solid var(--c-border); border-radius: 8px; background: var(--c-surface);
+  padding: 11px 15px 12px; min-width: 0;
+}
+.tot .l { font-size: 15px; color: var(--c-secondary); }
+.tot .v { font-size: 26px; font-weight: 600; line-height: 1.15; }
+.tot .gapline {
+  font-size: 15px; margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--c-grid); color: var(--c-foreground);
+}
+.tot .gapline.unmeasured { display: flex; gap: 9px; align-items: flex-start; color: var(--c-secondary); }
+.tot .gapline .mk { margin-top: 5px; }
+.tot .gapline b { font-weight: 600; }
+
+.footnote {
+  margin-top: 16px; font-size: 14px; color: var(--c-muted);
+  display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; max-width: 110ch;
+}
+.footnote .id { font-family: var(--mono); user-select: all; }
+.footnote b { color: var(--c-foreground); }
+
+/* ── generic pieces ─────────────────────────────────────────────────── */
+.h2 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.page-title { font-size: 20px; font-weight: 600; margin: 0; }
+.lede { font-size: 15px; color: var(--c-secondary); margin: 6px 0 0; max-width: 88ch; }
+.card {
+  border: 1px solid var(--c-border); border-radius: 8px; background: var(--c-surface);
+  padding: 14px 18px; margin-top: 14px;
+}
+.kv { display: grid; grid-template-columns: 210px minmax(0,1fr); gap: 6px 18px; font-size: 15px; margin: 6px 0 0; }
+.kv dt { color: var(--c-secondary); margin: 0; }
+.kv dd { margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.quote {
+  font-family: var(--mono); font-size: 14px; background: var(--c-wash);
+  border: 1px solid var(--c-border); border-radius: var(--radius);
+  padding: 10px 12px; color: var(--c-secondary); white-space: pre-wrap;
+  margin: 8px 0 0; line-height: 1.5; overflow-x: auto; word-break: break-word;
+}
+.note {
+  display: flex; gap: 12px; align-items: flex-start; font-size: 15px;
+  border: 1px solid var(--c-border); border-radius: 8px; padding: 12px 14px;
+  background: var(--c-surface); color: var(--c-secondary); margin-top: 14px; max-width: 100ch;
+}
+.note.warn    { box-shadow: inset 4px 0 0 var(--c-warning); }
+.note.bad     { box-shadow: inset 4px 0 0 var(--c-critical); }
+.note.hatched { box-shadow: inset 4px 0 0 var(--c-hatchLine); }
+.note b { color: var(--c-foreground); }
+.note .glyph { font-size: 15px; line-height: 1.5; }
+
+.tag {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 14px;
+  padding: 2px 9px; border-radius: 999px; border: 1px solid var(--c-border);
+  color: var(--c-secondary); background: var(--c-surface); max-width: 100%;
+}
+.tag .mk { width: 8px; height: 8px; }
+.tag[data-t="meaning"] .mk { background: var(--c-series1); }
+.tag[data-t="words"] .mk   { background: var(--c-series2); }
+.tag[data-t="clutter"] .mk { background: var(--c-dim2); }
+.tag[data-t="error"] .mk   { background: var(--c-critical); }
+.tag.strong { color: var(--c-foreground); font-weight: 600; }
+
+.acts { display: flex; gap: 10px; margin-top: 16px; align-items: center; flex-wrap: wrap; }
+.search { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; align-items: center; }
+.search input[type="search"] { flex: 1 1 380px; min-width: 0; }
+.filters {
+  display: flex; gap: 10px; align-items: center; margin-top: 12px; font-size: 15px;
+  color: var(--c-secondary); flex-wrap: wrap;
+}
+
+/* result rows */
+.rows {
+  margin-top: 12px; border: 1px solid var(--c-border); border-radius: 8px;
+  background: var(--c-surface); overflow: hidden;
+}
+.row {
+  display: grid; grid-template-columns: minmax(0,1fr) 260px; gap: 0 18px;
+  padding: 12px 16px; border-bottom: 1px solid var(--c-grid); align-items: start;
+}
+.row:last-child { border-bottom: 0; }
+.row .txt { font-size: 15px; line-height: 1.45; word-break: break-word; }
+.row .meta { font-size: 14px; color: var(--c-muted); margin-top: 5px; }
+.row .side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; min-width: 0; }
+.row[data-clutter="1"] .txt { color: var(--c-muted); }
+
+/* persona delivery groups */
+.group { margin-top: 16px; }
+.group > .head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.group > .head .t { font-size: 17px; font-weight: 600; }
+.group > .head .c { font-size: 15px; color: var(--c-secondary); }
+.plist {
+  list-style: none; margin: 8px 0 0; padding: 0; border: 1px solid var(--c-border);
+  border-radius: 8px; background: var(--c-surface); overflow: hidden;
+}
+.plist li {
+  display: grid; grid-template-columns: 4px minmax(0,1fr) auto; gap: 0 14px;
+  padding: 10px 16px; border-bottom: 1px solid var(--c-grid); align-items: center;
+}
+.plist li:last-child { border-bottom: 0; }
+.plist .rule { align-self: stretch; border-radius: 2px; background: var(--c-dim1); min-height: 20px; }
+.plist li[data-reach="sessionStart"] .rule  { background: var(--c-series1); }
+.plist li[data-reach="promptSummary"] .rule { background: var(--c-series2); }
+.plist li[data-reach="never"] .rule         { background: var(--c-critical); }
+.plist .t { font-size: 15px; min-width: 0; }
+.plist .t .more {
+  font: inherit; font-size: 14px; background: none; border: 0; padding: 0 0 0 6px;
+  color: var(--c-primary); cursor: pointer; text-decoration: underline;
+}
+.plist li[data-reach="never"] .t { color: var(--c-secondary); }
+.plist .sec { display: block; font-size: 14px; color: var(--c-muted); margin-top: 3px; }
+.claim {
+  font: inherit; font-size: 14px; font-weight: 600; padding: 2px 10px; border-radius: 999px;
+  border: 1px dashed var(--c-dim1); color: var(--c-secondary);
+  background: var(--c-surface); min-height: 32px; display: inline-flex; align-items: center;
+  white-space: nowrap; text-align: left;
+}
+/* The dash stays on every state: the classification is a guess before the
+   reader disputes it and still a guess after — what changed is that they said
+   so. A solid border here would promote a heuristic to a claim. */
+button.claim { cursor: pointer; }
+button.claim:hover { border-color: var(--c-primary); color: var(--c-foreground); }
+.claim.noted { border-color: var(--c-primary); color: var(--c-foreground); white-space: normal; }
+.claim.failed { border-color: var(--c-warningText); color: var(--c-warningText); white-space: normal; }
+
+/* recall trace */
+.hits { margin-top: 4px; }
+.hit {
+  display: grid; grid-template-columns: 28px minmax(0,1fr) 170px; gap: 0 14px;
+  padding: 10px 0; border-bottom: 1px solid var(--c-grid); font-size: 15px; align-items: start;
+}
+.hit:last-child { border-bottom: 0; }
+.hit .n { color: var(--c-muted); font-variant-numeric: tabular-nums; }
+.hit .why { font-size: 14px; color: var(--c-muted); text-align: right; }
+
+/* empty states */
+.empty { margin-top: 34px; max-width: 66ch; }
+.empty h2 { font-size: 26px; font-weight: 600; margin: 0; letter-spacing: -0.015em; }
+.empty p { font-size: 16px; color: var(--c-secondary); margin: 10px 0 0; line-height: 1.55; }
+
+/* skeletons — hold the final height so nothing moves when data lands */
+.sk { background: var(--c-wash); border-radius: 4px; display: block; }
+.sk.line  { height: 15px; }
+.sk.title { height: 20px; }
+.sk.big   { height: 34px; }
+
+/* table twin: every figure that is drawn as a mark is also readable as text */
+.tbl { border-collapse: collapse; font-size: 14px; margin-top: 10px; width: 100%; max-width: 720px; }
+.tbl caption { text-align: left; color: var(--c-secondary); padding-bottom: 6px; }
+.tbl th, .tbl td { border-bottom: 1px solid var(--c-grid); padding: 5px 10px 5px 0; text-align: left; }
+.tbl td.num, .tbl th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ── narrow: a browser window shrunk beside a terminal ──────────────── */
+@media (max-width: 860px) {
+  .body { padding: 16px 16px 48px; }
+  .tiles { grid-template-columns: 1fr; }
+  .issue, .strip, .plist li { grid-template-columns: 4px minmax(0,1fr); }
+  .issue .act, .strip > .btn, .plist .claim { grid-column: 2; margin-top: 8px; justify-self: start; }
+  .row { grid-template-columns: minmax(0,1fr); }
+  .row .side { align-items: flex-start; margin-top: 8px; }
+  .hit { grid-template-columns: 28px minmax(0,1fr); }
+  .hit .why { grid-column: 2; text-align: left; margin-top: 4px; }
+  .kv { grid-template-columns: minmax(0,1fr); gap: 2px; }
+  .kv dd { margin-bottom: 8px; }
+  .verdict { font-size: 26px; }
+}
+
+@media print, (forced-colors: active) {
+  .mk, .rule { outline: 1px solid currentColor; }
+  .topbar { position: static; }
+}
+</style>
+</head>
+
+<body>
+<header class="topbar">
+  <span class="wordmark"><i></i>tmem</span>
+  <span class="rootpath" id="rootpath">…</span>
+  <nav class="tabs" id="tabs" aria-label="Screens"></nav>
+  <span class="grow"></span>
+  <span id="changed-slot"></span>
+  <span class="live" id="chan" data-state="idle" role="status"><i></i><span id="chan-text">starting…</span></span>
+  <button class="btn" id="theme-toggle" type="button">Theme: auto</button>
+</header>
+
+<main class="body" id="app" tabindex="-1"></main>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     Development fixture. Rendered ONLY under ?demo=1, never as a fallback
+     for a failing API.
+
+     This is a REAL `tmem view --snapshot --stdout` payload — its shape, key
+     for key, down to the three-way `status` fields and the null-not-zero
+     rule — with every piece of content replaced by synthetic text. It is not
+     a hand-written approximation of the contract, and there is no adapter
+     between it and the renderers: `?demo=1` feeds the same objects through
+     the same code paths as the live API, so a payload shape the shell can no
+     longer render fails HERE, visibly, before it fails on somebody's store.
+     That is the point of checking it in. Regenerate it by trimming a fresh
+     `--snapshot` and scrubbing it; never by hand-editing a number, because a
+     number edited in isolation stops agreeing with the ones derived from it.
+
+     NOTHING IN HERE IS REAL. The persona is an invented engineer, the store
+     slugs are invented repositories under an invented home directory, the
+     record bodies and scene names are written for this file, and the two
+     session ids are all-zero placeholders. A real snapshot carries the
+     user's captured prompts and the path of every repository they have ever
+     opened; none of that may be checked in.
+
+     `snapshot.persona` is deliberately absent: it would be a byte-identical
+     copy of the top-level `persona` (the /api/persona payload), and
+     loadFixture() re-attaches it. One copy cannot drift from itself.
+     ══════════════════════════════════════════════════════════════════ -->
+<script id="fixture" type="application/json">
+{
+ "snapshot": {
+  "schemaVersion": 3,
+  "snapshotId": "s3-4a91c0be7f2d1e83",
+  "generatedAt": "2026-08-03T09:41:02.117Z",
+  "rootDir": "~/.memory-tencentdb",
+  "totals": {
+   "stores": 7,
+   "readableStores": 6,
+   "erroredStores": 1,
+   "records": 4109,
+   "recordsMeasured": 4109,
+   "truncatedStores": 0,
+   "scenes": 139,
+   "sizeBytes": 18731008,
+   "byType": {
+    "persona": 34,
+    "episodic": 4061,
+    "instruction": 14,
+    "semantic": 0,
+    "other": 0
+   },
+   "byWritePath": {
+    "auto": 3917,
+    "awaited": 192,
+    "unknown": 0
+   },
+   "coverage": {
+    "vectors": {
+     "metric": "vectors",
+     "measuredStores": 5,
+     "measuredRecords": 3934,
+     "covered": 1962,
+     "ratio": 0.4987290289781393,
+     "unmeasuredStores": 2,
+     "unmeasuredRecords": 175,
+     "erroredStores": 1,
+     "unmeasuredReasons": [
+      "index.db is not a database (file is 0 bytes)",
+      "vectors.db not present — embeddings were never written for this store"
+     ],
+     "partial": true
+    }
+   },
+   "vectorStates": {
+    "populated": 3,
+    "empty": 2,
+    "unmeasured": 2
+   },
+   "vectorStateSlugs": {
+    "populated": [
+     "global",
+     "-home-dev-projects-orchard-api",
+     "-home-dev-projects-orchard-web"
+    ],
+    "empty": [
+     "-home-dev-projects-lantern",
+     "-home-dev-projects-tidepool"
+    ],
+    "unmeasured": [
+     "-home-dev-projects-quarry",
+     "-home-dev-sandbox"
+    ]
+   },
+   "vectorStateRecords": {
+    "populated": 3362,
+    "empty": 572,
+    "unmeasured": 175
+   },
+   "missingByMonth": {},
+   "lowSignal": {
+    "records": 4109,
+    "recordsUnread": 0,
+    "unionRecords": 1591,
+    "ratio": 0.38719883183256265,
+    "unionClasses": [
+     "taskNotification",
+     "skillEcho",
+     "slashOrTag",
+     "continuation",
+     "pasteDump",
+     "empty"
+    ],
+    "perClass": {
+     "taskNotification": 1055,
+     "skillEcho": 278,
+     "slashOrTag": 1070,
+     "continuation": 39,
+     "pasteDump": 1242,
+     "empty": 0
+    },
+    "baseline": {
+     "observed": 0.38719883183256265,
+     "pinned": 0.38613499176879457,
+     "deltaPoints": 0.10638400637680845,
+     "tolerancePoints": 2,
+     "baselineRecords": 5467,
+     "baselineUnionRecords": 2111,
+     "comparable": true,
+     "withinTolerance": true,
+     "message": null
+    }
+   },
+   "duplicates": {
+    "exact": 445,
+    "normalised": 448
+   },
+   "duplicateGroups": {
+    "exact": 102,
+    "normalised": 104
+   },
+   "heat": {
+    "values": {
+     "2": 9,
+     "3": 30,
+     "4": 50,
+     "5": 130
+    },
+    "buckets": {
+     "historical": 0,
+     "recent": 39,
+     "active": 50,
+     "hot": 130,
+     "offScale": 0
+    },
+    "observedMin": 2,
+    "observedMax": 5,
+    "scenesWithACue": 0
+   },
+   "scenesReachableInSomeNav": 26,
+   "scenesUnreachableInEveryNav": 113,
+   "scenesNavUnmeasured": 0,
+   "scenesNavUnmeasuredReason": null,
+   "navBudgetChars": 800,
+   "gapsBySeverity": {
+    "info": 0,
+    "warn": 5,
+    "critical": 2
+   },
+   "unmeasuredGaps": 1
+  },
+  "stores": [
+   {
+    "slug": "global",
+    "scope": "global",
+    "label": "global",
+    "sizeBytes": 3325952,
+    "status": "ok",
+    "reason": null,
+    "records": 48,
+    "recordsMeasured": 48,
+    "recordsTruncated": false,
+    "byType": {
+     "persona": 34,
+     "episodic": 0,
+     "instruction": 14,
+     "semantic": 0,
+     "other": 0
+    },
+    "byWritePath": {
+     "auto": 0,
+     "awaited": 48,
+     "unknown": 0
+    },
+    "contentLength": {
+     "min": 141,
+     "p50": 274,
+     "p75": 338,
+     "p90": 423,
+     "p95": 483,
+     "p99": 530,
+     "max": 665,
+     "mean": 284.8,
+     "n": 48
+    },
+    "lowSignal": {
+     "taskNotification": 0,
+     "skillEcho": 0,
+     "slashOrTag": 0,
+     "continuation": 0,
+     "pasteDump": 2,
+     "empty": 0
+    },
+    "lowSignalUnion": 2,
+    "duplicates": {
+     "exact": 0,
+     "normalised": 0
+    },
+    "duplicateGroups": {
+     "exact": 0,
+     "normalised": 0
+    },
+    "vectors": {
+     "status": "ok",
+     "reason": null,
+     "withVector": 48,
+     "withoutVector": 0,
+     "ratio": 1,
+     "byWritePath": {
+      "auto": {
+       "withVector": 0,
+       "withoutVector": 0,
+       "ratio": 0
+      },
+      "awaited": {
+       "withVector": 48,
+       "withoutVector": 0,
+       "ratio": 1
+      },
+      "unknown": {
+       "withVector": 0,
+       "withoutVector": 0,
+       "ratio": 0
+      }
+     },
+     "missingByMonth": {},
+     "orphanVectors": 0,
+     "dimensions": 768,
+     "vectorRows": 48
+    },
+    "vectorState": "populated",
+    "scenes": null,
+    "newestRecordAt": "2026-08-03T07:14:09.000Z",
+    "oldestRecordAt": "2026-05-26T10:51:57.000Z",
+    "missingByMonth": {}
+   },
+   {
+    "slug": "-home-dev-projects-orchard-api",
+    "scope": "project",
+    "label": "orchard-api",
+    "sizeBytes": 9744384,
+    "status": "ok",
+    "reason": null,
+    "records": 2826,
+    "recordsMeasured": 2826,
+    "recordsTruncated": false,
+    "byType": {
+     "persona": 0,
+     "episodic": 2826,
+     "instruction": 0,
+     "semantic": 0,
+     "other": 0
+    },
+    "byWritePath": {
+     "auto": 2702,
+     "awaited": 124,
+     "unknown": 0
+    },
+    "contentLength": {
+     "min": 15,
+     "p50": 111,
+     "p75": 496,
+     "p90": 503,
+     "p95": 503,
+     "p99": 503,
+     "max": 598,
+     "mean": 224,
+     "n": 2826
+    },
+    "lowSignal": {
+     "taskNotification": 598,
+     "skillEcho": 203,
+     "slashOrTag": 609,
+     "continuation": 24,
+     "pasteDump": 723,
+     "empty": 0
+    },
+    "lowSignalUnion": 979,
+    "duplicates": {
+     "exact": 394,
+     "normalised": 397
+    },
+    "duplicateGroups": {
+     "exact": 74,
+     "normalised": 76
+    },
+    "vectors": {
+     "status": "ok",
+     "reason": null,
+     "withVector": 1701,
+     "withoutVector": 1125,
+     "ratio": 0.6019108280254777,
+     "byWritePath": {
+      "auto": {
+       "withVector": 1577,
+       "withoutVector": 1125,
+       "ratio": 0.5836417468541821
+      },
+      "awaited": {
+       "withVector": 124,
+       "withoutVector": 0,
+       "ratio": 1
+      },
+      "unknown": {
+       "withVector": 0,
+       "withoutVector": 0,
+       "ratio": 0
+      }
+     },
+     "missingByMonth": {
+      "2026-06": 610,
+      "2026-07": 515
+     },
+     "orphanVectors": 0,
+     "dimensions": 768,
+     "vectorRows": 1701
+    },
+    "vectorState": "populated",
+    "scenes": {
+     "count": 75,
+     "heatBuckets": {
+      "historical": 0,
+      "recent": 16,
+      "active": 20,
+      "hot": 39,
+      "offScale": 0
+     },
+     "heatValues": {
+      "2": 5,
+      "3": 11,
+      "4": 20,
+      "5": 39
+     },
+     "staleHot": 0,
+     "navStatus": "ok",
+     "navReason": null,
+     "visibleInNav": 5,
+     "invisibleInNav": 70,
+     "navBudgetChars": 800,
+     "navUsedChars": 722
+    },
+    "newestRecordAt": "2026-08-03T07:14:09.000Z",
+    "oldestRecordAt": "2026-05-26T10:51:57.000Z",
+    "missingByMonth": {}
+   },
+   {
+    "slug": "-home-dev-projects-orchard-web",
+    "scope": "project",
+    "label": "orchard-web",
+    "sizeBytes": 3919872,
+    "status": "ok",
+    "reason": null,
+    "records": 488,
+    "recordsMeasured": 488,
+    "recordsTruncated": false,
+    "byType": {
+     "persona": 0,
+     "episodic": 488,
+     "instruction": 0,
+     "semantic": 0,
+     "other": 0
+    },
+    "byWritePath": {
+     "auto": 468,
+     "awaited": 20,
+     "unknown": 0
+    },
+    "contentLength": {
+     "min": 15,
+     "p50": 171,
+     "p75": 503,
+     "p90": 503,
+     "p95": 503,
+     "p99": 703,
+     "max": 877,
+     "mean": 266.5,
+     "n": 488
+    },
+    "lowSignal": {
+     "taskNotification": 141,
+     "skillEcho": 28,
+     "slashOrTag": 142,
+     "continuation": 7,
+     "pasteDump": 190,
+     "empty": 0
+    },
+    "lowSignalUnion": 206,
+    "duplicates": {
+     "exact": 15,
+     "normalised": 15
+    },
+    "duplicateGroups": {
+     "exact": 5,
+     "normalised": 5
+    },
+    "vectors": {
+     "status": "ok",
+     "reason": null,
+     "withVector": 213,
+     "withoutVector": 275,
+     "ratio": 0.4364754098360656,
+     "byWritePath": {
+      "auto": {
+       "withVector": 193,
+       "withoutVector": 275,
+       "ratio": 0.41239316239316237
+      },
+      "awaited": {
+       "withVector": 20,
+       "withoutVector": 0,
+       "ratio": 1
+      },
+      "unknown": {
+       "withVector": 0,
+       "withoutVector": 0,
+       "ratio": 0
+      }
+     },
+     "missingByMonth": {
+      "2026-07": 232,
+      "2026-08": 43
+     },
+     "orphanVectors": 0,
+     "dimensions": 768,
+     "vectorRows": 213
+    },
+    "vectorState": "populated",
+    "scenes": {
+     "count": 25,
+     "heatBuckets": {
+      "historical": 0,
+      "recent": 2,
+      "active": 3,
+      "hot": 20,
+      "offScale": 0
+     },
+     "heatValues": {
+      "3": 2,
+      "4": 3,
+      "5": 20
+     },
+     "staleHot": 0,
+     "navStatus": "ok",
+     "navReason": null,
+     "visibleInNav": 6,
+     "invisibleInNav": 19,
+     "navBudgetChars": 800,
+     "navUsedChars": 792
+    },
+    "newestRecordAt": "2026-08-03T07:14:09.000Z",
+    "oldestRecordAt": "2026-05-26T10:51:57.000Z",
+    "missingByMonth": {}
+   },
+   {
+    "slug": "-home-dev-projects-lantern",
+    "scope": "project",
+    "label": "lantern",
+    "sizeBytes": 524288,
+    "status": "ok",
+    "reason": null,
+    "records": 332,
+    "recordsMeasured": 332,
+    "recordsTruncated": false,
+    "byType": {
+     "persona": 0,
+     "episodic": 332,
+     "instruction": 0,
+     "semantic": 0,
+     "other": 0
+    },
+    "byWritePath": {
+     "auto": 332,
+     "awaited": 0,
+     "unknown": 0
+    },
+    "contentLength": {
+     "min": 15,
+     "p50": 120,
+     "p75": 502,
+     "p90": 503,
+     "p95": 503,
+     "p99": 503,
+     "max": 503,
+     "mean": 247.6,
+     "n": 332
+    },
+    "lowSignal": {
+     "taskNotification": 106,
+     "skillEcho": 21,
+     "slashOrTag": 108,
+     "continuation": 5,
+     "pasteDump": 101,
+     "empty": 0
+    },
+    "lowSignalUnion": 152,
+    "duplicates": {
+     "exact": 20,
+     "normalised": 20
+    },
+    "duplicateGroups": {
+     "exact": 15,
+     "normalised": 15
+    },
+    "vectors": {
+     "status": "ok",
+     "reason": null,
+     "withVector": 0,
+     "withoutVector": 332,
+     "ratio": 0,
+     "byWritePath": {
+      "auto": {
+       "withVector": 0,
+       "withoutVector": 332,
+       "ratio": 0
+      },
+      "awaited": {
+       "withVector": 0,
+       "withoutVector": 0,
+       "ratio": 0
+      },
+      "unknown": {
+       "withVector": 0,
+       "withoutVector": 0,
+       "ratio": 0
+      }
+     },
+     "missingByMonth": {
+      "2026-06": 134,
+      "2026-07": 198
+     },
+     "orphanVectors": 0,
+     "dimensions": null,
+     "vectorRows": 0
+    },
+    "vectorState": "empty",
+    "scenes": {
+     "count": 16,
+     "heatBuckets": {
+      "historical": 0,
+      "recent": 10,
+      "active": 0,
+      "hot": 6,
+      "offScale": 0
+     },
+     "heatValues": {
+      "2": 1,
+      "3": 9,
+      "5": 6
+     },
+     "staleHot": 0,
+     "navStatus": "ok",
+     "navReason": null,
+     "visibleInNav": 5,
+     "invisibleInNav": 11,
+     "navBudgetChars": 800,
+     "navUsedChars": 748
+    },
+    "newestRecordAt": "2026-08-03T07:14:09.000Z",
+    "oldestRecordAt": "2026-05-26T10:51:57.000Z",
+    "missingByMonth": {}
+   },
+   {
+    "slug": "-home-dev-projects-tidepool",
+    "scope": "project",
+    "label": "tidepool",
+    "sizeBytes": 479232,
+    "status": "ok",
+    "reason": null,
+    "records": 240,
+    "recordsMeasured": 240,
+    "recordsTruncated": false,
+    "byType": {
+     "persona": 0,
+     "episodic": 240,
+     "instruction": 0,
+     "semantic": 0,
+     "other": 0
+    },
+    "byWritePath": {
+     "auto": 240,
+     "awaited": 0,
+     "unknown": 0
+    },
+    "contentLength": {
+     "min": 15,
+     "p50": 503,
+     "p75": 503,
+     "p90": 503,
+     "p95": 503,
+     "p99": 503,
+     "max": 503,
+     "mean": 352.3,
+     "n": 240
+    },
+    "lowSignal": {
+     "taskNotification": 120,
+     "skillEcho": 20,
+     "slashOrTag": 120,
+     "continuation": 2,
+     "pasteDump": 148,
+     "empty": 0
+    },
+    "lowSignalUnion": 151,
+    "duplicates": {
+     "exact": 12,
+     "normalised": 12
+    },
+    "duplicateGroups": {
+     "exact": 6,
+     "normalised": 6
+    },
+    "vectors": {
+     "status": "ok",
+     "reason": null,
+     "withVector": 0,
+     "withoutVector": 240,
+     "ratio": 0,
+     "byWritePath": {
+      "auto": {
+       "withVector": 0,
+       "withoutVector": 240,
+       "ratio": 0
+      },
+      "awaited": {
+       "withVector": 0,
+       "withoutVector": 0,
+       "ratio": 0
+      },
+      "unknown": {
+       "withVector": 0,
+       "withoutVector": 0,
+       "ratio": 0
+      }
+     },
+     "missingByMonth": {
+      "2026-06": 240
+     },
+     "orphanVectors": 0,
+     "dimensions": null,
+     "vectorRows": 0
+    },
+    "vectorState": "empty",
+    "scenes": {
+     "count": 11,
+     "heatBuckets": {
+      "historical": 0,
+      "recent": 0,
+      "active": 2,
+      "hot": 9,
+      "offScale": 0
+     },
+     "heatValues": {
+      "4": 2,
+      "5": 9
+     },
+     "staleHot": 0,
+     "navStatus": "ok",
+     "navReason": null,
+     "visibleInNav": 5,
+     "invisibleInNav": 6,
+     "navBudgetChars": 800,
+     "navUsedChars": 764
+    },
+    "newestRecordAt": "2026-08-03T07:14:09.000Z",
+    "oldestRecordAt": "2026-05-26T10:51:57.000Z",
+    "missingByMonth": {}
+   },
+   {
+    "slug": "-home-dev-projects-quarry",
+    "scope": "project",
+    "label": "quarry",
+    "sizeBytes": 389120,
+    "status": "error",
+    "reason": "index.db is not a database (file is 0 bytes)",
+    "records": null,
+    "recordsMeasured": null,
+    "recordsTruncated": null,
+    "byType": null,
+    "byWritePath": null,
+    "contentLength": null,
+    "lowSignal": null,
+    "lowSignalUnion": null,
+    "duplicates": null,
+    "duplicateGroups": null,
+    "vectors": {
+     "status": "error",
+     "reason": "index.db is not a database (file is 0 bytes)",
+     "withVector": null,
+     "withoutVector": null,
+     "ratio": null,
+     "byWritePath": null,
+     "missingByMonth": null,
+     "orphanVectors": null,
+     "dimensions": null,
+     "vectorRows": null
+    },
+    "vectorState": "unmeasured",
+    "scenes": null,
+    "newestRecordAt": null,
+    "oldestRecordAt": null,
+    "missingByMonth": null
+   },
+   {
+    "slug": "-home-dev-sandbox",
+    "scope": "project",
+    "label": "sandbox",
+    "sizeBytes": 348160,
+    "status": "ok",
+    "reason": null,
+    "records": 175,
+    "recordsMeasured": 175,
+    "recordsTruncated": false,
+    "byType": {
+     "persona": 0,
+     "episodic": 175,
+     "instruction": 0,
+     "semantic": 0,
+     "other": 0
+    },
+    "byWritePath": {
+     "auto": 175,
+     "awaited": 0,
+     "unknown": 0
+    },
+    "contentLength": {
+     "min": 15,
+     "p50": 406,
+     "p75": 503,
+     "p90": 503,
+     "p95": 503,
+     "p99": 503,
+     "max": 503,
+     "mean": 319,
+     "n": 175
+    },
+    "lowSignal": {
+     "taskNotification": 90,
+     "skillEcho": 6,
+     "slashOrTag": 91,
+     "continuation": 1,
+     "pasteDump": 78,
+     "empty": 0
+    },
+    "lowSignalUnion": 101,
+    "duplicates": {
+     "exact": 4,
+     "normalised": 4
+    },
+    "duplicateGroups": {
+     "exact": 2,
+     "normalised": 2
+    },
+    "vectors": {
+     "status": "unmeasured",
+     "reason": "vectors.db not present — embeddings were never written for this store",
+     "withVector": null,
+     "withoutVector": null,
+     "ratio": null,
+     "byWritePath": null,
+     "missingByMonth": null,
+     "orphanVectors": null,
+     "dimensions": null,
+     "vectorRows": null
+    },
+    "vectorState": "unmeasured",
+    "scenes": {
+     "count": 12,
+     "heatBuckets": {
+      "historical": 0,
+      "recent": 2,
+      "active": 3,
+      "hot": 7,
+      "offScale": 0
+     },
+     "heatValues": {
+      "3": 2,
+      "4": 3,
+      "5": 7
+     },
+     "staleHot": 0,
+     "navStatus": "ok",
+     "navReason": null,
+     "visibleInNav": 5,
+     "invisibleInNav": 7,
+     "navBudgetChars": 800,
+     "navUsedChars": 679
+    },
+    "newestRecordAt": "2026-08-03T07:14:09.000Z",
+    "oldestRecordAt": "2026-05-26T10:51:57.000Z",
+    "missingByMonth": {}
+   }
+  ],
+  "gaps": [
+   {
+    "id": "vectors_missing:-home-dev-projects-lantern",
+    "kind": "vectors_missing",
+    "severity": "critical",
+    "unmeasured": false,
+    "subject": {
+     "scope": "project",
+     "slug": "-home-dev-projects-lantern",
+     "id": null,
+     "label": "lantern"
+    },
+    "title": "lantern: l1_vec is present and empty — all 332 records are FTS-only",
+    "evidence": {
+     "slug": "-home-dev-projects-lantern",
+     "records": 332,
+     "withVector": 0,
+     "withoutVector": 332,
+     "ratio": 0,
+     "vectorState": "empty"
+    },
+    "suggestion": "tmem sync"
+   },
+   {
+    "id": "store_unreadable:-home-dev-projects-quarry",
+    "kind": "store_unreadable",
+    "severity": "critical",
+    "unmeasured": false,
+    "subject": {
+     "scope": "project",
+     "slug": "-home-dev-projects-quarry",
+     "id": null,
+     "label": "quarry"
+    },
+    "title": "quarry: index.db could not be opened",
+    "evidence": {
+     "slug": "-home-dev-projects-quarry",
+     "reason": "index.db is not a database (file is 0 bytes)"
+    },
+    "suggestion": null
+   },
+   {
+    "id": "vectors_unmeasurable:-home-dev-sandbox",
+    "kind": "vectors_unmeasurable",
+    "severity": "warn",
+    "unmeasured": true,
+    "subject": {
+     "scope": "project",
+     "slug": "-home-dev-sandbox",
+     "id": null,
+     "label": "sandbox"
+    },
+    "title": "sandbox: embedding coverage unknown for 175 records",
+    "evidence": {
+     "slug": "-home-dev-sandbox",
+     "records": 175,
+     "reason": "vectors.db not present — embeddings were never written for this store"
+    },
+    "suggestion": "tmem sync"
+   },
+   {
+    "id": "duplicate_records:-home-dev-projects-orchard-api",
+    "kind": "duplicate_records",
+    "severity": "warn",
+    "unmeasured": false,
+    "subject": {
+     "scope": "project",
+     "slug": "-home-dev-projects-orchard-api",
+     "id": null,
+     "label": "orchard-api"
+    },
+    "title": "orchard-api: 394 of 2826 records are exact duplicates",
+    "evidence": {
+     "slug": "-home-dev-projects-orchard-api",
+     "exact": 394,
+     "normalised": 397,
+     "of": 2826
+    },
+    "suggestion": null
+   },
+   {
+    "id": "low_signal_records:root",
+    "kind": "low_signal_records",
+    "severity": "warn",
+    "unmeasured": false,
+    "subject": {
+     "scope": "root",
+     "slug": null,
+     "id": null,
+     "label": "store root"
+    },
+    "title": "1591 of 4109 records (38.7%) are low-signal",
+    "evidence": {
+     "records": 4109,
+     "recordsUnread": 0,
+     "unionRecords": 1591,
+     "ratio": 0.3872,
+     "taskNotification": 1055,
+     "skillEcho": 278,
+     "slashOrTag": 1070,
+     "continuation": 39,
+     "pasteDump": 1242,
+     "empty": 0,
+     "pinnedRatio": 0.3861,
+     "withinBaselineTolerance": true,
+     "baselineComparable": true
+    },
+    "suggestion": null
+   },
+   {
+    "id": "persona_unprojected:root",
+    "kind": "persona_unprojected",
+    "severity": "warn",
+    "unmeasured": false,
+    "subject": {
+     "scope": "root",
+     "slug": null,
+     "id": null,
+     "label": "store root"
+    },
+    "title": "15 of 56 persona bullets are \"always\" duty but reach no injection tier",
+    "evidence": {
+     "droppedAlwaysDuties": 15,
+     "totalBullets": 56,
+     "tier0Chars": 3785,
+     "tier0BudgetChars": 4800
+    },
+    "suggestion": null
+   },
+   {
+    "id": "scene_invisible:-home-dev-projects-orchard-api",
+    "kind": "scene_invisible",
+    "severity": "warn",
+    "unmeasured": false,
+    "subject": {
+     "scope": "project",
+     "slug": "-home-dev-projects-orchard-api",
+     "id": null,
+     "label": "orchard-api"
+    },
+    "title": "orchard-api: 70 of 75 scenes never appear in scene-navigation",
+    "evidence": {
+     "slug": "-home-dev-projects-orchard-api",
+     "invisibleInNav": 70,
+     "of": 75,
+     "navBudgetChars": 800
+    },
+    "suggestion": null
+   },
+   {
+    "id": "heat_scale_mismatch:root",
+    "kind": "heat_scale_mismatch",
+    "severity": "warn",
+    "unmeasured": false,
+    "subject": {
+     "scope": "root",
+     "slug": null,
+     "id": null,
+     "label": "store root"
+    },
+    "title": "all 139 scenes are written on a 2-5 heat scale, but the reader's first flame is at 50",
+    "evidence": {
+     "scenes": 139,
+     "observedMin": 2,
+     "observedMax": 5,
+     "readerFirstFlameAt": 50,
+     "scenesWithACue": 0
+    },
+    "suggestion": null
+   }
+  ],
+  "health": {
+   "state": {
+    "status": "ok",
+    "reason": null,
+    "sessions": {
+     "00000000-0000-4000-8000-000000000001": {
+      "status": "completed",
+      "project_hash": "-home-dev-projects-orchard-api",
+      "last_timestamp": "2026-08-03T08:12:00.000Z",
+      "processed_at": "2026-08-03T08:12:00.000Z"
+     }
+    },
+    "projects": {
+     "-home-dev-projects-orchard-api": {
+      "recall": true
+     }
+    },
+    "pendingSessions": 3,
+    "recallDisabledSlugs": []
+   },
+   "config": {
+    "status": "ok",
+    "reason": null,
+    "config": {
+     "consolidate_every": 500
+    },
+    "consolidateEvery": 500,
+    "sceneNavBudgetTokens": 200
+   },
+   "captureState": {
+    "status": "ok",
+    "reason": null,
+    "turnCount": 2400,
+    "lastConsolidationTurn": 2370,
+    "sessions": {
+     "00000000-0000-4000-8000-000000000001": {
+      "turns": 15,
+      "last_capture": "2026-08-03T08:12:00.000Z"
+     }
+    }
+   }
+  },
+  "timing": {
+   "extractMs": 41,
+   "transformMs": 81
+  }
+ },
+ "persona": {
+  "status": "ok",
+  "reason": null,
+  "path": "~/.memory-tencentdb/global/persona.md",
+  "sections": [
+   {
+    "name": "Identity",
+    "lineNo": 4,
+    "bullets": 10,
+    "chars": 3077,
+    "duties": {
+     "always": 5,
+     "conditional": 0,
+     "reference": 5
+    }
+   },
+   {
+    "name": "Environment & Access",
+    "lineNo": 24,
+    "bullets": 10,
+    "chars": 2892,
+    "duties": {
+     "always": 2,
+     "conditional": 0,
+     "reference": 8
+    }
+   },
+   {
+    "name": "Preferences",
+    "lineNo": 44,
+    "bullets": 11,
+    "chars": 2934,
+    "duties": {
+     "always": 8,
+     "conditional": 3,
+     "reference": 0
+    }
+   },
+   {
+    "name": "Working Style",
+    "lineNo": 66,
+    "bullets": 14,
+    "chars": 3782,
+    "duties": {
+     "always": 7,
+     "conditional": 7,
+     "reference": 0
+    }
+   },
+   {
+    "name": "Standing Instructions",
+    "lineNo": 94,
+    "bullets": 11,
+    "chars": 2690,
+    "duties": {
+     "always": 7,
+     "conditional": 4,
+     "reference": 0
+    }
+   }
+  ],
+  "bullets": [
+   {
+    "section": "Identity",
+    "text": "**Name**: Dev Aster — a solo engineer who owns a handful of small services end to end and prefers to be addressed by first name. Works alone by choice, which means there is nobody else to catch a wrong assumption, so an answer that hedges without saying what it is unsure about is worse than no answer at all.",
+    "chars": 309,
+    "lineNo": 5,
+    "ordinal": 0,
+    "duty": "always",
+    "tier": "sessionStart",
+    "tierReason": "tier-0 preamble — 309 of 309 chars",
+    "injectedChars": 309,
+    "truncated": false
+   },
+   {
+    "section": "Identity",
+    "text": "**Languages**: answers in the language of the prompt, and switches mid-conversation without being asked. Code comments, commit subjects and identifiers stay in English regardless of the prose language, because they outlive the conversation they were written in and get read by tooling that does not translate.",
+    "chars": 309,
+    "lineNo": 7,
+    "ordinal": 1,
+    "duty": "always",
+    "tier": "sessionStart",
+    "tierReason": "tier-0 preamble — 309 of 309 chars",
+    "injectedChars": 309,
+    "truncated": false
+   },
+   {
+    "section": "Identity",
+    "text": "**Role**: owns the whole stack on these projects — schema, CLI, hooks, evals, deploy — so answers should assume the code will be read and edited directly rather than consumed as an abstraction. Do not wrap an explanation around an API when the source is two files away and the reader is the person who wrote it; quote the source instead.",
+    "chars": 337,
+    "lineNo": 9,
+    "ordinal": 2,
+    "duty": "always",
+    "tier": "sessionStart",
+    "tierReason": "tier-0 preamble — 214 of 337 chars, truncated",
+    "injectedChars": 214,
+    "truncated": true
+   },
+   {
+    "section": "Identity",
+    "text": "**Handle**: `dev-aster` on the forge; most work lands on `main` behind a pull request, with the branch named for the change rather than for a ticket. There is no ticket system worth naming here — the pull request description is the record, so it carries the reasoning that would otherwise live in an issue.",
+    "chars": 306,
+    "lineNo": 11,
+    "ordinal": 3,
+    "duty": "reference",
+    "tier": "onDemand",
+    "tierReason": "duty \"reference\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Identity",
+    "text": "**Timezone**: UTC+7, with working windows that are roughly 09:00–13:00 and then again 20:00–01:00. The evening window is where most of the deep work happens; anything scheduled or long-running is expected to report before that window closes rather than at some arbitrary completion time in the night.",
+    "chars": 300,
+    "lineNo": 13,
+    "ordinal": 4,
+    "duty": "reference",
+    "tier": "onDemand",
+    "tierReason": "duty \"reference\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Identity",
+    "text": "**Hardware**: a Linux workstation under WSL2 with 64 GB of RAM, one consumer GPU, Node on the current LTS and Python 3.12. Local model work is possible but slow enough that it is not the default; assume a hosted call unless the task explicitly calls for something staying on the machine.",
+    "chars": 287,
+    "lineNo": 15,
+    "ordinal": 5,
+    "duty": "reference",
+    "tier": "onDemand",
+    "tierReason": "duty \"reference\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Identity",
+    "text": "**Contact**: reachable by email for anything that has to leave the terminal — an outage, a credential rotation, anything that needs a human decision rather than a code change. Nothing else is a valid channel; chat notifications are muted for days at a time and should never be the only place an important thing was said.",
+    "chars": 320,
+    "lineNo": 17,
+    "ordinal": 6,
+    "duty": "reference",
+    "tier": "onDemand",
+    "tierReason": "duty \"reference\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Identity",
+    "text": "**Reading habits**: skims the first line of every answer and stops there when it looks like preamble. Put the conclusion in it. A correct answer whose first line is scene-setting is functionally a wrong answer, because the part that mattered was never read and the reader has already moved on to the next thing.",
+    "chars": 311,
+    "lineNo": 19,
+    "ordinal": 7,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Identity",
+    "text": "**Background**: came to this from backend and infrastructure work rather than from machine learning, so an unexplained ML term costs noticeably more than an unexplained systems term. Expand the ML vocabulary on first use; assume fluency in databases, queues, HTTP semantics and process supervision without explanation.",
+    "chars": 318,
+    "lineNo": 21,
+    "ordinal": 8,
+    "duty": "reference",
+    "tier": "onDemand",
+    "tierReason": "duty \"reference\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Identity",
+    "text": "**Failure mode to watch**: under time pressure, accepts a plausible-sounding answer without checking it, then builds on it for an hour. An assistant that states its confidence and names the one thing it did not verify is doing the most useful thing available to it in that moment.",
+    "chars": 280,
+    "lineNo": 23,
+    "ordinal": 9,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Environment & Access",
+    "text": "**orchard-api** (`~/projects/orchard-api`): the main service — Postgres, a job queue, and the public HTTP surface. This is the only repo with a production deploy, so it is the only one where a mistake is expensive; everything in it is versioned, migrated forward only, and reviewed before it merges.",
+    "chars": 299,
+    "lineNo": 25,
+    "ordinal": 10,
+    "duty": "reference",
+    "tier": "onDemand",
+    "tierReason": "duty \"reference\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Environment & Access",
+    "text": "**orchard-web** (`~/projects/orchard-web`): the front end for the same product. It shares nothing with the API but the generated schema types, which are checked in rather than fetched at build time so that a broken API build cannot break the web build as a side effect.",
+    "chars": 269,
+    "lineNo": 27,
+    "ordinal": 11,
+    "duty": "reference",
+    "tier": "onDemand",
+    "tierReason": "duty \"reference\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Environment & Access",
+    "text": "**lantern** (`~/projects/lantern`): the internal tooling repo — command-line utilities, git hooks, one-off migrations that were worth keeping. Nothing here has tests beyond smoke tests, and that is a deliberate trade; treat a change here as lower stakes but not as unreviewable.",
+    "chars": 278,
+    "lineNo": 29,
+    "ordinal": 12,
+    "duty": "reference",
+    "tier": "onDemand",
+    "tierReason": "duty \"reference\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Environment & Access",
+    "text": "**tidepool** (`~/projects/tidepool`): an experiment store. Nothing in it is production and it may be deleted without notice, so do not build anything that depends on it continuing to exist, and do not move code out of it without also moving the reasoning that justified the code.",
+    "chars": 279,
+    "lineNo": 31,
+    "ordinal": 13,
+    "duty": "reference",
+    "tier": "onDemand",
+    "tierReason": "duty \"reference\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Environment & Access",
+    "text": "**Store root**: `~/.memory-tencentdb`, holding `global/` and `projects/<slug>/`. Each store holds `index.db`, optionally `vectors.db`, and a `scene_blocks/` directory of markdown. The per-project split is keyed on the project root path, so opening the same repo through a symlink creates a second store.",
+    "chars": 303,
+    "lineNo": 33,
+    "ordinal": 14,
+    "duty": "reference",
+    "tier": "onDemand",
+    "tierReason": "duty \"reference\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Environment & Access",
+    "text": "**Embeddings**: a local embedding daemon on a fixed port, 768 dimensions, a few tens of megabytes of vectors at the current corpus size. When the daemon is down, writes still succeed and the embedding follow-up is silently skipped — which is the single most common cause of a store with an empty vector index.",
+    "chars": 309,
+    "lineNo": 35,
+    "ordinal": 15,
+    "duty": "reference",
+    "tier": "onDemand",
+    "tierReason": "duty \"reference\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Environment & Access",
+    "text": "**Editors**: an editor with a remote extension on the Linux side, and the agent running in a separate terminal — never inside the editor's integrated shell, because the integrated shell inherits a different environment and has produced two hours of debugging a config that was never actually loaded.",
+    "chars": 299,
+    "lineNo": 37,
+    "ordinal": 16,
+    "duty": "reference",
+    "tier": "onDemand",
+    "tierReason": "duty \"reference\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Environment & Access",
+    "text": "**CI**: a hosted runner on the current Node LTS running `npm test` plus an eval run gated on the same job. The eval is not advisory: a regression in recall quality fails the build exactly like a failing unit test, because a silent quality regression is the failure mode this project has actually shipped.",
+    "chars": 304,
+    "lineNo": 39,
+    "ordinal": 17,
+    "duty": "reference",
+    "tier": "onDemand",
+    "tierReason": "duty \"reference\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Environment & Access",
+    "text": "**Databases**: one managed Postgres per environment. The staging credentials are not interchangeable with production, they are not in the repo, and a connection string that appears in a diff is a stop-work event rather than something to clean up in a follow-up commit.",
+    "chars": 268,
+    "lineNo": 41,
+    "ordinal": 18,
+    "duty": "always",
+    "tier": "sessionStart",
+    "tierReason": "tier-0 preamble — 268 of 268 chars",
+    "injectedChars": 268,
+    "truncated": false
+   },
+   {
+    "section": "Environment & Access",
+    "text": "**Secrets live outside the repo**, in the platform's own secret store. There is no `.env` checked in anywhere and there never will be. If a task appears to require reading one, the task has been misunderstood — stop and ask rather than inventing a plausible-looking placeholder value.",
+    "chars": 284,
+    "lineNo": 43,
+    "ordinal": 19,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Preferences",
+    "text": "**Concision**: short, direct answers. No preamble, no restating the question, no closing summary unless the answer runs longer than a screen. The summary at the end of a six-line answer is not a courtesy; it is the same six lines a second time.",
+    "chars": 244,
+    "lineNo": 45,
+    "ordinal": 20,
+    "duty": "always",
+    "tier": "sessionStart",
+    "tierReason": "tier-0 preamble — 244 of 244 chars",
+    "injectedChars": 244,
+    "truncated": false
+   },
+   {
+    "section": "Preferences",
+    "text": "**No flattery**: never open with “Great question” or any variant of it. It reads as noise, it costs trust, and it delays the first useful word by a full line in a medium where the first line is often the only one read.",
+    "chars": 218,
+    "lineNo": 47,
+    "ordinal": 21,
+    "duty": "always",
+    "tier": "sessionStart",
+    "tierReason": "tier-0 preamble — 218 of 218 chars",
+    "injectedChars": 218,
+    "truncated": false
+   },
+   {
+    "section": "Preferences",
+    "text": "**Show the code**: when the answer is a change, show the diff or the file, not a description of the diff. A described diff cannot be reviewed and cannot be applied, so it is a second task disguised as an answer rather than the answer itself, and it is the single most common way an otherwise correct response gets sent back.",
+    "chars": 324,
+    "lineNo": 49,
+    "ordinal": 22,
+    "duty": "conditional",
+    "tier": "promptSummary",
+    "tierReason": "tier-1 (insurance, score 3) — 171 of 324 chars, truncated",
+    "injectedChars": 171,
+    "truncated": true
+   },
+   {
+    "section": "Preferences",
+    "text": "**Uncertainty is information**: say “I don't know” or “I did not check” plainly, and name which part is unverified. A confident wrong answer costs an hour of building on it; an honest gap costs a minute of checking. The asymmetry is large enough that hedging everything is still cheaper than guessing once.",
+    "chars": 306,
+    "lineNo": 51,
+    "ordinal": 23,
+    "duty": "always",
+    "tier": "sessionStart",
+    "tierReason": "tier-0 preamble — 306 of 306 chars",
+    "injectedChars": 306,
+    "truncated": false
+   },
+   {
+    "section": "Preferences",
+    "text": "**Numbers over adjectives**: “38.6 % of records” beats “a lot of records”, and a percentage without its denominator beats neither. Always carry the denominator, because the same ratio over 40 records and over 40 000 records supports completely different decisions.",
+    "chars": 264,
+    "lineNo": 53,
+    "ordinal": 24,
+    "duty": "always",
+    "tier": "sessionStart",
+    "tierReason": "tier-0 preamble — 264 of 264 chars",
+    "injectedChars": 264,
+    "truncated": false
+   },
+   {
+    "section": "Preferences",
+    "text": "**Emoji**: none in code, commits, or command-line output. Acceptable only in reply to one. This is not an aesthetic preference — terminal output gets grepped, diffed and pasted into issues, and a decorative glyph in it survives into places nobody intended.",
+    "chars": 256,
+    "lineNo": 55,
+    "ordinal": 25,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Preferences",
+    "text": "**Push back**: if the premise is wrong, say so in the first sentence rather than answering the question that should have been asked. Answering the literal question while knowing it is the wrong one is the most expensive kind of helpfulness available, because it is indistinguishable from agreement.",
+    "chars": 298,
+    "lineNo": 57,
+    "ordinal": 26,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Preferences",
+    "text": "**Tables**: for anything with more than three comparable items, a table beats prose. Prose forces the reader to hold the comparison in their head; a table puts it on the page. This applies to trade-offs and to option lists as much as it does to data.",
+    "chars": 250,
+    "lineNo": 59,
+    "ordinal": 27,
+    "duty": "conditional",
+    "tier": "onDemand",
+    "tierReason": "duty \"conditional\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Preferences",
+    "text": "**Reading order**: conclusion first, then the evidence, then the caveats. Inverting that — building up to the answer — is the structure of an essay, not of an answer to somebody who is mid-task and will stop reading as soon as they have what they needed.",
+    "chars": 254,
+    "lineNo": 61,
+    "ordinal": 28,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Preferences",
+    "text": "**Prose register**: plain and technical. Avoid the flowery register that model output defaults to in any language; it hides the answer inside the decoration, roughly doubles the length of everything, and is markedly worse in the second language than in the first.",
+    "chars": 263,
+    "lineNo": 63,
+    "ordinal": 29,
+    "duty": "always",
+    "tier": "sessionStart",
+    "tierReason": "tier-0 preamble — 119 of 263 chars, truncated",
+    "injectedChars": 119,
+    "truncated": true
+   },
+   {
+    "section": "Preferences",
+    "text": "**Lists over paragraphs** when the content is genuinely a list, and paragraphs when it is genuinely an argument. A numbered list of three items that depend on each other is an argument wearing a list's clothes and reads worse than the paragraph it replaced.",
+    "chars": 257,
+    "lineNo": 65,
+    "ordinal": 30,
+    "duty": "conditional",
+    "tier": "onDemand",
+    "tierReason": "duty \"conditional\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Working Style",
+    "text": "**Verify before claiming done**: run the thing. A change that has not been executed is a hypothesis, and describing a hypothesis as finished is the failure called out most often here. This applies to a one-line edit as much as to a refactor — running it costs seconds, and not running it has repeatedly cost an afternoon spent discovering that the obvious change did not work.",
+    "chars": 376,
+    "lineNo": 67,
+    "ordinal": 31,
+    "duty": "always",
+    "tier": "sessionStart",
+    "tierReason": "tier-0 preamble — 233 of 376 chars, truncated",
+    "injectedChars": 233,
+    "truncated": true
+   },
+   {
+    "section": "Working Style",
+    "text": "**Read each folder's AGENTS.md before editing anything inside it.** Not after the edit looks wrong; before the first line. The file exists precisely because the convention it documents is not inferable from the surrounding code.",
+    "chars": 228,
+    "lineNo": 69,
+    "ordinal": 32,
+    "duty": "always",
+    "tier": "sessionStart",
+    "tierReason": "tier-0 preamble — 228 of 228 chars",
+    "injectedChars": 228,
+    "truncated": false
+   },
+   {
+    "section": "Working Style",
+    "text": "**Small commits**: one concern per commit, imperative subject under 72 characters, body explaining why rather than what. The diff already says what. A commit that mixes a fix with a rename is a commit that cannot be reverted without also reverting something that was fine.",
+    "chars": 272,
+    "lineNo": 71,
+    "ordinal": 33,
+    "duty": "conditional",
+    "tier": "onDemand",
+    "tierReason": "duty \"conditional\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Working Style",
+    "text": "**No AI attribution trailers** in commits or pull request descriptions — not a co-author line, not a generated-with line. They get stripped by hand every time, which wastes time and is exactly the kind of small friction that accumulates into not using the tool at all.",
+    "chars": 268,
+    "lineNo": 73,
+    "ordinal": 34,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Working Style",
+    "text": "**Delegated agents get the CITE-OR-MARK contract**: every load-bearing claim carries a file path and a line, or is explicitly marked as an inference. A report that mixes verified findings with plausible guesses at the same confidence is not a report, it is a research prompt for whoever reads it next.",
+    "chars": 301,
+    "lineNo": 75,
+    "ordinal": 35,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Working Style",
+    "text": "**An invoked skill is a GATE, not a suggestion.** Read it before writing the first line, including — especially — when the task looks like a one-liner. The tasks that looked like one-liners are the ones where the skill contained the constraint that made them not one-liners.",
+    "chars": 274,
+    "lineNo": 77,
+    "ordinal": 36,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Working Style",
+    "text": "**Parallel tool calls**: when several reads are independent, issue them in one block. Serialised reads on a forty-file sweep is the most common way an agent wastes an afternoon, and it is invisible in the transcript because every individual step looks reasonable.",
+    "chars": 263,
+    "lineNo": 79,
+    "ordinal": 37,
+    "duty": "conditional",
+    "tier": "never",
+    "tierReason": "duty \"conditional\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Working Style",
+    "text": "**Before any rename** that crosses a module boundary, grep for the old name across the whole repo and report the hit count before touching anything. A rename that misses three call sites in a dynamically-typed file is a runtime error discovered by a user rather than a compiler.",
+    "chars": 278,
+    "lineNo": 81,
+    "ordinal": 38,
+    "duty": "conditional",
+    "tier": "never",
+    "tierReason": "duty \"conditional\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Working Style",
+    "text": "**Tests**: a failing test written first for anything that has ever regressed. Not test-driven development as doctrine — test-driven development for the specific class of bug that already came back once, where the test is the only thing that will notice it coming back a third time.",
+    "chars": 281,
+    "lineNo": 83,
+    "ordinal": 39,
+    "duty": "conditional",
+    "tier": "onDemand",
+    "tierReason": "duty \"conditional\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Working Style",
+    "text": "**Debugging config**: check what the process actually loaded, not what the file says. Roughly half the config bugs here have been a second file winning — a stale local override, an environment variable set in a shell profile, a default baked into a dependency.",
+    "chars": 260,
+    "lineNo": 85,
+    "ordinal": 40,
+    "duty": "conditional",
+    "tier": "onDemand",
+    "tierReason": "duty \"conditional\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Working Style",
+    "text": "**Do not gold-plate.** Finish the task that was asked, then stop. An unrequested refactor in the same diff is a review burden, not a gift; it makes the diff harder to read and it couples a change that was wanted to one that was not discussed.",
+    "chars": 242,
+    "lineNo": 87,
+    "ordinal": 41,
+    "duty": "always",
+    "tier": "sessionStart",
+    "tierReason": "tier-0 preamble — 242 of 242 chars",
+    "injectedChars": 242,
+    "truncated": false
+   },
+   {
+    "section": "Working Style",
+    "text": "**When verifying a data claim**, state the query that was run alongside the result. Three false findings have already been caught that way and a fourth is expected; a number without its query is an assertion, and an assertion cannot be re-run six months later.",
+    "chars": 260,
+    "lineNo": 89,
+    "ordinal": 42,
+    "duty": "conditional",
+    "tier": "never",
+    "tierReason": "duty \"conditional\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Working Style",
+    "text": "**Expand every acronym** on first use in prose, including the ones used locally every day. These notes get read months later by somebody who has swapped out the surrounding context, and that somebody is usually the person who wrote them.",
+    "chars": 237,
+    "lineNo": 91,
+    "ordinal": 43,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Working Style",
+    "text": "**Report at the point of no return**, not at the end. A forty-minute run that surfaces its plan at minute thirty-nine cannot be steered, and the whole value of a long-running task is the chance to redirect it while redirecting is still cheap.",
+    "chars": 242,
+    "lineNo": 93,
+    "ordinal": 44,
+    "duty": "conditional",
+    "tier": "never",
+    "tierReason": "duty \"conditional\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Standing Instructions",
+    "text": "**Never force-push a shared branch.** If history has to change, open a new branch and say why. Rewriting history under somebody else's checkout is not recoverable by them and the time saved by not opening a branch is measured in seconds.",
+    "chars": 237,
+    "lineNo": 95,
+    "ordinal": 45,
+    "duty": "always",
+    "tier": "sessionStart",
+    "tierReason": "tier-0 preamble — 237 of 237 chars",
+    "injectedChars": 237,
+    "truncated": false
+   },
+   {
+    "section": "Standing Instructions",
+    "text": "**Never commit or push unless asked.** Staging is fine and often helpful; the push is a decision that belongs to a human, because it is the first irreversible step and the only one with an audience.",
+    "chars": 198,
+    "lineNo": 97,
+    "ordinal": 46,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Standing Instructions",
+    "text": "**Secrets**: never read, echo or write `.env`, `*.pem`, key material, or anything under a cloud credentials directory. If a task appears to need one, stop and ask. There is no case where the right move is to open the file and see what is in it.",
+    "chars": 244,
+    "lineNo": 99,
+    "ordinal": 47,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Standing Instructions",
+    "text": "**Migrations run behind a review gate**: produce the SQL, never execute it. This holds for staging as much as for production, because a staging schema that has drifted from its migration files is a production incident waiting for the next deploy to discover it.",
+    "chars": 261,
+    "lineNo": 101,
+    "ordinal": 48,
+    "duty": "conditional",
+    "tier": "onDemand",
+    "tierReason": "duty \"conditional\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Standing Instructions",
+    "text": "**Default posture on destructive commands** — `rm -rf`, `DROP`, `git reset --hard`, `truncate` — is to print the command and wait, even inside a sandbox. The sandbox is not the point; the habit is, and the habit is what carries over to the machine that is not a sandbox.",
+    "chars": 270,
+    "lineNo": 103,
+    "ordinal": 49,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Standing Instructions",
+    "text": "**Entity ids are stable slugs, never display names.** A rename must not orphan an edge. This is the rule that the whole store keying depends on, and it has been violated exactly once, which cost a full re-index of every project.",
+    "chars": 228,
+    "lineNo": 105,
+    "ordinal": 50,
+    "duty": "conditional",
+    "tier": "onDemand",
+    "tierReason": "duty \"conditional\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Standing Instructions",
+    "text": "**Technical-review deliverables**: a finding is a file path, a line, a quoted fragment, and a consequence. Anything without all four is an opinion and should be labelled as one. Opinions are welcome; opinions formatted as findings are not.",
+    "chars": 239,
+    "lineNo": 107,
+    "ordinal": 51,
+    "duty": "conditional",
+    "tier": "never",
+    "tierReason": "duty \"conditional\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Standing Instructions",
+    "text": "**Before porting a pattern** out of another repository, name the repository and the commit it came from. Patterns have been lifted from forks that had already reverted them, and without the provenance there is no way to notice that until it breaks.",
+    "chars": 248,
+    "lineNo": 109,
+    "ordinal": 52,
+    "duty": "conditional",
+    "tier": "onDemand",
+    "tierReason": "duty \"conditional\" — retrievable from persona.md, not injected",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Standing Instructions",
+    "text": "**All timestamps written to the store are ISO-8601 UTC.** Local time in a record is a bug, not a preference — the store is read across two working windows and compared against CI logs that are always UTC.",
+    "chars": 204,
+    "lineNo": 111,
+    "ordinal": 53,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   },
+   {
+    "section": "Standing Instructions",
+    "text": "**When a hook fails, fail loudly.** A hook that swallows its own error produces a system that looks like it is working and is not — this is how most of these stores ended up with an empty vector index, reporting a confident zero percent that nobody had any reason to doubt.",
+    "chars": 273,
+    "lineNo": 113,
+    "ordinal": 54,
+    "duty": "always",
+    "tier": "sessionStart",
+    "tierReason": "tier-0 preamble — 594 of 273 chars",
+    "injectedChars": 594,
+    "truncated": false
+   },
+   {
+    "section": "Standing Instructions",
+    "text": "**Nothing writes to the store outside the writer path.** Hand-inserted rows break the `record_id` prefix convention, and once that convention is broken the auto-versus-awaited write-path split stops meaning anything, which removes the only signal that distinguishes the two failure modes.",
+    "chars": 288,
+    "lineNo": 115,
+    "ordinal": 55,
+    "duty": "always",
+    "tier": "never",
+    "tierReason": "duty \"always\" but selected by neither tier-0 (3785/4800 chars) nor tier-1 (171/420 chars)",
+    "injectedChars": 0,
+    "truncated": false
+   }
+  ],
+  "duties": {
+   "always": 29,
+   "conditional": 14,
+   "reference": 13
+  },
+  "projection": {
+   "totalBullets": 56,
+   "totalChars": 15375,
+   "byTier": {
+    "promptSummary": 1,
+    "sessionStart": 14,
+    "onDemand": 21,
+    "never": 20
+   },
+   "byTierChars": {
+    "promptSummary": 171,
+    "sessionStart": 3785,
+    "onDemand": 5928,
+    "never": 5249
+   },
+   "injectedChars": 171,
+   "droppedAlwaysDuties": 15,
+   "tier0Chars": 3785,
+   "tier0BudgetChars": 4800,
+   "tier1Chars": 171,
+   "tier1BudgetChars": 420,
+   "legacy": {
+    "chars": 401,
+    "totalChars": 16555,
+    "ratio": 0.024222289338568407,
+    "sections": [
+     {
+      "name": "Identity",
+      "lines": 5
+     }
+    ]
+   }
+  }
+ },
+ "recall": {
+  "q": "fix the recall budget bug before pushing",
+  "slug": "",
+  "vectorStatus": "unmeasured",
+  "vectorReason": "l1_vec is present but empty for this store — this trace is FTS-only.",
+  "tookMs": 34,
+  "sceneNavTotalInStore": 75,
+  "injected": "<memory-context>\n<persona>\n- **Name**: Dev Aster — a solo engineer who owns a handful of small services end to end and prefers to be addressed by first name. Works alone by choice, which means there is nobody else to catch a wrong assumption, so an answer that hedges without saying what it is unsure about is worse than no answer at all.\n- **Languages**: answers in the language of the prompt, and switches mid-conversation without being asked. Code comments, commit subjects and identifiers stay in English regardless of the prose language, because they outlive the conversation they were written in and get read by tooling that does not translate.\n- Show the code: when the answer is a change, show the diff or the file, not a description of the diff. A described diff cannot be reviewed and cannot be applied, so it …\n</persona>\n<scene-navigation>\nLoad a full scene on demand: `tmem scene <name>`.\n- recall-budget-rework (heat=5)  Budget split: persona and scene-nav got their own pools\n- view-visualiser (heat=5)  Four-module ETL split for `tmem view`; contract.js frozen\n- vector-coverage-audit (heat=5)  Stores with an empty l1_vec read as 0 %, which was false\n- tiered-persona-projection (heat=5)  Duty-cycle projection replacing the 400-char digest\n- hook-failure-modes (heat=4)  Silent hook failures and how they hid the vector gap\n</scene-navigation>\n<memories>\n- [episodic] recall budget bug: one oversized atom aborted every lower-ranked atom behind it — `break` should have been `continue`\n- [instruction] push -> open a pull request, never straight to main\n- [episodic] the atom pool was being eaten by the persona block before any memory was considered\n</memories>\n</memory-context>",
+  "injectedChars": 1698,
+  "hits": [
+   {
+    "id": "m_1754120411_a1",
+    "slug": "-home-dev-projects-orchard-api",
+    "type": "episodic",
+    "priority": 70,
+    "matchedBy": "fts",
+    "score": 8.41,
+    "injected": true,
+    "content": "recall budget bug: one oversized atom aborted every lower-ranked atom behind it — `break` should have been `continue`"
+   },
+   {
+    "id": "m_1753902110_c9",
+    "slug": "global",
+    "type": "instruction",
+    "priority": 80,
+    "matchedBy": "fts",
+    "score": 6.02,
+    "injected": true,
+    "content": "push -> open a pull request, never straight to main"
+   },
+   {
+    "id": "ac_1754003318_71",
+    "slug": "-home-dev-projects-orchard-api",
+    "type": "episodic",
+    "priority": 50,
+    "matchedBy": "fts",
+    "score": 5.55,
+    "injected": true,
+    "content": "the atom pool was being eaten by the persona block before any memory was considered"
+   },
+   {
+    "id": "ac_1753887701_2f",
+    "slug": "-home-dev-projects-orchard-api",
+    "type": "episodic",
+    "priority": 50,
+    "matchedBy": "fts",
+    "score": 4.98,
+    "injected": false,
+    "dropReason": "ranked 4th; 509 chars would not fit the remaining 214-char atom budget",
+    "content": "<task-notification>Agent T7 finished: rewrote dedupeAndRank so the recall budget is spent top-down and an oversized atom is skipped rather than aborting the loop. Touched the recall module only; the eval runner shows recall@5 up from 0.41 to 0.63 on the second-language slice. Full diff on the branch…"
+   },
+   {
+    "id": "ac_1753799002_5b",
+    "slug": "global",
+    "type": "episodic",
+    "priority": 50,
+    "matchedBy": "fts",
+    "score": 4.1,
+    "injected": false,
+    "dropReason": "ranked 5th; atom budget exhausted",
+    "content": "budget: sceneMaxTokens defaults to 280, atoms get 280 too — changing one silently changed the other before the split"
+   },
+   {
+    "id": "ac_1753612447_e0",
+    "slug": "global",
+    "type": "episodic",
+    "priority": 50,
+    "matchedBy": "fts",
+    "score": 3.77,
+    "injected": false,
+    "dropReason": "below topK=5 after dedupe",
+    "content": "ok next one"
+   }
+  ]
+ },
+ "records": {
+  "slug": "-home-dev-projects-orchard-api",
+  "rows": [
+   {
+    "id": "ac_1753612001_a1",
+    "content": "Recall budget bug: hybrid search returned 12 hits but only 3 survived the character budget, so the last 9 were computed and thrown away. Fix is to budget before ranking, not after.",
+    "chars": 180,
+    "type": "episodic",
+    "priority": 50,
+    "scene": "recall-pipeline",
+    "createdAt": "2026-07-28T11:40:22.000Z",
+    "updatedAt": "2026-07-28T11:40:22.000Z",
+    "writePath": "awaited",
+    "hasVector": true,
+    "lowSignal": [],
+    "duplicateGroup": -1
+   },
+   {
+    "id": "ac_1753612002_a2",
+    "content": "fix the recall budget bug",
+    "chars": 25,
+    "type": "episodic",
+    "priority": 50,
+    "scene": "recall-pipeline",
+    "createdAt": "2026-07-28T09:12:04.000Z",
+    "updatedAt": "2026-07-28T09:12:04.000Z",
+    "writePath": "auto",
+    "hasVector": true,
+    "lowSignal": [],
+    "duplicateGroup": -1
+   },
+   {
+    "id": "ac_1753612003_a3",
+    "content": "<task-notification> Agent “memory-consolidator” finished. 4 scenes rewritten, 1 persona section updated. See transcript for details.",
+    "chars": 132,
+    "type": "episodic",
+    "priority": 50,
+    "scene": "auto-capture",
+    "createdAt": "2026-07-28T09:12:04.000Z",
+    "updatedAt": "2026-07-28T09:12:04.000Z",
+    "writePath": "auto",
+    "hasVector": false,
+    "lowSignal": [
+     "taskNotification"
+    ],
+    "duplicateGroup": -1
+   },
+   {
+    "id": "ac_1753612004_a4",
+    "content": "Budget: the injected block is capped at 420 characters per turn and the ranker sorts by priority then recency, which means a long high-priority memory can push out three short ones that would each have b",
+    "chars": 203,
+    "type": "episodic",
+    "priority": 50,
+    "scene": "recall-pipeline",
+    "createdAt": "2026-07-27T15:02:11.000Z",
+    "updatedAt": "2026-07-27T15:02:11.000Z",
+    "writePath": "auto",
+    "hasVector": true,
+    "lowSignal": [
+     "pasteDump"
+    ],
+    "duplicateGroup": -1
+   },
+   {
+    "id": "ac_1753612005_a5",
+    "content": "Budget decision: keep the per-turn cap at 420 chars. Raising it made answers worse in the eval — more context, less obedience.",
+    "chars": 126,
+    "type": "episodic",
+    "priority": 50,
+    "scene": "recall-pipeline",
+    "createdAt": "2026-07-26T08:31:57.000Z",
+    "updatedAt": "2026-07-26T08:31:57.000Z",
+    "writePath": "awaited",
+    "hasVector": false,
+    "lowSignal": [],
+    "duplicateGroup": -1
+   },
+   {
+    "id": "ac_1753612006_a6",
+    "content": "/memory-consolidate",
+    "chars": 19,
+    "type": "episodic",
+    "priority": 50,
+    "scene": "auto-capture",
+    "createdAt": "2026-07-26T08:12:00.000Z",
+    "updatedAt": "2026-07-26T08:12:00.000Z",
+    "writePath": "auto",
+    "hasVector": false,
+    "lowSignal": [
+     "slashOrTag"
+    ],
+    "duplicateGroup": -1
+   },
+   {
+    "id": "ac_1753612007_a7",
+    "content": "Decision: the queue retries three times with backoff, then parks the job on a dead-letter table rather than dropping it. Rejected a silent drop because nobody would ever find out.",
+    "chars": 179,
+    "type": "episodic",
+    "priority": 50,
+    "scene": "queue-design",
+    "createdAt": "2026-07-24T10:05:41.000Z",
+    "updatedAt": "2026-07-24T10:05:41.000Z",
+    "writePath": "awaited",
+    "hasVector": true,
+    "lowSignal": [],
+    "duplicateGroup": -1
+   },
+   {
+    "id": "ac_1753612008_a8",
+    "content": "Decision: the queue retries three times with backoff, then parks the job on a dead-letter table rather than dropping it. Rejected a silent drop because nobody would ever find out.",
+    "chars": 179,
+    "type": "episodic",
+    "priority": 50,
+    "scene": "queue-design",
+    "createdAt": "2026-07-24T10:05:44.000Z",
+    "updatedAt": "2026-07-24T10:05:44.000Z",
+    "writePath": "auto",
+    "hasVector": true,
+    "lowSignal": [],
+    "duplicateGroup": 0
+   }
+  ],
+  "offset": 0,
+  "limit": 100,
+  "total": 2826,
+  "storeTotal": 2826,
+  "filter": {
+   "type": null,
+   "writePath": null,
+   "q": null,
+   "hasVector": null,
+   "lowSignal": null
+  },
+  "vectorStatus": "ok",
+  "vectorReason": null,
+  "truncated": false
+ }
+}
+</script>
+
+<script>
+"use strict";
+/* ══════════════════════════════════════════════════════════════════════
+   Contract-facing constants. Mirrors contract.js — the only literals in
+   this file that describe the API rather than the presentation.
+   ══════════════════════════════════════════════════════════════════════ */
+const ROUTES = {
+  SNAPSHOT: "/api/snapshot",
+  PERSONA:  "/api/persona",
+  RECALL:   "/api/recall",
+  EVENTS:   "/api/events",
+  RECORDS:  (slug) => "/api/store/" + encodeURIComponent(slug) + "/records",
+};
+
+/**
+ * The vocabulary table. Left column is contract.js; right column is the words a
+ * person reads. Nothing here is a concept that was not already in the contract —
+ * every row cites a typedef or constant in contract.js.
+ */
+const VOCAB = {
+  tier: {
+    sessionStart:  "Arrives at the start of every session",
+    promptSummary: "Arrives when it fits the question",
+    onDemand:      "Only if the assistant goes looking",
+    never:         "Never reaches it",
+  },
+  duty: {
+    always:      "must always know",
+    conditional: "only when it fits",
+    reference:   "look up if asked",
+  },
+  writePath: { auto: "saved in the background", awaited: "saved on purpose", unknown: "saved — path not recorded" },
+  lowSignal: {
+    taskNotification: "a finish notice",
+    skillEcho:        "a tool echo",
+    slashOrTag:       "a slash command",
+    continuation:     'just "ok"',
+    pasteDump:        "cut off mid-sentence",
+    empty:            "empty",
+  },
+  status: { ok: "measured", unmeasured: "not checked yet", error: "could not be read" },
+};
+
+const TIER_ORDER = ["sessionStart", "promptSummary", "onDemand", "never"];
+
+/* ── formatting ─────────────────────────────────────────────────────── */
+const NUM_LOCALE = "fr-FR";                    // space thousands, comma decimal
+const nf = new Intl.NumberFormat(NUM_LOCALE);
+const n = (v) => (typeof v === "number" && isFinite(v) ? nf.format(Math.round(v)) : "—");
+const esc = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/**
+ * Persona bullets are markdown and are overwhelmingly written as `**Label**: body`.
+ * Escapes FIRST, then promotes exactly two inline forms — no HTML from the
+ * payload can survive this.
+ */
+function md(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, '<span class="mono">$1</span>')
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+}
+
+/** Plural without a bare number: always used inside a sentence. */
+function plural(count, one, many) { return count === 1 ? one : (many || one + "s"); }
+
+/** A reason string from the payload, finished as a sentence. Contract reasons are
+ *  written as fragments; pasting one mid-paragraph without this runs two
+ *  sentences together. */
+function sentence(s) {
+  const t = String(s == null ? "" : s).trim();
+  if (!t) return "";
+  return /[.!?]$/.test(t) ? t : t + ".";
+}
+
+function shortTime(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso || "");
+  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+function shortDate(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso || "").slice(0, 10);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Clamp on a CHARACTER COUNT with a "show all" — never a CSS ellipsis that
+ *  hides how much was cut. Audit finding F6. */
+const CLAMP = 96;
+function clamped(text, key, expanded) {
+  const t = String(text || "");
+  if (t.length <= CLAMP) return md(t);
+  if (expanded) return md(t) + ` <button class="more" type="button" data-collapse="${esc(key)}">show less</button>`;
+  return md(t.slice(0, CLAMP).trimEnd()) + "… " +
+    `<button class="more" type="button" data-expand="${esc(key)}">show all ${n(t.length)} characters</button>`;
+}
+
+/* ── URL config ─────────────────────────────────────────────────────── */
+const VIEWS = [
+  { id: "health",    label: "Health" },
+  { id: "memories",  label: "Your memories" },
+  { id: "about-you", label: "What it knows about you" },
+  { id: "trace",     label: "Try a prompt" },
+];
+const VIEW_IDS = VIEWS.map((v) => v.id).concat(["problem"]);
+
+const P = new URLSearchParams(location.search);
+const CFG = {
+  key:   P.get("key") || "",
+  view:  VIEW_IDS.includes(P.get("view")) ? P.get("view") : "health",
+  gap:   P.get("gap") || "",
+  demo:  P.get("demo") === "1",
+  theme: P.get("theme") || "auto",
+  q:     P.get("q") || "",
+  slug:  P.get("slug") || "",
+};
+CFG.static = P.get("static") === "1" || CFG.demo;   // demo never opens a channel
+
+const state = {
+  snapshot: null,
+  persona: null,
+  snapshotId: null,
+  loading: true,
+  fatal: null,          // the whole read failed
+  personaError: null,
+  records: null,        // RecordsPage for the memories screen
+  recordsError: null,
+  recordsLoading: false,
+  recall: null,
+  recallError: null,
+  recallLoading: false,
+  examples: null,       // real prompts read back out of the store
+  memQ: "",
+  memSlug: "",
+  traceSlug: "",
+  hideClutter: false,
+  expanded: new Set(),
+  noted: new Map(),     // see postEvent() — judgements posted to /api/events this session
+  /**
+   * Recall samples MEASURED IN THIS SESSION. See renderPerTurn(): the number of
+   * memories that reach the assistant per turn is not in the payload and cannot
+   * be computed from it, so it is either measured here or reported as unmeasured.
+   * Keyed to the snapshot id: a sample taken against a different store state is
+   * not a sample of this one.
+   */
+  samples: [],
+};
+
+/* ══════════════════════════════════════════════════════════════════════
+   API — one envelope, one branch
+   ══════════════════════════════════════════════════════════════════════ */
+function url(route, params) {
+  const u = new URL(route, location.origin);
+  if (CFG.key) u.searchParams.set("key", CFG.key);
+  for (const [k, v] of Object.entries(params || {})) {
+    if (v !== undefined && v !== null && v !== "") u.searchParams.set(k, v);
+  }
+  return u.pathname + u.search;
+}
+
+async function api(route, params) {
+  const target = url(route, params);
+  let res;
+  try {
+    res = await fetch(target, { headers: { accept: "application/json" } });
+  } catch (e) {
+    throw apiFailure(`Could not reach the API at ${target}.`, String((e && e.message) || e), target);
+  }
+  let body;
+  try {
+    body = await res.json();
+  } catch (e) {
+    throw apiFailure(
+      `${target} answered ${res.status} ${res.statusText}, but the body was not JSON.`,
+      "The visualiser server may have stopped, or something else is answering on this port.", target);
+  }
+  if (!body || typeof body !== "object") throw apiFailure(`${target} returned a malformed envelope.`, "", target);
+  if (body.ok === false) {
+    const err = body.error || {};
+    throw apiFailure(`${target} → ${err.code || "error"}`, err.message || "No message supplied.", target, err.code);
+  }
+  if (body.snapshotId) state.snapshotId = state.snapshotId || body.snapshotId;
+  return body.data;
+}
+
+function apiFailure(headline, detail, target, code) {
+  const e = new Error(headline);
+  e.detail = detail; e.target = target; e.code = code || null; e.isApi = true;
+  return e;
+}
+
+/**
+ * Record ONE judgement to `POST /api/events`, which serve.routeEventsPost
+ * appends to `~/.memory-tencentdb/view/events.jsonl`. That file is the
+ * documented handoff to the agent's next turn: `skills/memory-view/SKILL.md`
+ * tells it to read the tail and treat those lines as what the reader looked at
+ * and flagged. The reader clicks while the agent's turn is over; this is the
+ * only channel back.
+ *
+ * DELIBERATELY NOT A CLICK TRACKER. Exactly two things are posted, and both are
+ * a verdict the reader supplied that the payload cannot compute:
+ *
+ *   - `duty.dispute` — "your guess about this line is wrong". The duty class is
+ *     a heuristic; the dashed chip already says so. This is the chip's other
+ *     half — the user's correction, which exists nowhere else.
+ *   - `gap.ack` — "I have read this finding". A gap's severity is measured; a
+ *     reader deciding it is handled is not, and cannot be re-derived from a
+ *     later snapshot that still shows it.
+ *
+ * Navigation, copies, searches and traces are NOT posted. Every one of them is
+ * either recomputable or noise, and burying two judgements under a hundred
+ * navigations makes the file unreadable for the agent it exists to inform.
+ * Worse, this page renders the reader's private prompts and memory text: an
+ * event log is a second copy of that data with a longer life than the session,
+ * so nothing posted here carries content — only the identifiers needed to find
+ * it in a store the agent can already read.
+ *
+ * Shape is the server's existing one: whatever object is posted, plus a
+ * server-stamped `snapshotId`, `at` and `timestamp`. `kind` plus its target is
+ * the client's half of that contract, and it matches the lines already in the
+ * file (`{"kind":"gap.ack","gapId":…}`). No second format is invented.
+ *
+ * Fire-and-forget: a note that fails to save must never break the screen the
+ * reader is standing on, and it is never the source of truth — the store is.
+ */
+async function postEvent(payload) {
+  // `?demo=1` is the standalone fixture: there may be no server behind it at all,
+  // and its "findings" are synthetic, so a note about one is meaningless. NOT
+  // gated on `CFG.static` — `?static=1` reads the live store and only skips the
+  // SSE channel, so it must stay pixel-identical to live for the deterministic
+  // screenshots it exists to take. Hiding a control there would make the
+  // screenshot lie about the page.
+  if (CFG.demo) return false;
+  try {
+    const res = await fetch(url(ROUTES.EVENTS), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return res.ok;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Notes made in THIS session: key -> "saved" | "failed". Only ever a render
+ * hint. The append-only log is the record; this Set just stops the page from
+ * silently swallowing a click, and tells the truth when the write did not land.
+ */
+function noteState(key) { return state.noted.get(key) || null; }
+
+/**
+ * Parse the inline fixture. There is deliberately no adapter here: `?demo=1`
+ * feeds the same objects through the same code paths as the live API, so a
+ * payload shape the shell can no longer render fails HERE, visibly, before it
+ * fails on somebody's store. `snapshot.persona` is re-attached because the live
+ * shell reads the richer PersonaResponse from /api/persona while the Snapshot
+ * carries the summary; one copy cannot drift from itself.
+ */
+function loadFixture() {
+  const raw = JSON.parse(document.getElementById("fixture").textContent);
+  const snapshot = Object.assign({}, raw.snapshot, { persona: raw.persona });
+  return { snapshot, persona: raw.persona, recall: raw.recall, records: raw.records || null };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   The three-way read, rendered three ways.
+
+   contract.js carries `ok` / `unmeasured` / `error` everywhere a reading could
+   have failed, because the bug that motivated this whole visualiser was an
+   unmeasured reading averaged in as a zero: stores whose vector index had never
+   been written reported "0 vectors", which was blended into a coverage
+   percentage and raised a false alarm twice. The enum makes that inexpressible
+   in the payload — but only if the UI keeps the three apart. Colour is never
+   the carrier: a solid dot, a 45° hatch and a filled critical square are three
+   different SHAPES, each with its own words beside it.
+   ══════════════════════════════════════════════════════════════════════ */
+function statusMark(status) {
+  if (status === "unmeasured") return '<span class="mk hatch" aria-hidden="true"></span>';
+  if (status === "error") return '<span class="mk err" aria-hidden="true"></span>';
+  return '<span class="mk" aria-hidden="true"></span>';
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   PROBLEMS — one entry per contract.js GAP_KIND.
+
+   Each turns a group of Gaps into: a sentence with the number inside it, one
+   line of why it matters, and something to run or somewhere to go. There is no
+   slot for a bare figure and no default that prints one; a kind with no entry
+   falls back to the tool's own `Gap.title`, which is at least a sentence.
+   ══════════════════════════════════════════════════════════════════════ */
+const sum = (gaps, f) => gaps.reduce((a, g) => a + (Number(f(g)) || 0), 0);
+const CMD_SYNC = "tmem sync";
+
+const PROBLEMS = {
+  vectors_missing: {
+    impact: (g) => g.evidence.withoutVector,
+    build(gs) {
+      const records = sum(gs, (g) => g.evidence.withoutVector);
+      const empty = gs.filter((g) => g.evidence.vectorState === "empty").length;
+      return {
+        headline: `${n(gs.length)} ${plural(gs.length, "project")} can only find memories that use your exact words.`,
+        why: `${n(records)} ${plural(records, "memory", "memories")} there ${plural(records, "has", "have")} no meaning-index, ` +
+             `so asking “how do we handle auth errors” will not find one saved as “401 retry policy”. ` +
+             `${n(empty)} of them ${plural(empty, "has", "have")} an index file that exists and is empty — a measured zero, not an unknown.`,
+        cmd: CMD_SYNC,
+      };
+    },
+  },
+  vectors_orphaned: {
+    impact: (g) => g.evidence.orphanVectors,
+    build(gs) {
+      const v = sum(gs, (g) => g.evidence.orphanVectors);
+      return {
+        headline: `${n(v)} index ${plural(v, "entry", "entries")} point at a memory that no longer exists.`,
+        why: "Harmless to read, but they take up room in the index and make its size disagree with the number of memories.",
+        cmd: CMD_SYNC,
+      };
+    },
+  },
+  duplicate_records: {
+    impact: (g) => g.evidence.exact,
+    build(gs) {
+      const dupes = sum(gs, (g) => g.evidence.exact);
+      return {
+        headline: `${n(dupes)} of your memories were saved more than once, word for word.`,
+        why: `Across ${n(gs.length)} ${plural(gs.length, "project")}. A sentence stored twice competes with itself for the few lines handed over each turn, ` +
+             "so a duplicate can crowd out something you only said once.",
+        href: "memories",
+        hrefLabel: "See them",
+      };
+    },
+  },
+  low_signal_records: {
+    impact: (g) => g.evidence.unionRecords,
+    build(gs, snap) {
+      // `Totals.lowSignal` is the same measurement with a stable shape; the gap's
+      // own evidence has carried the per-class counts inline at times and not at
+      // others, so the totals are read first and the gap is the fallback.
+      const e = gs[0].evidence || {};
+      const t = (snap.totals && snap.totals.lowSignal) || {};
+      const per = t.perClass || e;
+      const union = t.unionRecords != null ? t.unionRecords : e.unionRecords;
+      const of = t.records != null ? t.records : (e.records != null ? e.records : e.of);
+      const classes = Object.entries(VOCAB.lowSignal)
+        .map(([k, w]) => [per[k] || 0, w])
+        .filter(([c]) => c > 0)
+        .sort((a, b) => b[0] - a[0])
+        .slice(0, 3)
+        .map(([c, w]) => `${n(c)} ${w}`);
+      return {
+        headline: `${n(union)} of your ${n(of)} memories are clutter that was saved by mistake.`,
+        why: (classes.length ? `Mostly ${classes.join(", ")} — competing` : "They compete") +
+             " with the real ones for the few lines handed over each turn.",
+        href: "memories",
+        hrefLabel: "See what they are",
+      };
+    },
+  },
+  scene_invisible: {
+    impact: (g) => g.evidence.invisibleInNav,
+    build(gs, snap) {
+      const t = snap.totals;
+      const hidden = typeof t.scenesUnreachableInEveryNav === "number"
+        ? t.scenesUnreachableInEveryNav : sum(gs, (g) => g.evidence.invisibleInNav);
+      return {
+        headline: `${n(hidden)} of your ${n(t.scenes)} topic summaries are in no project's list.`,
+        // NOT "never offered this turn". Each project gets its own list and a turn
+        // renders exactly one of them, so far more than `hidden` goes unmentioned on
+        // any given turn; what `hidden` counts is summaries that fall past the end
+        // of their OWN project's list, and so are offered nowhere, ever.
+        why: `Every project shows the assistant its own list, capped at ${n(t.navBudgetChars)} characters — about five topics — and these fall past the end of it, in the one project they belong to.`,
+        cmd: gs[0].suggestion || null,
+      };
+    },
+  },
+  // No `scene_orphaned` / `scene_dangling` entries: both GAP_KINDs were deleted
+  // from contract.js because they scored a join (`l1_records.scene_name` ->
+  // scene filename) that no writer maintains, so they fired on 218 of 219 scene
+  // files and rendered here as a confident, alarming, wrong sentence about the
+  // user's data. If a gap kind ever arrives here without an entry, the fallback
+  // in buildProblems() shows the tool's own `Gap.title` and says whose words
+  // they are — which is the correct behaviour for a finding we cannot phrase.
+  scene_stale_hot: {
+    impact: (g) => g.evidence.staleHot || 1,
+    build(gs) {
+      const c = sum(gs, (g) => g.evidence.staleHot || 0);
+      return {
+        headline: `${n(c)} topic ${plural(c, "summary", "summaries")} ${plural(c, "is", "are")} still marked active but ${plural(c, "has", "have")} not been touched for 90 days.`,
+        why: "They are ranked as if they were current, so they take the slots a genuinely active topic would have had.",
+        cmd: gs[0].suggestion || null,
+      };
+    },
+  },
+  heat_scale_mismatch: {
+    impact: () => 1,
+    build(gs) {
+      const e = gs[0].evidence;
+      return {
+        headline: `The “how active is this topic” marker never appears on any of your ${n(e.scenes)} topic summaries.`,
+        why: `They are written on a ${e.writerScale || `${e.observedMin}–${e.observedMax}`} scale and read on one that starts at ${n(e.readerFirstFlameAt)}, ` +
+             "so every topic reads as cold and the assistant has nothing to rank them by.",
+        cmd: gs[0].suggestion || null,
+      };
+    },
+  },
+  persona_unprojected: {
+    impact: (g) => g.evidence.droppedAlwaysDuties,
+    build(gs) {
+      const e = gs[0].evidence;
+      return {
+        headline: `${n(e.droppedAlwaysDuties)} of the ${n(e.totalBullets)} things written about you never reach the assistant — and every one of them is marked “always apply”.`,
+        why: `${n(e.sessionStart)} arrive at the start of each session and ${n(e.onDemand)} are fetched only if it goes looking. A rule the assistant cannot see is not a rule.`,
+        href: "about-you",
+        hrefLabel: "Show them",
+      };
+    },
+  },
+  persona_missing: {
+    impact: () => 1,
+    build() {
+      return {
+        headline: "Your assistant has not built a picture of you yet.",
+        why: "It does that after enough conversations. Until then it starts every session knowing nothing about how you work.",
+        cmd: "/memory-consolidate",
+      };
+    },
+  },
+  capture_backlog: {
+    impact: (g) => (g.evidence && (g.evidence.turns || g.evidence.turnsSince)) || 1,
+    build(gs) {
+      const e = gs[0].evidence || {};
+      const t = e.turns || e.turnsSince || 0;
+      return {
+        headline: `${n(t)} ${plural(t, "conversation turn has", "conversation turns have")} happened since your memories were last tidied up.`,
+        why: "New memories are saved flat until they are consolidated into topics; until then they are harder to find and easier to lose.",
+        cmd: gs[0].suggestion || "/memory-consolidate",
+      };
+    },
+  },
+  config_unreadable: {
+    impact: () => 1,
+    build(gs) {
+      return {
+        headline: "Your memory settings file could not be read, so the defaults are in force.",
+        why: `The tool said: ${gs[0].title}. Anything you changed in that file is not being applied.`,
+        cmd: null,
+      };
+    },
+  },
+};
+
+/** severity → the words above a problem row, and its sort weight. */
+const SEV = {
+  critical: { rank: 3, first: "Fix this first", rest: "Fix soon" },
+  warn:     { rank: 2, first: "Worth a look", rest: "Worth a look" },
+  info:     { rank: 1, first: "Worth knowing", rest: "Worth knowing" },
+};
+
+/**
+ * Gaps → problems. Measured gaps only: `unmeasured` ones are not problems, they
+ * are the absence of a measurement, and they get their own strip and their own
+ * screen. Collapsing the two is the bug this tool was built to catch.
+ */
+function buildProblems(snap) {
+  const gaps = Array.isArray(snap.gaps) ? snap.gaps : [];
+  const byKind = new Map();
+  for (const g of gaps) {
+    if (g.unmeasured) continue;
+    if (g.kind === "store_unreadable") continue;   // an error, not a problem — its own state
+    if (!byKind.has(g.kind)) byKind.set(g.kind, []);
+    byKind.get(g.kind).push(g);
+  }
+  const out = [];
+  for (const [kind, gs] of byKind) {
+    const spec = PROBLEMS[kind];
+    const sev = gs.some((g) => g.severity === "critical") ? "critical"
+      : gs.some((g) => g.severity === "warn") ? "warn" : "info";
+    let body;
+    if (spec) {
+      body = spec.build(gs, snap);
+    } else {
+      // No entry for this kind. Fall back to the tool's own sentence rather than
+      // inventing one — and say whose words they are.
+      body = {
+        headline: gs[0].title,
+        why: "That is the tool's own wording — this finding has no plain-language version yet.",
+        cmd: gs[0].suggestion || null,
+      };
+    }
+    const impact = spec && spec.impact ? gs.reduce((a, g) => a + (Number(spec.impact(g)) || 0), 0) : gs.length;
+    out.push(Object.assign({ kind, sev, gaps: gs, impact }, body));
+  }
+  out.sort((a, b) => (SEV[b.sev].rank - SEV[a.sev].rank) || (b.impact - a.impact));
+  return out;
+}
+
+function unmeasuredGroup(snap) {
+  const gs = (snap.gaps || []).filter((g) => g.unmeasured);
+  if (!gs.length) return null;
+  const records = sum(gs, (g) => (g.evidence && g.evidence.records) || 0);
+  const reasons = [...new Set(gs.map((g) => (g.evidence && g.evidence.reason) || "no reason recorded"))];
+  return { gaps: gs, stores: gs.length, records, reasons };
+}
+
+function erroredStores(snap) {
+  return (snap.stores || []).filter((s) => s.status === "error");
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Chrome
+   ══════════════════════════════════════════════════════════════════════ */
+function renderTabs() {
+  const snap = state.snapshot;
+  const problems = snap && !state.loading ? buildProblems(snap) : null;
+  const counts = {
+    health: problems ? problems.filter((p) => p.sev !== "info").length : null,
+    memories: snap ? snap.totals.records : null,
+  };
+  const active = CFG.view === "problem" ? "health" : CFG.view;
+  document.getElementById("tabs").innerHTML = VIEWS.map((v) => {
+    const c = counts[v.id];
+    return `<a href="${esc(url(location.pathname, { view: v.id }))}" data-view="${v.id}"` +
+      (v.id === active ? ' aria-current="page"' : "") + `>${esc(v.label)}` +
+      (typeof c === "number" ? `<span class="n">${n(c)}</span>` : "") + `</a>`;
+  }).join("");
+  document.getElementById("rootpath").textContent = snap && snap.rootDir ? snap.rootDir : "reading…";
+}
+
+function chan(stateName, text) {
+  const c = document.getElementById("chan");
+  c.setAttribute("data-state", stateName);
+  document.getElementById("chan-text").textContent = text;
+}
+
+/**
+ * The store changed under the reader. Never re-render silently: the figure they
+ * are looking at is the one they were told about.
+ */
+function showChangedBadge() {
+  const slot = document.getElementById("changed-slot");
+  if (slot.firstChild) return;
+  slot.innerHTML = `<span class="changed-badge" role="status">store changed — refresh
+      <button class="btn" id="reload-btn" type="button">Reload</button></span>`;
+  document.getElementById("reload-btn").addEventListener("click", () => location.reload());
+}
+
+function applyTheme(t) {
+  if (t === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", t);
+  document.getElementById("theme-toggle").textContent = "Theme: " + t;
+  CFG.theme = t;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Shared blocks
+   ══════════════════════════════════════════════════════════════════════ */
+function footnote(extra) {
+  const snap = state.snapshot;
+  const id = (snap && snap.snapshotId) || state.snapshotId;
+  const at = snap && snap.generatedAt ? shortTime(snap.generatedAt) : null;
+  const bits = [];
+  if (at) bits.push(`Read at ${esc(at)}`);
+  if (id) bits.push(`reading <span class="id">${esc(id)}</span>`);
+  bits.push("nothing on this page changes your memory — it only reads.");
+  return `<p class="footnote"><span>${bits.join(" · ")}</span>${extra ? `<span>${extra}</span>` : ""}</p>`;
+}
+
+function copyBtn(cmd, primary) {
+  return `<button class="btn${primary ? " primary" : ""}" type="button" data-copy="${esc(cmd)}">Copy command</button>`;
+}
+
+function actionFor(p, primary) {
+  if (p.cmd) return `<code class="cmd">${esc(p.cmd)}</code>${copyBtn(p.cmd, primary)}`;
+  if (p.href) return `<a class="btn${primary ? " primary" : ""}" href="${esc(url(location.pathname, { view: p.href }))}" data-view="${esc(p.href)}">${esc(p.hrefLabel || "Show me")}</a>`;
+  return `<a class="btn" href="${esc(url(location.pathname, { view: "problem", gap: p.kind }))}" data-view="problem" data-gap="${esc(p.kind)}">What this means</a>`;
+}
+
+function problemRow(p, isFirst) {
+  const tag = isFirst ? SEV[p.sev].first : SEV[p.sev].rest;
+  const detail = url(location.pathname, { view: "problem", gap: p.kind });
+  return `<div class="issue" data-sev="${p.sev}">
+    <span class="rule"></span>
+    <div>
+      <span class="sev" data-sev="${p.sev}"><span class="mk"></span>${esc(tag)}</span>
+      <h3><a href="${esc(detail)}" data-view="problem" data-gap="${esc(p.kind)}">${esc(p.headline)}</a></h3>
+      <p>${esc(p.why)}</p>
+    </div>
+    <div class="act">${actionFor(p, isFirst)}</div>
+  </div>`;
+}
+
+/**
+ * THE HONESTY SLOT.
+ *
+ * "About 3 memories reach the assistant each turn" is the counterweight that
+ * stops "5 548 memories saved" winning an argument it should lose. It is also
+ * NOT IN THE PAYLOAD (design-brief.md § Gaps in the upstream, item 3) and cannot
+ * be derived from one: how much reaches the agent depends on the question asked.
+ *
+ * So it is never asserted unless it was measured:
+ *   1. if a future payload carries `totals.recallPerTurn`, use it and say where
+ *      it came from;
+ *   2. else if the reader has traced real prompts on the Try-a-prompt screen in
+ *      this session, report those, labelled as the sample they are;
+ *   3. else render the slot as NOT MEASURED, with the hatch mark, and point at
+ *      the screen that would measure it.
+ *
+ * A fabricated counterweight would be this project's own failure mode, committed
+ * by the screen built to expose it.
+ */
+function renderPerTurn(snap) {
+  const supplied = snap.totals && snap.totals.recallPerTurn;
+  if (supplied && typeof supplied.value === "number") {
+    return `<div class="gapline">About <b>${n(supplied.value)} ${plural(supplied.value, "memory", "memories")} reach the assistant</b> each turn` +
+      (supplied.reason ? ` — ${esc(supplied.reason)}` : "") + ".</div>";
+  }
+  const s = state.samples.filter((x) => x.snapshotId === (snap.snapshotId || state.snapshotId));
+  if (s.length) {
+    const counts = s.map((x) => x.hits);
+    const lo = Math.min.apply(null, counts), hi = Math.max.apply(null, counts);
+    const spread = lo === hi
+      ? `<b>${n(lo)} ${plural(lo, "memory", "memories")} reached the assistant</b>`
+      : `<b>between ${n(lo)} and ${n(hi)} memories reached the assistant</b>`;
+    return `<div class="gapline">On ${n(s.length)} ${plural(s.length, "prompt")} you traced in this session, ${spread} per turn.
+      <a href="${esc(url(location.pathname, { view: "trace" }))}" data-view="trace">Trace another</a> —
+      ${s.length === 1 ? "one prompt is a reading, not an average" : "these are your prompts, not an average over every prompt"}.</div>`;
+  }
+  return `<div class="gapline unmeasured">${statusMark("unmeasured")}<span>How many of them reach the assistant on a given turn is
+    <b>not checked yet</b> — it depends on what you ask, so nothing here can compute it.
+    <a href="${esc(url(location.pathname, { view: "trace" }))}" data-view="trace">Trace one of your prompts</a> and this
+    line reports what actually happened.</span></div>`;
+}
+
+function tiles(snap) {
+  const t = snap.totals;
+  const proj = (state.persona && state.persona.projection) || (snap.persona && snap.persona.projection) || null;
+  // The store-wide number and the number a turn actually experiences are different
+  // measurements, and the old copy quoted the first as if it were the second ("N
+  // never offered to it — the list it sees is capped at 800 characters"), which
+  // reads as one 800-char list holding every summary. There is no such list: every
+  // project renders its own, and a session renders exactly one. So the sum gets the
+  // quantifier that makes it true ("in no project"), and the exact per-block figure
+  // — which is what a reader is really asking for — is shown beside it, named,
+  // from the largest project whose block WAS measurable.
+  const unreachable = t.scenesUnreachableInEveryNav;
+  const biggestBlock = (snap.stores || [])
+    // `visibleInNav` is null unless the split was measured (contract §4), so this
+    // is the same test as `navStatus === "ok"` without depending on a field an
+    // older payload may predate.
+    .filter((s) => s.scenes && typeof s.scenes.visibleInNav === "number" && s.scenes.count > 0)
+    .sort((a, b) => b.scenes.count - a.scenes.count)[0] || null;
+  const here = biggestBlock
+    ? ` In ${esc(biggestBlock.label)}, your largest, it is shown ${n(biggestBlock.scenes.visibleInNav)} of ${n(biggestBlock.scenes.count)}.`
+    : "";
+  const sceneGap = t.scenes === 0
+    ? "Summaries are written once there is enough to summarise."
+    : (typeof unreachable === "number"
+      ? (unreachable > 0
+        ? `<b>${n(unreachable)} ${plural(unreachable, "is", "are")} in no project's list</b> — each project shows its own, capped at ${n(t.navBudgetChars)} characters.${here}`
+        : `<b>All ${n(t.scenes)} are in their own project's list.</b>${here}`)
+      : "Whether they reach their project's list was not measured.");
+  const personaGap = !proj
+    ? "Nothing has been written about you yet."
+    : `<b>${n(proj.byTier.sessionStart)} arrive each session</b>; ${n(proj.byTier.never)} never reach it.`;
+
+  return `<div class="tiles">
+    <div class="tot">
+      <div class="l">Memories saved</div>
+      <div class="v">${n(t.records)}</div>
+      ${t.records === 0
+        ? '<div class="gapline">This is a real zero — the store was read and it is empty.</div>'
+        : renderPerTurn(snap)}
+    </div>
+    <div class="tot">
+      <div class="l">Topic summaries</div>
+      <div class="v">${n(t.scenes)}</div>
+      <div class="gapline">${sceneGap}</div>
+    </div>
+    <div class="tot">
+      <div class="l">Things it knows about you</div>
+      <div class="v">${proj ? n(proj.totalBullets) : "0"}</div>
+      <div class="gapline">${personaGap}</div>
+    </div>
+  </div>`;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Screen: Health check
+   ══════════════════════════════════════════════════════════════════════ */
+function screenHealthLoading() {
+  const sk = (cls, w, mt, h) =>
+    `<span class="sk ${cls}" style="width:${w};margin-top:${mt || 0}px${h ? `;height:${h}px` : ""}"></span>`;
+  const row = `<div class="issue" data-sev="unchecked"><span class="rule"></span><div>
+      ${sk("line", "140px")}${sk("title", "60%", 8)}${sk("line", "78%", 9)}${sk("line", "64%", 6)}
+    </div><div class="act">${sk("line", "160px", 0, 32)}</div></div>`;
+  return `<p class="verdict-sub" style="margin-top:0">Reading your memory folder. The screen and the path are known already; the verdict is not.</p>
+    ${sk("big", "620px", 10)}${sk("line", "430px", 12)}
+    <div class="issues">${row}${row}${row}</div>
+    <div class="tiles">
+      <div class="tot"><div class="l">Memories saved</div>${sk("big", "120px", 2)}<div class="gapline">${sk("line", "230px")}</div></div>
+      <div class="tot"><div class="l">Topic summaries</div>${sk("big", "90px", 2)}<div class="gapline">${sk("line", "250px")}</div></div>
+      <div class="tot"><div class="l">Things it knows about you</div>${sk("big", "80px", 2)}<div class="gapline">${sk("line", "210px")}</div></div>
+    </div>
+    <p class="footnote"><span>Reading… nothing on this page changes your memory.</span></p>`;
+}
+
+function screenHealthEmpty(snap) {
+  const t = snap.totals;
+  return `<div class="empty">
+      <h2>Nothing saved yet — and nothing wrong.</h2>
+      <p>Your assistant starts remembering after your first real conversation in a project: what you decided,
+      what you rejected, and how you like things done. ${n(t.stores)} ${plural(t.stores, "project is", "projects are")}
+      set up under <span class="rootpath">${esc(snap.rootDir)}</span> and there are no memories in ${plural(t.stores, "it", "them")} yet.</p>
+      <p>If you want it to start now rather than after the next session, run the set-up once. It creates the two
+      small database files and writes nothing else.</p>
+      <div class="acts">
+        <code class="cmd">/memory-init</code>${copyBtn("/memory-init", true)}
+        <a class="btn" href="${esc(url(location.pathname, { view: "trace" }))}" data-view="trace">Or try a prompt anyway</a>
+      </div>
+    </div>
+    ${tiles(snap)}
+    ${footnote()}`;
+}
+
+function screenHealthErrored(snap, errored) {
+  const rows = errored.map((s) => `<div class="issue" data-sev="critical">
+      <span class="rule"></span>
+      <div>
+        <span class="sev" data-sev="critical"><span class="mk err"></span>Could not read</span>
+        <h3>${esc(s.label)} — this project's memory file could not be opened.</h3>
+        <p>The operating system said: <code class="cmd">${esc(s.reason || "no reason recorded")}</code>.
+        Its memories are not counted anywhere on this page — not as zero, not at all.</p>
+      </div>
+      <div class="act"><span class="tag">${esc(s.slug)}</span></div>
+    </div>`).join("");
+
+  return `<h1 class="verdict sm">${n(errored.length)} ${plural(errored.length, "project", "projects")}
+      <span class="bad">could not be opened</span>.</h1>
+    <p class="verdict-sub">Everything else on this page is measured from the other ${n(snap.totals.readableStores)}.
+      The difference is unknown, not zero — ${plural(errored.length, "that project was", "those projects were")} never opened,
+      so nobody knows what is in ${plural(errored.length, "it", "them")}.</p>
+    <div class="issues">${rows}</div>
+    <div class="acts">
+      <button class="btn primary" type="button" data-reload="1">Try again</button>
+      <span class="tag">${esc(snap.rootDir)}</span>
+    </div>
+    ${screenHealthMain(snap, { skipVerdict: true })}
+    ${footnote()}`;
+}
+
+function screenHealthMain(snap, opt) {
+  opt = opt || {};
+  const problems = buildProblems(snap);
+  const attention = problems.filter((p) => p.sev !== "info");
+  const smaller = problems.filter((p) => p.sev === "info");
+  const um = unmeasuredGroup(snap);
+  const top = problems.slice(0, 3);
+  const rest = problems.slice(3);
+
+  let head = "";
+  if (!opt.skipVerdict) {
+    if (!problems.length) {
+      head = `<h1 class="verdict">Your memory is <span class="ok">in good shape</span>. Nothing to do.</h1>
+        <p class="verdict-sub">All ${n(snap.totals.stores)} projects were read, and nothing measured is out of order.</p>`;
+    } else {
+      const k = attention.length || problems.length;
+      head = `<h1 class="verdict">Your memory is <span class="ok">working</span> — ${n(k)} ${plural(k, "thing needs", "things need")} attention.</h1>
+        <p class="verdict-sub">Checked ${n(snap.totals.stores)} ${plural(snap.totals.stores, "project")}${
+          snap.totals.records ? `, ${n(snap.totals.records)} memories` : ""}. Nothing has been lost.
+          ${top[0] && top[0].cmd ? "The first fix is one command." : "The first one is worth reading."}</p>`;
+    }
+  } else {
+    head = `<h2 class="h2" style="margin-top:26px">What was measurable, on the ${n(snap.totals.readableStores)} that opened</h2>`;
+  }
+
+  const list = !problems.length
+    ? `<div class="issues"><div class="issue" data-sev="ok">
+        <span class="rule"></span>
+        <div>
+          <span class="sev" data-sev="ok"><span class="mk"></span>Checked and fine</span>
+          <h3>All ${n(snap.totals.stores)} projects were read and nothing is out of order.</h3>
+          <p>Every measurement this tool takes came back clean. The figures below are what it found.</p>
+        </div>
+        <div class="act"><a class="btn" href="${esc(url(location.pathname, { view: "trace" }))}" data-view="trace">Try a prompt</a></div>
+      </div></div>`
+    : `<div class="issues">${top.map((p, i) => problemRow(p, i === 0 && !opt.skipVerdict)).join("")}</div>` +
+      (rest.length ? `<details class="card" style="padding:10px 18px">
+          <summary style="cursor:pointer;font-weight:600;min-height:32px;display:flex;align-items:center">Show the other ${n(rest.length)} ${plural(rest.length, "finding")}
+            <span style="font-weight:400;color:var(--c-secondary)">&nbsp;— ${n(Math.max(0, attention.length - 3))} worth acting on, ${n(smaller.length)} worth knowing</span></summary>
+          <div class="issues" style="margin-top:10px">${rest.map((p) => problemRow(p, false)).join("")}</div>
+        </details>` : "");
+
+  const strip = um ? `<div class="strip">
+      <span class="rule"></span>
+      <div>
+        <h3><span class="sev" data-sev="unchecked" style="margin:0 8px 0 0"><span class="mk"></span>Not checked yet</span>${
+          n(um.stores)} ${plural(um.stores, "project has", "projects have")} never been checked — which is not the same as scoring zero.</h3>
+        <p>No index was ever built there, so ${plural(um.stores, "its", "their")} ${n(um.records)} memories are left out of the
+        figures above rather than counted as failures in them.</p>
+      </div>
+      <a class="btn" href="${esc(url(location.pathname, { view: "problem", gap: "unchecked" }))}" data-view="problem" data-gap="unchecked">Which ${plural(um.stores, "project", "projects")}</a>
+    </div>` : "";
+
+  return head + list + strip + tiles(snap) + (opt.skipVerdict ? "" : footnote());
+}
+
+function screenHealth() {
+  if (state.loading) return screenHealthLoading();
+  if (state.fatal) return screenFatal(state.fatal);
+  const snap = state.snapshot;
+  const errored = erroredStores(snap);
+  if (errored.length) return screenHealthErrored(snap, errored);
+  if (!snap.totals.records) return screenHealthEmpty(snap);
+  return screenHealthMain(snap);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Screen: Problem detail
+   ══════════════════════════════════════════════════════════════════════ */
+function backToHealth() {
+  return `<p style="margin:0 0 12px"><a class="btn" href="${esc(url(location.pathname, { view: "health" }))}" data-view="health">← Back to health</a></p>`;
+}
+
+function screenProblemUnchecked(snap) {
+  const um = unmeasuredGroup(snap);
+  if (!um) return backToHealth() + screenNotFound("Nothing is unchecked — every project has been measured.");
+  const byRecords = um.gaps.slice().sort((a, b) =>
+    ((b.evidence && b.evidence.records) || 0) - ((a.evidence && a.evidence.records) || 0));
+  const rows = byRecords.map((g) => {
+    const recs = (g.evidence && g.evidence.records) || 0;
+    return `<div class="row">
+      <div>
+        <div class="txt"><b>${esc((g.subject && g.subject.label) || g.id)}</b></div>
+        <div class="meta">${esc((g.evidence && g.evidence.slug) || "")}</div>
+      </div>
+      <div class="side">
+        <span class="tag" data-t="unchecked">${statusMark("unmeasured")}not checked</span>
+        <span class="tag">${n(recs)} ${plural(recs, "memory", "memories")}</span>
+      </div>
+    </div>`;
+  }).join("");
+
+  return backToHealth() +
+    `<h1 class="verdict sm">${n(um.stores)} ${plural(um.stores, "project has", "projects have")} never been checked.</h1>
+    <p class="verdict-sub">Nothing here is known to be wrong — or right. Those are different things, so this page refuses to score them.</p>
+    <div class="note hatched">
+      <span class="glyph" aria-hidden="true">⧅</span>
+      <span><b>Not checked is not zero.</b> These ${n(um.stores)} projects have no index file at all, so their
+      ${n(um.records)} memories were left out of the figures on the health screen rather than counted as failures in them.
+      Averaging them in as zeros would have made those figures read worse than the truth — which is exactly the mistake
+      this tool was built after.</span>
+    </div>
+    <div class="card">
+      <h2 class="h2">The ${n(um.stores)}, and how much is in each</h2>
+      <div class="rows" style="margin-top:10px">${rows}</div>
+    </div>
+    <div class="card">
+      <h2 class="h2">If you want them checked</h2>
+      <p class="lede">The same command builds an index in each one. After that they get a real reading — “fine” or
+      “nothing indexed”. Either answer beats the current silence.</p>
+      <div class="acts">
+        <code class="cmd">${esc(CMD_SYNC)}</code>${copyBtn(CMD_SYNC, true)}
+        <span class="tag">${n(um.records)} ${plural(um.records, "memory", "memories")}</span>
+      </div>
+    </div>
+    ${footnote(`<span>Reason recorded for all ${n(um.stores)}: “${esc(um.reasons[0])}”.</span>`)}`;
+}
+
+function screenProblem() {
+  if (state.loading) return screenHealthLoading();
+  if (state.fatal) return screenFatal(state.fatal);
+  const snap = state.snapshot;
+  if (CFG.gap === "unchecked") return screenProblemUnchecked(snap);
+
+  const p = buildProblems(snap).find((x) => x.kind === CFG.gap);
+  if (!p) return backToHealth() + screenNotFound("That finding is not in the current reading — it may have been fixed, or the reading may have moved on.");
+
+  const spec = PROBLEMS[p.kind];
+  const scoped = p.gaps.filter((g) => g.subject && g.subject.scope === "project");
+  const impactOf = (g) => (spec && spec.impact ? Number(spec.impact(g)) || 0 : 0);
+  const worst = scoped.slice().sort((a, b) => impactOf(b) - impactOf(a)).slice(0, 3);
+
+  const kv = [];
+  if (scoped.length) {
+    kv.push([`${plural(scoped.length, "Project", "Projects")} affected`,
+      `<b>${n(scoped.length)}</b> of ${n(snap.totals.stores)} — ${n(p.impact)} in total between them`]);
+    if (worst.length && spec && spec.impact) {
+      kv.push(["Worst affected", worst.map((g) => {
+        const ev = g.evidence || {};
+        const denom = ev.records != null ? ` of ${n(ev.records)}` : "";
+        return `${esc(g.subject.label)} — ${n(impactOf(g))}${denom}`;
+      }).join(" · ")]);
+    }
+  } else {
+    kv.push(["Where it applies", "Everything under this memory folder, not one project"]);
+  }
+  if (p.kind === "vectors_missing" && snap.totals.missingByMonth) {
+    const months = Object.entries(snap.totals.missingByMonth).sort();
+    if (months.length) kv.push(["When they piled up", months.map(([m, c]) => `${n(c)} in ${esc(m)}`).join(", ")]);
+  }
+  kv.push(["What fixes it", p.cmd
+    ? `<code class="cmd">${esc(p.cmd)}</code>${copyBtn(p.cmd, true)}`
+    : (p.href
+      ? `No single command — it is a judgement call. <a class="btn primary" href="${esc(url(location.pathname, { view: p.href }))}" data-view="${esc(p.href)}">${esc(p.hrefLabel || "Look at it")}</a>`
+      : "No command yet. This one is reported so you know about it, not because there is a switch to flip.")]);
+
+  const measured = p.gaps.slice(0, 4).map((g) =>
+    `${g.kind} · ${g.severity} · ${g.title}\n  ${JSON.stringify(g.evidence)}${g.suggestion ? `\n  → ${g.suggestion}` : ""}`).join("\n\n");
+
+  // "I have read this and it is handled" is a judgement, not a measurement: the
+  // next snapshot will still report the gap, because the tool cannot tell a
+  // fixed-and-not-yet-resynced store from an ignored one. Posted to
+  // events.jsonl so the agent has the reader's verdict on its next turn.
+  // Secondary, never `.primary` — the command that actually fixes it keeps the
+  // screen's one primary action.
+  const ackKey = `gap:${p.kind}`;
+  const ackNote = noteState(ackKey);
+  const ack = CFG.demo ? "" : `<div class="card">
+      <h2 class="h2">Tell your assistant you have seen this</h2>
+      <p class="lede">Your assistant cannot see this page. Noting it here passes your verdict to its next turn, so it
+      stops raising a finding you have already judged. It changes nothing about your memory, and the next reading
+      will still measure this — a note is your opinion, not a fix.</p>
+      <div class="acts">${
+        ackNote === "saved"
+          ? `<span class="tag">Noted — your assistant will see it next turn ✓</span>`
+          : ackNote === "failed"
+            ? `<span class="tag">That note could not be saved. Nothing else is affected — say it in the terminal instead.</span>`
+            : `<button class="btn" type="button" data-ack="${esc(p.kind)}">I have read this one</button>`
+      }</div>
+    </div>`;
+
+  return backToHealth() +
+    `<h1 class="verdict sm">${esc(p.headline)}</h1>
+    <p class="verdict-sub">${esc(p.why)}</p>
+    <div class="card">
+      <h2 class="h2">Where it applies</h2>
+      <dl class="kv">${kv.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>
+    </div>
+    <div class="card">
+      <h2 class="h2">What the tool measured</h2>
+      <p class="lede">The tool's own words, verbatim — quote this in a bug report.${
+        p.gaps.length > 4 ? ` Showing 4 of ${n(p.gaps.length)}.` : ""}</p>
+      <pre class="quote">${esc(measured)}</pre>
+    </div>
+    ${ack}
+    ${footnote()}`;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Screen: Your memories
+   ══════════════════════════════════════════════════════════════════════ */
+function defaultSlug(snap) {
+  // An unknown ?slug is ignored rather than sent: the request would 404 and the
+  // screen would blame the store instead of the link.
+  if (CFG.slug && (snap.stores || []).some((s) => s.slug === CFG.slug)) return CFG.slug;
+  const stores = (snap.stores || []).filter((s) => s.status === "ok" && s.records > 0);
+  if (!stores.length) return (snap.stores && snap.stores[0] && snap.stores[0].slug) || "global";
+  return stores.slice().sort((a, b) => b.records - a.records)[0].slug;
+}
+
+function storeSelect(snap, selected, id) {
+  const stores = (snap.stores || []).slice().sort((a, b) => b.records - a.records);
+  return `<select id="${id}" aria-label="Project">` + stores.map((s) =>
+    `<option value="${esc(s.slug)}"${s.slug === selected ? " selected" : ""}${s.status === "error" ? " disabled" : ""}>` +
+    `${esc(s.label)} — ${s.status === "error" ? "could not be read" : n(s.records)}</option>`).join("") + `</select>`;
+}
+
+function rowTags(r, page) {
+  const out = [];
+  if (page.vectorStatus !== "ok" || r.hasVector === null) {
+    out.push(`<span class="tag" data-t="unchecked">${statusMark("unmeasured")}not checked for meaning-search</span>`);
+  } else if (r.hasVector) {
+    out.push(`<span class="tag strong" data-t="meaning"><span class="mk"></span>findable by meaning</span>`);
+  } else {
+    out.push(`<span class="tag strong" data-t="words"><span class="mk"></span>exact words only</span>`);
+  }
+  if (r.lowSignal && r.lowSignal.length) {
+    out.push(`<span class="tag" data-t="clutter"><span class="mk"></span>clutter — ${esc(VOCAB.lowSignal[r.lowSignal[0]] || r.lowSignal[0])}</span>`);
+  }
+  if (r.duplicateGroup >= 0) out.push(`<span class="tag"><span class="mk"></span>saved more than once</span>`);
+  return out.join("");
+}
+
+function screenMemories() {
+  if (state.loading) return screenHealthLoading();
+  if (state.fatal) return screenFatal(state.fatal);
+  const snap = state.snapshot;
+  const t = snap.totals;
+  const slug = state.memSlug || defaultSlug(snap);
+  const store = (snap.stores || []).find((s) => s.slug === slug);
+  const storeName = store ? store.label : slug;
+
+  const head = `<h1 class="page-title">${n(t.records)} memories across ${n(t.stores)} ${plural(t.stores, "project")}</h1>
+    <p class="lede">Everything your assistant has saved. Search it the way you would ask a question.
+      This reads one project at a time — the same way the assistant does when you are working inside that project.</p>
+    <form class="search" id="memform">
+      <input type="search" id="memq" value="${esc(state.memQ)}" placeholder="a word or phrase you remember saying" aria-label="Search your memories">
+      ${storeSelect(snap, slug, "memslug")}
+      <button class="btn primary" type="submit">${state.recordsLoading ? "Searching…" : "Search"}</button>
+    </form>`;
+
+  if (state.recordsError) return head + errorBlock(state.recordsError, `The memories in ${storeName}`);
+
+  if (state.recordsLoading || !state.records) {
+    const skRow = `<div class="row"><div>
+        <span class="sk line" style="width:78%"></span>
+        <span class="sk line" style="width:52%;margin-top:7px"></span>
+        <span class="sk line" style="width:230px;margin-top:9px;height:14px"></span>
+      </div><div class="side"><span class="sk line" style="width:150px;height:24px"></span>
+      <span class="sk line" style="width:120px;height:24px"></span></div></div>`;
+    return head + `<div class="filters"><span>Reading ${store ? n(store.records) + " memories in " + esc(storeName) : "the store"}…</span></div>
+      <div class="rows">${skRow + skRow + skRow + skRow}</div>
+      <p class="footnote"><span>The rows keep their height while they fill, so nothing jumps under your cursor.</span></p>`;
+  }
+
+  const page = state.records;
+  const clutterCount = page.rows.filter((r) => r.lowSignal && r.lowSignal.length).length;
+  const rows = page.rows.filter((r) => !state.hideClutter || !(r.lowSignal && r.lowSignal.length));
+
+  if (!page.total) {
+    const vecEmpty = store && store.vectorState === "empty";
+    const vecUnmeasured = page.vectorStatus !== "ok";
+    return head + (state.memQ
+      ? `<div class="empty" style="margin-top:28px">
+          <h2>No memory matches “${esc(state.memQ)}” in ${esc(storeName)}.</h2>
+          <p>That may be the honest answer — or it may be this project's fault.
+          ${vecEmpty
+            ? `<b>${esc(storeName)} can only match your exact words right now</b>, so a memory saved in different words is invisible to this search and to the assistant.`
+            : "This search matches exact words only, so try the words you would have used at the time."}</p>
+          <div class="acts">
+            <code class="cmd">${esc(CMD_SYNC)}</code>${copyBtn(CMD_SYNC, true)}
+            <button class="btn" type="button" data-clearq="1">Show everything in this project</button>
+          </div>
+        </div>`
+      : `<div class="empty" style="margin-top:28px">
+          <h2>Nothing saved for ${esc(storeName)} yet.</h2>
+          <p>This project has been set up but no conversation in it has been remembered yet.
+          The other projects have ${n(t.records)} memories between them — pick one above.</p>
+        </div>`) +
+      (vecUnmeasured ? `<div class="note hatched">
+        <span class="glyph" aria-hidden="true">⧅</span>
+        <span><b>Whether this project can search by meaning was never checked.</b>
+        ${esc(sentence(page.vectorReason || "No index file was found for it"))} That is unknown, not empty —
+        a project with no reading is not a project that scored zero.</span></div>` : "");
+  }
+
+  const counts = page.rows.reduce((a, r) => {
+    if (page.vectorStatus !== "ok" || r.hasVector === null) a.unchecked++;
+    else if (r.hasVector) a.meaning++;
+    else a.words++;
+    return a;
+  }, { meaning: 0, words: 0, unchecked: 0 });
+
+  const shownWord = `of the ${n(page.rows.length)} on this page`;
+  const filters = `<div class="filters">
+      <span>${state.memQ
+        ? `<b>${n(page.total)} ${plural(page.total, "memory", "memories")} in ${esc(storeName)} ${plural(page.total, "matches", "match")} “${esc(state.memQ)}”</b>`
+        : `<b>${n(page.total)} ${plural(page.total, "memory", "memories")}</b> in ${esc(storeName)}, newest first`}</span>
+      ${counts.meaning ? `<span class="tag" data-t="meaning"><span class="mk"></span>${n(counts.meaning)} ${shownWord} are findable by meaning</span>` : ""}
+      ${counts.words ? `<span class="tag" data-t="words"><span class="mk"></span>${n(counts.words)} ${shownWord} match exact words only</span>` : ""}
+      ${counts.unchecked ? `<span class="tag" data-t="unchecked">${statusMark("unmeasured")}${n(counts.unchecked)} ${shownWord} were never checked</span>` : ""}
+      <span class="grow"></span>
+      <label><input type="checkbox" id="hideclutter"${state.hideClutter ? " checked" : ""}>
+        Hide the ${n(clutterCount)} clutter ${plural(clutterCount, "row", "rows")} on this page</label>
+    </div>`;
+
+  const body = rows.map((r) => `<div class="row"${r.lowSignal && r.lowSignal.length ? ' data-clutter="1"' : ""}>
+      <div>
+        <div class="txt">${esc(r.content)}</div>
+        <div class="meta">${esc(shortDate(r.createdAt))} · topic: ${esc(r.scene || "none")} ·
+          ${esc(VOCAB.writePath[r.writePath] || r.writePath)} · ${n(r.chars)} characters</div>
+      </div>
+      <div class="side">${rowTags(r, page)}</div>
+    </div>`).join("");
+
+  return head + filters + `<div class="rows">${body}</div>` +
+    footnote(`<span>Showing ${n(rows.length)} of ${n(page.total)}${
+      page.total > page.rows.length ? ` — ${n(page.limit)} are read at a time` : ""}.
+      ${state.hideClutter
+        ? `${n(clutterCount)} clutter ${plural(clutterCount, "row is", "rows are")} hidden here but still counted in the total.`
+        : "Clutter is shown and counted — hiding it by default would make the total a lie."}</span>`);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Screen: What it knows about you
+   ══════════════════════════════════════════════════════════════════════ */
+function screenAboutYou() {
+  if (state.loading) return screenHealthLoading();
+  const persona = state.persona || (state.snapshot && state.snapshot.persona);
+  if (state.personaError && !persona) return errorBlock(state.personaError, "What the assistant knows about you");
+  if (!persona) return screenFatal(state.fatal || apiFailure("The persona could not be read.", "", ROUTES.PERSONA));
+
+  const bullets = persona.bullets || [];
+  const proj = persona.projection;
+
+  if (persona.status === "unmeasured" || !bullets.length) {
+    const records = state.snapshot ? state.snapshot.totals.records : 0;
+    return `<div class="empty">
+        <h2>Your assistant has not formed a picture of you yet.</h2>
+        <p>${records ? `It has ${n(records)} memories from your conversations, but` : "It has no memories yet, so"}
+        it has not worked out the standing pattern behind them — how you like proposals structured, what you always
+        reject, which words you use for things.</p>
+        <p>That happens automatically after enough sessions. You can also ask for it now; it reads the memories
+        already saved and writes a summary you can edit by hand afterwards.</p>
+        <div class="acts">
+          <code class="cmd">/memory-consolidate</code>${copyBtn("/memory-consolidate", true)}
+          <a class="btn" href="${esc(url(location.pathname, { view: "memories" }))}" data-view="memories">Read the memories instead</a>
+        </div>
+      </div>
+      <div class="note hatched">
+        <span class="glyph" aria-hidden="true">⧅</span>
+        <span><b>Nothing is missing or broken.</b> ${esc(persona.reason || "There is simply no file to read yet")} —
+        which is different from a file that was read and found empty. When one exists, this screen shows which parts
+        of it reach the assistant and which do not.</span>
+      </div>`;
+  }
+
+  const byTier = new Map(TIER_ORDER.map((t) => [t, []]));
+  for (const b of bullets) {
+    const t = byTier.has(b.tier) ? b.tier : "never";
+    byTier.get(t).push(b);
+  }
+
+  const delivered = proj ? proj.byTier.sessionStart + proj.byTier.promptSummary : byTier.get("sessionStart").length;
+  const longestNever = byTier.get("never").slice().sort((a, b) => b.chars - a.chars)[0];
+
+  const head = `<h1 class="verdict sm">Of the ${n(bullets.length)} things written about you,
+      <span class="${byTier.get("never").length ? "bad" : "ok"}">${n(delivered)} actually ${plural(delivered, "reaches", "reach")}</span> the assistant.</h1>
+    <p class="verdict-sub">Grouped by what happens to each one, not by how it was filed: what arrives, what might, what never does.</p>`;
+
+  const groups = TIER_ORDER.map((tier) => {
+    const list = byTier.get(tier);
+    if (!list.length) return "";
+    const alwaysDropped = tier === "never" ? list.filter((b) => b.duty === "always").length : 0;
+    const action = tier === "never" && longestNever
+      ? `<span class="grow"></span><button class="btn primary" type="button" data-shorten="1">Shorten the longest one</button>` : "";
+    return `<section class="group">
+      <div class="head">
+        <span class="t">${esc(VOCAB.tier[tier])}</span>
+        <span class="c">${n(list.length)} of ${n(bullets.length)}${
+          alwaysDropped ? ` — ${n(alwaysDropped)} of them marked “${esc(VOCAB.duty.always)}”` : ""}</span>
+        ${action}
+      </div>
+      <ul class="plist">${list.map((b) => {
+        const key = `${tier}:${b.section}:${b.ordinal}`;
+        const label = esc(VOCAB.duty[b.duty] || b.duty);
+        // The dashed chip has always said "this is the tool's guess, not your
+        // label". Clicking it is the other half of that sentence: the reader's
+        // correction, which is not in the payload and cannot be derived from it.
+        // It goes to events.jsonl so the agent reads it on its next turn.
+        // In `?demo=1` there is no server to post to and the bullets are
+        // synthetic, so the chip is the plain, non-interactive pill it always
+        // was — a control that can only ever fail is worse than no control.
+        const note = CFG.demo ? "demo" : noteState(`duty:${key}`);
+        const claim = note === "demo"
+          ? `<span class="claim" title="The tool's guess, from how the line is written — not your label.">${label}</span>`
+          : note === "saved"
+          ? `<span class="claim noted">“${label}” — you said this is wrong ✓</span>`
+          : note === "failed"
+            ? `<span class="claim failed">“${label}” — could not save that note</span>`
+            : `<button class="claim" type="button" data-duty="${esc(key)}"
+                data-section="${esc(b.section)}" data-ordinal="${esc(b.ordinal)}" data-guess="${esc(b.duty)}" data-tier="${esc(tier)}"
+                title="The tool's guess, from how the line is written — not your label. Click to tell your assistant it got this one wrong.">${label}</button>`;
+        return `<li data-reach="${tier}">
+          <span class="rule"></span>
+          <span class="t">${clamped(b.text, key, state.expanded.has(key))}
+            <span class="sec">${esc(b.section)} · ${n(b.chars)} characters${
+              b.truncated ? " · cut short before it was handed over" : ""}</span></span>
+          ${claim}
+        </li>`;
+      }).join("")}</ul>
+    </section>`;
+  }).join("");
+
+  const why = proj ? `<div class="note warn">
+      <span class="glyph" aria-hidden="true">⚠</span>
+      <span><b>Why they are dropped: there is room for ${n(proj.tier0BudgetChars)} characters at the start of a session,
+      and the ${n(proj.byTier.sessionStart)} that arrive already use ${n(proj.tier0Chars)}.</b>
+      The ${n(proj.byTier.never)} that never arrive are not less important — they sit further down the file.
+      Shortening one is the fastest way to get it delivered${longestNever ? `; the longest is ${n(longestNever.chars)} characters` : ""}.</span>
+    </div>` : "";
+
+  const detail = longestNever ? `<div class="card" id="shorten">
+      <h2 class="h2">The longest one that never arrives</h2>
+      <p class="lede">${n(longestNever.chars)} characters, in <b>${esc(longestNever.section)}</b>, marked
+      “${esc(VOCAB.duty[longestNever.duty] || longestNever.duty)}”. Edit it in
+      <span class="rootpath">${esc(persona.path || "your persona file")}</span> — this page only reads.</p>
+      <pre class="quote">${esc(longestNever.text)}</pre>
+      <div class="acts"><button class="btn" type="button" data-copy="${esc(longestNever.text)}">Copy the text</button>
+        ${persona.path ? `<button class="btn" type="button" data-copy="${esc(persona.path)}">Copy the file path</button>` : ""}</div>
+    </div>` : "";
+
+  const table = proj ? `<table class="tbl">
+      <caption>The same grouping as text — what happens to each of the ${n(bullets.length)} lines.</caption>
+      <thead><tr><th scope="col">What happens to it</th><th class="num" scope="col">Lines</th><th class="num" scope="col">Characters</th></tr></thead>
+      <tbody>${TIER_ORDER.map((t) => `<tr><td>${esc(VOCAB.tier[t])}</td>
+        <td class="num">${n(proj.byTier[t])}</td><td class="num">${n(proj.byTierChars[t])}</td></tr>`).join("")}</tbody>
+    </table>` : "";
+
+  return head + groups + why + detail + (table ? `<div class="card">${table}</div>` : "") +
+    footnote(`<span><b>“${esc(VOCAB.duty.always)}”, “${esc(VOCAB.duty.reference)}” — these are the tool's guesses, not your labels.</b>
+      The dashed outline says so: the classification is a heuristic and it is wrong at the margins.${
+        CFG.demo ? "" : " Click one to say it got that line wrong — the note is passed to your assistant for its next turn; this page still changes nothing."}</span>`);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Screen: Try a prompt
+   ══════════════════════════════════════════════════════════════════════ */
+function screenTrace() {
+  if (state.loading) return screenHealthLoading();
+  if (state.fatal) return screenFatal(state.fatal);
+  const snap = state.snapshot;
+  const slug = state.traceSlug || CFG.slug || defaultSlug(snap);
+
+  const head = `<h1 class="page-title">What your assistant would actually be handed</h1>
+    <p class="lede">Type anything you would say to it. This runs the same lookup it runs — the real one, not a copy —
+      and shows you the result.</p>
+    <form class="search" id="traceform">
+      <input type="search" id="traceq" value="${esc(state.recall ? state.recall.q : CFG.q)}"
+        placeholder="for example: why did we drop the Postgres plan?" aria-label="A prompt to trace">
+      ${storeSelect(snap, slug, "traceslug")}
+      <button class="btn primary" type="submit">${state.recallLoading ? "Tracing…" : "Trace it"}</button>
+    </form>`;
+
+  if (state.recallError) {
+    const e = state.recallError;
+    return head + `<div class="note bad">
+        <span class="glyph" aria-hidden="true">⚠</span>
+        <span><b>The lookup failed: ${esc(e.detail || e.message)}</b>
+        Your memories are not affected — nothing was written and nothing was lost.</span>
+      </div>
+      <div class="acts">
+        <button class="btn primary" type="button" data-retrace="1">Try again</button>
+        <a class="btn" href="${esc(url(location.pathname, { view: "memories" }))}" data-view="memories">Search exact words instead</a>
+        <span class="tag">Failed at ${esc(shortTime(new Date().toISOString()))}</span>
+      </div>
+      <p class="footnote"><span>The request was <span class="id">${esc(e.target || ROUTES.RECALL)}</span>.</span></p>`;
+  }
+
+  if (state.recallLoading) {
+    return head + `<div class="card">
+        <h2 class="h2">This is what your assistant is handed</h2>
+        <p class="lede">Running the same lookup the assistant runs…</p>
+        <pre class="quote"><span class="sk line" style="width:62%"></span>
+<span class="sk line" style="width:88%;margin-top:8px"></span>
+<span class="sk line" style="width:74%;margin-top:8px"></span>
+<span class="sk line" style="width:40%;margin-top:8px"></span></pre>
+      </div>
+      <p class="footnote"><span>The panel keeps its height, so the answer appears in place instead of pushing the page down.</span></p>`;
+  }
+
+  if (!state.recall) {
+    const chips = state.examples && state.examples.length
+      ? `<div class="acts" style="flex-wrap:wrap">${state.examples.map((x) =>
+          `<button class="btn" type="button" data-example="${esc(x)}">${esc(x)}</button>`).join("")}</div>`
+      : (state.examples === null
+        ? `<p class="lede">Reading a few of your own prompts to suggest…</p>`
+        : `<p class="lede">No short prompts could be read back out of this project — type one of your own.</p>`);
+    return head + `<div class="empty" style="margin-top:24px;max-width:none">
+        <h2>Start with one of your own.</h2>
+        <p>These are real things you said, read back out of this project. Clicking one traces it.</p>
+        ${chips}
+      </div>
+      <div class="card" style="max-width:92ch">
+        <h2 class="h2">Why this screen exists</h2>
+        <p class="lede">Your assistant is handed a small, automatically chosen slice of memory per turn — the lookup asks
+        for at most 5 memories and about 280 tokens of them, out of ${n(snap.totals.records)}. When it forgets something
+        you know you told it, the reason is almost always visible here: the memory was never saved, was saved as clutter,
+        or lost the room to something else. This is also the only screen that can tell you how much actually reaches it,
+        because that depends on what you ask.</p>
+      </div>`;
+  }
+
+  const r = state.recall;
+  // `injected` is true by construction for hits parsed back out of the block
+  // (serve.js:864). A payload that also carries what was found and DROPPED marks
+  // those false; nothing is invented when it does not.
+  const all = r.hits || [];
+  const hits = all.filter((h) => h.injected !== false);
+  const dropped = all.filter((h) => h.injected === false);
+  const vecUnmeasured = r.vectorStatus !== "ok";
+
+  return head + `<div class="card">
+      <h2 class="h2">This is what your assistant is handed</h2>
+      <p class="lede">${n(hits.length)} ${plural(hits.length, "memory", "memories")}, ${n(r.injectedChars)} characters,
+        found in ${n(r.tookMs)} ms. Word for word, no paraphrase — this is the block itself.</p>
+      <pre class="quote">${esc(r.injected || "(nothing — the lookup returned an empty block)")}</pre>
+    </div>
+    ${hits.length ? `<div class="card">
+      <h2 class="h2">The ${n(hits.length)} ${plural(hits.length, "line", "lines")}, one by one</h2>
+      ${hits.some((h) => h.matchedBy)
+        ? `<p class="lede">Which half of the search found each one — the words you typed, or their meaning.</p>`
+        : `<p class="lede">Which half of the search found each one was not measured, so no line here claims to know.</p>`}
+      <div class="hits">${hits.map((h, i) => `<div class="hit">
+          <span class="n">${i + 1}</span>
+          <span class="c">${esc(h.content)}</span>
+          <span class="why">${h.matchedBy === "fts" ? "exact words" : h.matchedBy === "vector" ? "meaning" : h.matchedBy === "both" ? "both" : "—"}</span>
+        </div>`).join("")}</div>
+    </div>` : ""}
+    ${dropped.length ? `<div class="card">
+      <h2 class="h2">What was found but not handed over</h2>
+      <p class="lede">${n(dropped.length)} more matched and were dropped — this is where “why didn't it remember that?” gets answered.</p>
+      <div class="hits">${dropped.map((h, i) => `<div class="hit">
+          <span class="n">${hits.length + i + 1}</span>
+          <span class="c">${esc(h.content)}</span>
+          <span class="why">${esc(h.dropReason || "no room left")}</span>
+        </div>`).join("")}</div>
+    </div>` : `<div class="note hatched">
+      <span class="glyph" aria-hidden="true">⧅</span>
+      <span><b>What was found and then dropped is not measured.</b>
+      ${esc(sentence((r.attribution && r.attribution.reason) || "The recall path returns the finished block, not the ranking behind it"))}
+      So this screen can tell you exactly what arrived, and cannot tell you what nearly did.</span>
+    </div>`}
+    ${vecUnmeasured ? `<div class="note warn">
+      <span class="glyph" aria-hidden="true">⚠</span>
+      <span><b>This ran on exact words only.</b> ${esc(sentence(r.vectorReason || "The meaning half of the search was not available"))}
+      A memory that means the same thing in different words was not found — and would not be found for the assistant either.
+      <code class="cmd">${esc(CMD_SYNC)}</code></span>
+    </div>` : ""}
+    ${footnote(`<span>Traced ${state.samples.length === 1 ? "once" : n(state.samples.length) + " times"} in this session —
+      that is what the “reaches the assistant each turn” line on the health screen is reading.</span>`)}`;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Failure screens — an honest message naming what failed. Never a blank
+   screen, and never a silent fall back to the fixture.
+   ══════════════════════════════════════════════════════════════════════ */
+function errorBlock(err, what) {
+  return `<div class="note bad">
+      <span class="glyph" aria-hidden="true">⚠</span>
+      <span><b>${esc(what)} could not be read.</b><br>${esc(sentence(err.message || String(err)))}
+      ${err.detail ? `<br>${esc(sentence(err.detail))}` : ""}
+      <br>Nothing is shown here rather than something wrong. Your memories are not affected — this page only reads.</span>
+    </div>
+    <div class="acts"><button class="btn primary" type="button" data-reload="1">Try again</button></div>`;
+}
+
+function screenFatal(err) {
+  const target = (err && err.target) || "the API";
+  return `<h1 class="verdict sm"><span class="bad">tmem view could not read your memory folder.</span></h1>
+    <p class="verdict-sub">${esc(sentence((err && err.message) || "The request failed"))}
+      ${err && err.detail ? esc(sentence(err.detail)) : ""}</p>
+    <div class="card">
+      <h2 class="h2">What failed, exactly</h2>
+      <dl class="kv">
+        <dt>The request</dt><dd><span class="mono">${esc(target)}</span></dd>
+        <dt>What it means</dt><dd>The server behind this page did not answer with a readable snapshot.
+          Your memories are untouched — nothing on this page writes.</dd>
+        <dt>What to try</dt><dd><code class="cmd">tmem view</code>${copyBtn("tmem view", false)} in a terminal, then reload.</dd>
+      </dl>
+    </div>
+    <div class="acts">
+      <button class="btn primary" type="button" data-reload="1">Try again</button>
+      ${CFG.demo ? "" : `<a class="btn" href="${esc(url(location.pathname, { demo: 1 }))}">Open the development fixture instead</a>`}
+    </div>
+    <p class="footnote"><span>The fixture is invented data, labelled as such. It is offered here as a link you choose,
+      never as a silent substitute for your store.</span></p>`;
+}
+
+function screenNotFound(msg) {
+  return `<div class="empty"><h2>${esc(msg)}</h2>
+    <p><a class="btn" href="${esc(url(location.pathname, { view: "health" }))}" data-view="health">Back to health</a></p></div>`;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Render + routing
+   ══════════════════════════════════════════════════════════════════════ */
+function render() {
+  const app = document.getElementById("app");
+  let html;
+  try {
+    html = CFG.view === "memories" ? screenMemories()
+      : CFG.view === "about-you" ? screenAboutYou()
+      : CFG.view === "trace" ? screenTrace()
+      : CFG.view === "problem" ? screenProblem()
+      : screenHealth();
+  } catch (e) {
+    html = errorBlock({ message: "This screen could not be drawn from the snapshot.", detail: String((e && e.message) || e) }, "The screen");
+  }
+  app.innerHTML = html;
+  renderTabs();
+  document.title = "tmem view — " + ((VIEWS.find((v) => v.id === CFG.view) || { label: "a finding" }).label);
+}
+
+function go(view, params) {
+  CFG.view = view;
+  CFG.gap = (params && params.gap) || "";
+  const u = url(location.pathname, Object.assign({
+    view,
+    gap: CFG.gap,
+    theme: CFG.theme !== "auto" ? CFG.theme : "",
+    demo: CFG.demo ? 1 : "",
+    static: P.get("static") === "1" ? 1 : "",
+  }, {}));
+  history.pushState({ view, gap: CFG.gap }, "", u);
+  render();
+  window.scrollTo(0, 0);
+  document.getElementById("app").focus();
+  afterNavigate();
+}
+
+window.addEventListener("popstate", () => {
+  const p = new URLSearchParams(location.search);
+  CFG.view = VIEW_IDS.includes(p.get("view")) ? p.get("view") : "health";
+  CFG.gap = p.get("gap") || "";
+  render();
+  afterNavigate();
+});
+
+/** Screens that need their own fetch ask for it once, when first shown. */
+function afterNavigate() {
+  if (state.loading || state.fatal) return;
+  if (CFG.view === "memories" && !state.records && !state.recordsLoading && !state.recordsError) loadRecords();
+  if (CFG.view === "trace" && state.examples === null && !state.recall && !CFG.demo) loadExamples();
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Data
+   ══════════════════════════════════════════════════════════════════════ */
+async function loadRecords() {
+  const snap = state.snapshot;
+  if (!snap) return;
+  const slug = state.memSlug || defaultSlug(snap);
+  state.memSlug = slug;
+  state.recordsLoading = true; state.recordsError = null; render();
+  try {
+    if (CFG.demo) {
+      const fx = loadFixture();
+      if (!fx.records) {
+        throw apiFailure("The development fixture carries no record rows.",
+          "Run tmem view against a real store to see this screen with data.", "fixture");
+      }
+      state.records = fx.records;
+    } else {
+      state.records = await api(ROUTES.RECORDS(slug), { q: state.memQ, limit: 100 });
+    }
+  } catch (e) {
+    state.recordsError = e;
+  }
+  state.recordsLoading = false;
+  render();
+}
+
+/**
+ * Three real prompts from this store, for the trace screen's chips. Read from
+ * the store rather than invented: an example prompt nobody ever typed would be
+ * the same lie as a fabricated figure, one screen further along.
+ */
+async function loadExamples() {
+  try {
+    const slug = state.traceSlug || CFG.slug || defaultSlug(state.snapshot);
+    const page = await api(ROUTES.RECORDS(slug), { limit: 100, writePath: "auto" });
+    state.examples = (page.rows || [])
+      .filter((r) => r.chars > 12 && r.chars < 70 && !(r.lowSignal && r.lowSignal.length))
+      .slice(0, 3)
+      .map((r) => r.content.replace(/\s+/g, " ").trim());
+  } catch (e) {
+    state.examples = [];
+  }
+  if (CFG.view === "trace") render();
+}
+
+async function runTrace(q, slug) {
+  state.recallLoading = true; state.recallError = null; state.recall = null;
+  if (CFG.view !== "trace") { CFG.view = "trace"; }
+  render();
+  try {
+    const data = CFG.demo ? loadFixture().recall : await api(ROUTES.RECALL, { q, slug });
+    state.recall = data;
+    // The measurement the health screen's counterweight is waiting for.
+    if (!CFG.demo) {
+      state.samples.push({
+        q,
+        hits: (data.hits || []).filter((h) => h.injected !== false).length,
+        chars: data.injectedChars,
+        snapshotId: state.snapshot ? (state.snapshot.snapshotId || state.snapshotId) : state.snapshotId,
+        at: Date.now(),
+      });
+      saveSamples();
+    }
+  } catch (e) {
+    state.recallError = e;
+  }
+  state.recallLoading = false;
+  render();
+}
+
+/** Samples survive a reload, but only against the snapshot they were taken on. */
+function saveSamples() {
+  try { sessionStorage.setItem("tmem.samples", JSON.stringify(state.samples)); } catch (e) { /* private mode */ }
+}
+function restoreSamples() {
+  try {
+    const raw = sessionStorage.getItem("tmem.samples");
+    state.samples = raw ? (JSON.parse(raw) || []) : [];
+  } catch (e) { state.samples = []; }
+}
+
+function openChannel() {
+  if (CFG.static) { chan("static", CFG.demo ? "demo fixture — not live" : "static — no live channel"); return; }
+  if (typeof EventSource === "undefined") { chan("lost", "no EventSource in this browser"); return; }
+  let es;
+  try { es = new EventSource(url(ROUTES.EVENTS)); }
+  catch (e) { chan("lost", "live channel unavailable"); return; }
+
+  es.onopen = () => chan("live", "watching for changes");
+  es.onerror = () => chan("lost", "live channel lost — figures may be stale");
+  es.onmessage = (ev) => {
+    let msg; try { msg = JSON.parse(ev.data); } catch (_) { return; }
+    if (!msg || msg.type !== "snapshot" || !msg.snapshotId) return;
+    if (!state.snapshotId) { state.snapshotId = msg.snapshotId; return; }
+    if (msg.snapshotId !== state.snapshotId) showChangedBadge();
+  };
+}
+
+async function boot() {
+  applyTheme(CFG.theme);
+  restoreSamples();
+  render();          // the loading state, at the final heights
+
+  if (CFG.demo) {
+    const fx = loadFixture();
+    state.snapshot = fx.snapshot;
+    state.persona = fx.persona;
+    state.snapshotId = fx.snapshot.snapshotId;
+    state.records = fx.records || null;
+    state.examples = [];
+    state.loading = false;
+    if (CFG.q || CFG.view === "trace") state.recall = fx.recall;
+    chan("static", "demo fixture — not live");
+    render();
+    return;
+  }
+
+  const [snapRes, persRes] = await Promise.allSettled([api(ROUTES.SNAPSHOT), api(ROUTES.PERSONA)]);
+  state.loading = false;
+
+  if (snapRes.status === "fulfilled") {
+    state.snapshot = snapRes.value;
+    state.snapshotId = state.snapshot.snapshotId || state.snapshotId;
+    state.samples = state.samples.filter((s) => s.snapshotId === state.snapshotId);
+  } else {
+    state.fatal = snapRes.reason;
+  }
+  if (persRes.status === "fulfilled") state.persona = persRes.value;
+  else state.personaError = persRes.reason;
+
+  render();
+  openChannel();
+  if (CFG.q && state.snapshot) {
+    await runTrace(CFG.q, CFG.slug || defaultSlug(state.snapshot));
+  } else {
+    afterNavigate();
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Events — delegated, because every screen is re-rendered from scratch
+   ══════════════════════════════════════════════════════════════════════ */
+document.addEventListener("click", async (ev) => {
+  const t = ev.target;
+  if (!t || !t.closest) return;
+
+  const nav = t.closest("a[data-view]");
+  if (nav) {
+    ev.preventDefault();
+    go(nav.getAttribute("data-view"), { gap: nav.getAttribute("data-gap") || "" });
+    return;
+  }
+
+  const copy = t.closest("[data-copy]");
+  if (copy) {
+    const text = copy.getAttribute("data-copy");
+    const done = () => {
+      const old = copy.textContent;
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = old; }, 1400);
+    };
+    try { await navigator.clipboard.writeText(text); done(); }
+    catch (e) {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (_) { copy.textContent = "Press Ctrl+C"; }
+      ta.remove();
+    }
+    return;
+  }
+
+  // ── The two judgement notes. See postEvent(): these are the only interactions
+  // that leave the browser, because they are the only ones the payload cannot
+  // recompute. Both send identifiers only — never memory text or a prompt.
+  const duty = t.closest("[data-duty]");
+  if (duty) {
+    const key = `duty:${duty.getAttribute("data-duty")}`;
+    if (noteState(key)) return;
+    const ok = await postEvent({
+      kind: "duty.dispute",
+      section: duty.getAttribute("data-section"),
+      ordinal: Number(duty.getAttribute("data-ordinal")),
+      guessedDuty: duty.getAttribute("data-guess"),
+      tier: duty.getAttribute("data-tier"),
+    });
+    state.noted.set(key, ok ? "saved" : "failed");
+    render();
+    return;
+  }
+
+  const ackEl = t.closest("[data-ack]");
+  if (ackEl) {
+    const kind = ackEl.getAttribute("data-ack");
+    const key = `gap:${kind}`;
+    if (noteState(key)) return;
+    const p = (state.snapshot ? buildProblems(state.snapshot) : []).find((x) => x.kind === kind);
+    const ok = await postEvent({
+      kind: "gap.ack",
+      gapKind: kind,
+      gapId: (p && p.gaps[0] && p.gaps[0].id) || `${kind}:root`,
+      gapCount: (p && p.gaps.length) || 1,
+      severity: (p && p.sev) || null,
+    });
+    state.noted.set(key, ok ? "saved" : "failed");
+    render();
+    return;
+  }
+
+  if (t.closest("[data-reload]")) { location.reload(); return; }
+
+  const ex = t.closest("[data-example]");
+  if (ex) { runTrace(ex.getAttribute("data-example"), state.traceSlug || CFG.slug || defaultSlug(state.snapshot)); return; }
+
+  if (t.closest("[data-retrace]")) {
+    const field = document.getElementById("traceq");
+    const q = (state.recall && state.recall.q) || (field && field.value.trim()) || CFG.q;
+    if (q) runTrace(q, state.traceSlug || defaultSlug(state.snapshot));
+    return;
+  }
+
+  if (t.closest("[data-clearq]")) { state.memQ = ""; state.records = null; loadRecords(); return; }
+
+  if (t.closest("[data-shorten]")) {
+    const el = document.getElementById("shorten");
+    if (el) { el.scrollIntoView({ block: "center" }); const b = el.querySelector(".btn"); if (b) b.focus(); }
+    return;
+  }
+
+  const exp = t.closest("[data-expand]");
+  if (exp) { state.expanded.add(exp.getAttribute("data-expand")); render(); return; }
+  const col = t.closest("[data-collapse]");
+  if (col) { state.expanded.delete(col.getAttribute("data-collapse")); render(); return; }
+
+  if (t.id === "theme-toggle") {
+    applyTheme({ auto: "light", light: "dark", dark: "auto" }[CFG.theme] || "auto");
+  }
+});
+
+document.addEventListener("submit", (ev) => {
+  const f = ev.target;
+  if (f.id === "memform") {
+    ev.preventDefault();
+    state.memQ = document.getElementById("memq").value.trim();
+    state.memSlug = document.getElementById("memslug").value;
+    state.records = null;
+    loadRecords();
+    return;
+  }
+  if (f.id === "traceform") {
+    ev.preventDefault();
+    const q = document.getElementById("traceq").value.trim();
+    state.traceSlug = document.getElementById("traceslug").value;
+    if (q) runTrace(q, state.traceSlug);
+  }
+});
+
+document.addEventListener("change", (ev) => {
+  const t = ev.target;
+  if (t.id === "hideclutter") { state.hideClutter = t.checked; render(); return; }
+  if (t.id === "memslug") { state.memSlug = t.value; state.records = null; loadRecords(); return; }
+  if (t.id === "traceslug") { state.traceSlug = t.value; }
+});
+
+boot().catch((e) => {
+  state.loading = false;
+  state.fatal = e;
+  render();
+});
+</script>
+</body>
+</html>

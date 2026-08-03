@@ -10,7 +10,7 @@ const { addSubject, loadConfig } = require("../scripts/contrib_config.js");
 test("deterministic pipeline: config -> atoms -> personas -> L4", () => {
   const gDir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-"));
   addSubject(gDir, { github_user: "mitchellh", repo: "ghostty-org/ghostty" });
-  addSubject(gDir, { github_user: "baodq97", repo: "baodq97/govkit" });
+  addSubject(gDir, { github_user: "devaster", repo: "devaster/orchard-api" });
   const cfg = loadConfig(gDir);
   assert.strictEqual(cfg.subjects.length, 2);
 
