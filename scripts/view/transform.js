@@ -92,7 +92,7 @@ const {
 // summary cut and the header/footer literals were hand-copied here, with nothing
 // forcing the copy to keep step with the block the agent actually receives.
 const {
-  renderSceneNav, NAV, heatEmoji: navHeatEmoji, CHARS_PER_TOKEN: NAV_CHARS_PER_TOKEN,
+  renderSceneNav, byHeatDesc, NAV, heatEmoji: navHeatEmoji, CHARS_PER_TOKEN: NAV_CHARS_PER_TOKEN,
 } = require("../scene_nav.js");
 
 /* ------------------------------------------------------------------ *
@@ -383,11 +383,12 @@ const SCENE_NAV = Object.freeze({
  * followed by the global store's, into ONE budget. So there is no such thing as
  * a corpus-wide "how many of the 219 scenes are visible": the 219 live in 19
  * different projects, each with its own block, and no session ever renders more
- * than one of them. Summing per-store counts (what `totals.scenesVisibleInNav`
- * does) answers "across every project, how many written scenes are reachable at
- * all"; it is NOT the size of any single block, which is ~5 lines at the default
- * 800-char budget because a rendered line runs ~130 chars (a real summary
- * averages 164 and the renderer cuts it to {@link NAV.SUMMARY_MAX_CHARS}).
+ * than one of them. Summing per-store counts (what
+ * `totals.scenesReachableInSomeNav` does) answers "across every project, how many
+ * written scenes are reachable at all"; it is NOT the size of any single block,
+ * which is ~5 lines at the default 800-char budget because a rendered line runs
+ * ~130 chars (a real summary averages 164 and the renderer cuts it to
+ * {@link NAV.SUMMARY_MAX_CHARS}).
  * Reading the sum as one block's contents is how "78 of 219 visible" and "5 of
  * 219 visible" get mistaken for the same measurement.
  *
@@ -417,7 +418,11 @@ const SCENE_NAV = Object.freeze({
  *
  * @param {import("./contract.js").SceneFile[]} scenes
  * @param {number|null} budgetChars null/0 => nav disabled, nothing is visible
- * @param {{scope?: string}} [opts] {@link SCOPE} of the owning store.
+ * @param {{scope?: string}} [opts] {@link SCOPE} of the owning store. Defaults to
+ *   `project` — the case that IS measurable — so a caller with no StoreRef in hand
+ *   gets the exact figure rather than an unmeasured one it did not ask for. This
+ *   is the only place that default is declared; `summariseScenes` forwards
+ *   whatever it was given, including `undefined`.
  * @returns {{status: string, reason: string|null, visible: number|null,
  *            invisible: number|null, usedChars: number|null, budgetChars: number|null}}
  */
@@ -441,7 +446,11 @@ function sceneNavVisibility(scenes, budgetChars, { scope = SCOPE.PROJECT } = {})
     };
   }
 
-  const ordered = list.slice().sort((a, b) => (Number(b.heat) || 0) - (Number(a.heat) || 0));
+  // The same ordering function buildSceneNav hands to rankScenes — not a second
+  // spelling of it. rankScenes is an exact no-op for an empty query, so this
+  // order IS the rendered order, and a count taken over a differently-sorted list
+  // would be a count of a block nobody sees.
+  const ordered = byHeatDesc(list);
   // The SceneFile shape is already the renderer's normalised shape (`name` with no
   // `.md`), so this hands over the fields explicitly rather than the whole record:
   // the core must not start depending on anything only the view happens to carry.
@@ -713,14 +722,15 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
  * them. Nothing else needed the record-side scene names, so summariseStore no
  * longer collects them.
  *
- * `scope` is passed down because nav visibility is only measurable for a project
- * store — see {@link sceneNavVisibility}. It defaults to `project`, the case that
- * IS measurable, so a caller with no ref in hand gets the exact figure rather
- * than an unmeasured one it did not ask for.
+ * `scope` is passed straight down because nav visibility is only measurable for a
+ * project store — see {@link sceneNavVisibility}, which owns both the meaning of
+ * the parameter and its default. Declaring the same default here too would be two
+ * statements of one rule on one call chain, and both real callers pass `ref.scope`
+ * anyway, so this one never fired.
  *
  * @param {import("./contract.js").ScenesRead} sr
  */
-function summariseScenes(sr, { now, navBudgetChars, scope = SCOPE.PROJECT }) {
+function summariseScenes(sr, { now, navBudgetChars, scope }) {
   if (!sr || sr.status !== STATUS.OK || !Array.isArray(sr.scenes)) return null;
 
   const scenes = sr.scenes;
@@ -1482,9 +1492,12 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
   let scenes = 0, sizeBytes = 0;
   let readableStores = 0, erroredStores = 0;
   let lowSignalUnion = 0;
-  let scenesVisibleInNav = 0, scenesInvisibleInNav = 0, staleHot = 0;
+  let scenesReachableInSomeNav = 0, scenesUnreachableInEveryNav = 0, staleHot = 0;
   let scenesNavUnmeasured = 0;
-  const scenesNavUnmeasuredReasons = new Set();
+  // One string, not a set: every unmeasured store's reason comes out of the same
+  // template with the same root-level budget in it, so the copies were identical
+  // by construction. Contract §6 (Totals.scenesNavUnmeasuredReason).
+  let scenesNavUnmeasuredReason = null;
   let observedMinHeat = null, observedMaxHeat = null;
 
   const covEntries = [];
@@ -1567,11 +1580,13 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
       // rule Coverage applies to records, for the same reason: an upper bound
       // added to a sum is indistinguishable from a measurement afterwards.
       if (s.scenes.navStatus === STATUS.OK) {
-        scenesVisibleInNav += s.scenes.visibleInNav;
-        scenesInvisibleInNav += s.scenes.invisibleInNav;
+        scenesReachableInSomeNav += s.scenes.visibleInNav;
+        scenesUnreachableInEveryNav += s.scenes.invisibleInNav;
       } else {
         scenesNavUnmeasured += s.scenes.count;
-        if (s.scenes.navReason) scenesNavUnmeasuredReasons.add(s.scenes.navReason);
+        if (s.scenes.navReason && scenesNavUnmeasuredReason === null) {
+          scenesNavUnmeasuredReason = s.scenes.navReason;
+        }
       }
       staleHot += s.scenes.staleHot;
       for (const k of Object.keys(heatBuckets)) heatBuckets[k] += s.scenes.heatBuckets[k];
@@ -1664,13 +1679,13 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     heat: { values: heatValues, buckets: heatBuckets, observedMin: heat.observedMin, observedMax: heat.observedMax, scenesWithACue: heat.scenesWithACue },
     // Summed over the PER-PROJECT nav blocks, not over one block: each project
     // renders its own `<scene-navigation>` and no session ever sees two of them.
-    // See sceneNavVisibility() — misreading this sum as the size of a single
-    // block is what turns "77 of 219 reachable somewhere" into a false claim that
-    // one block shows 77 lines (it shows about five).
-    scenesVisibleInNav,
-    scenesInvisibleInNav,
+    // See sceneNavVisibility(). The quantifiers are in the names because the
+    // docstring version of this warning did not stop "77 reachable somewhere"
+    // being rendered as "one block shows 77 lines" (it shows about five).
+    scenesReachableInSomeNav,
+    scenesUnreachableInEveryNav,
     scenesNavUnmeasured,
-    scenesNavUnmeasuredReasons: [...scenesNavUnmeasuredReasons],
+    scenesNavUnmeasuredReason,
     navBudgetChars,
     gapsBySeverity,
     unmeasuredGaps,
@@ -1797,12 +1812,13 @@ function main() {
   console.log(`heat buckets    ${JSON.stringify(t.heat.buckets)}`);
   console.log(`                observed ${t.heat.observedMin}-${t.heat.observedMax}, reader flames at ` +
     `${HEAT_SCALE.READER_FIRST_FLAME_AT} => ${t.heat.scenesWithACue} scenes ever rendered a flame`);
-  console.log(`scene nav       ${t.scenesVisibleInNav} visible / ${t.scenesInvisibleInNav} invisible ` +
+  console.log(`scene nav       ${t.scenesReachableInSomeNav} reachable in some project's nav / ` +
+    `${t.scenesUnreachableInEveryNav} reachable in none ` +
     `(budget ${t.navBudgetChars} chars, summed over ${t.scenes ? "per-project blocks" : "no blocks"} — ` +
     "one block holds ~5 lines)");
   if (t.scenesNavUnmeasured > 0) {
     console.log(`                ${t.scenesNavUnmeasured} scenes excluded as unmeasurable: ` +
-      t.scenesNavUnmeasuredReasons.join("; "));
+      t.scenesNavUnmeasuredReason);
   }
   console.log("");
   const pj = snap.persona.projection;

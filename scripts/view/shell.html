@@ -539,8 +539,8 @@ button.claim:hover { border-color: var(--c-primary); color: var(--c-foreground);
 <script id="fixture" type="application/json">
 {
  "snapshot": {
-  "schemaVersion": 2,
-  "snapshotId": "s2-4a91c0be7f2d1e83",
+  "schemaVersion": 3,
+  "snapshotId": "s3-4a91c0be7f2d1e83",
   "generatedAt": "2026-08-03T09:41:02.117Z",
   "rootDir": "~/.memory-tencentdb",
   "totals": {
@@ -666,8 +666,10 @@ button.claim:hover { border-color: var(--c-primary); color: var(--c-foreground);
     "observedMax": 5,
     "scenesWithACue": 0
    },
-   "scenesVisibleInNav": 26,
-   "scenesInvisibleInNav": 113,
+   "scenesReachableInSomeNav": 26,
+   "scenesUnreachableInEveryNav": 113,
+   "scenesNavUnmeasured": 0,
+   "scenesNavUnmeasuredReason": null,
    "navBudgetChars": 800,
    "gapsBySeverity": {
     "info": 0,
@@ -859,6 +861,8 @@ button.claim:hover { border-color: var(--c-primary); color: var(--c-foreground);
       "5": 39
      },
      "staleHot": 0,
+     "navStatus": "ok",
+     "navReason": null,
      "visibleInNav": 5,
      "invisibleInNav": 70,
      "navBudgetChars": 800,
@@ -965,6 +969,8 @@ button.claim:hover { border-color: var(--c-primary); color: var(--c-foreground);
       "5": 20
      },
      "staleHot": 0,
+     "navStatus": "ok",
+     "navReason": null,
      "visibleInNav": 6,
      "invisibleInNav": 19,
      "navBudgetChars": 800,
@@ -1071,6 +1077,8 @@ button.claim:hover { border-color: var(--c-primary); color: var(--c-foreground);
       "5": 6
      },
      "staleHot": 0,
+     "navStatus": "ok",
+     "navReason": null,
      "visibleInNav": 5,
      "invisibleInNav": 11,
      "navBudgetChars": 800,
@@ -1175,6 +1183,8 @@ button.claim:hover { border-color: var(--c-primary); color: var(--c-foreground);
       "5": 9
      },
      "staleHot": 0,
+     "navStatus": "ok",
+     "navReason": null,
      "visibleInNav": 5,
      "invisibleInNav": 6,
      "navBudgetChars": 800,
@@ -1297,6 +1307,8 @@ button.claim:hover { border-color: var(--c-primary); color: var(--c-foreground);
       "5": 7
      },
      "staleHot": 0,
+     "navStatus": "ok",
+     "navReason": null,
      "visibleInNav": 5,
      "invisibleInNav": 7,
      "navBudgetChars": 800,
@@ -2878,11 +2890,15 @@ const PROBLEMS = {
     impact: (g) => g.evidence.invisibleInNav,
     build(gs, snap) {
       const t = snap.totals;
-      const hidden = typeof t.scenesInvisibleInNav === "number"
-        ? t.scenesInvisibleInNav : sum(gs, (g) => g.evidence.invisibleInNav);
+      const hidden = typeof t.scenesUnreachableInEveryNav === "number"
+        ? t.scenesUnreachableInEveryNav : sum(gs, (g) => g.evidence.invisibleInNav);
       return {
-        headline: `${n(hidden)} of your ${n(t.scenes)} topic summaries are never offered to the assistant.`,
-        why: `The list of topics it is shown is capped at ${n(t.navBudgetChars)} characters, so everything past the cap is written and then never mentioned.`,
+        headline: `${n(hidden)} of your ${n(t.scenes)} topic summaries are in no project's list.`,
+        // NOT "never offered this turn". Each project gets its own list and a turn
+        // renders exactly one of them, so far more than `hidden` goes unmentioned on
+        // any given turn; what `hidden` counts is summaries that fall past the end
+        // of their OWN project's list, and so are offered nowhere, ever.
+        why: `Every project shows the assistant its own list, capped at ${n(t.navBudgetChars)} characters — about five topics — and these fall past the end of it, in the one project they belong to.`,
         cmd: gs[0].suggestion || null,
       };
     },
@@ -3148,14 +3164,31 @@ function renderPerTurn(snap) {
 function tiles(snap) {
   const t = snap.totals;
   const proj = (state.persona && state.persona.projection) || (snap.persona && snap.persona.projection) || null;
-  const invisible = t.scenesInvisibleInNav;
+  // The store-wide number and the number a turn actually experiences are different
+  // measurements, and the old copy quoted the first as if it were the second ("N
+  // never offered to it — the list it sees is capped at 800 characters"), which
+  // reads as one 800-char list holding every summary. There is no such list: every
+  // project renders its own, and a session renders exactly one. So the sum gets the
+  // quantifier that makes it true ("in no project"), and the exact per-block figure
+  // — which is what a reader is really asking for — is shown beside it, named,
+  // from the largest project whose block WAS measurable.
+  const unreachable = t.scenesUnreachableInEveryNav;
+  const biggestBlock = (snap.stores || [])
+    // `visibleInNav` is null unless the split was measured (contract §4), so this
+    // is the same test as `navStatus === "ok"` without depending on a field an
+    // older payload may predate.
+    .filter((s) => s.scenes && typeof s.scenes.visibleInNav === "number" && s.scenes.count > 0)
+    .sort((a, b) => b.scenes.count - a.scenes.count)[0] || null;
+  const here = biggestBlock
+    ? ` In ${esc(biggestBlock.label)}, your largest, it is shown ${n(biggestBlock.scenes.visibleInNav)} of ${n(biggestBlock.scenes.count)}.`
+    : "";
   const sceneGap = t.scenes === 0
     ? "Summaries are written once there is enough to summarise."
-    : (typeof invisible === "number"
-      ? (invisible > 0
-        ? `<b>${n(invisible)} ${plural(invisible, "is", "are")} never offered</b> to it — the list it sees is capped at ${n(t.navBudgetChars)} characters.`
-        : `<b>All ${n(t.scenes)} are offered</b> to the assistant.`)
-      : "How many are offered to the assistant was not measured.");
+    : (typeof unreachable === "number"
+      ? (unreachable > 0
+        ? `<b>${n(unreachable)} ${plural(unreachable, "is", "are")} in no project's list</b> — each project shows its own, capped at ${n(t.navBudgetChars)} characters.${here}`
+        : `<b>All ${n(t.scenes)} are in their own project's list.</b>${here}`)
+      : "Whether they reach their project's list was not measured.");
   const personaGap = !proj
     ? "Nothing has been written about you yet."
     : `<b>${n(proj.byTier.sessionStart)} arrive each session</b>; ${n(proj.byTier.never)} never reach it.`;

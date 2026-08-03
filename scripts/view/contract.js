@@ -31,8 +31,17 @@
  *
  * Nothing here does I/O. Nothing here computes a metric. It declares types,
  * names, thresholds and a handful of constructors/validators — the vocabulary.
+ *
+ * The one import: `scripts/constants.js`, a true leaf that requires nothing.
+ * Two of the values declared below — the low-signal class list and its
+ * thresholds — are also read by the Stop hook's capture path, which cannot
+ * afford to load this file to get them. Their VALUES live in the leaf and are
+ * re-exported here unchanged, so this module stays the place their meaning is
+ * documented and every existing `require("./contract.js")` keeps working.
  */
 "use strict";
+
+const { LOW_SIGNAL, LOW_SIGNAL_CLASSES } = require("../constants.js");
 
 /**
  * Version of the *meaning* of everything in this file, not just its shape.
@@ -49,8 +58,16 @@
  *   2 — HEAT_SCALE.READER_FIRST_FLAME_AT 50 -> 4; gap kinds SCENE_ORPHANED and
  *       SCENE_DANGLING removed; SceneStats gained navStatus/navReason (`global`
  *       is `unmeasured`, not zero); Totals gained fields.
+ *   3 — Totals.scenesVisibleInNav / scenesInvisibleInNav renamed to
+ *       scenesReachableInSomeNav / scenesUnreachableInEveryNav. The old names
+ *       read as "visible in THE nav block" and were duly rendered as one block's
+ *       contents in the UI, which the sum is not; the quantifier now lives in the
+ *       name instead of in a docstring nobody reads at the call site.
+ *       Totals.scenesNavUnmeasuredReasons (string[]) became
+ *       scenesNavUnmeasuredReason (string|null): the array was a de-duplicated
+ *       set of copies of one constant.
  */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 /* ------------------------------------------------------------------ *
  * 1. Status + Source
@@ -259,10 +276,11 @@ const QUANTILES = Object.freeze(["min", "p50", "p75", "p90", "p95", "p99", "max"
  *     exactly why `continuation` requires BOTH a length bound AND an assent-token
  *     opener — shortness on its own was evaluated during the audit and rejected as
  *     a signal. Do not reintroduce it as a bare length threshold.
+ *
+ * The list itself is declared in `scripts/constants.js` and re-exported from
+ * here: the write-side gate reads it on every captured turn and must not pay for
+ * this file to do so. The reasoning above is the reason it stays documented here.
  */
-const LOW_SIGNAL_CLASSES = Object.freeze([
-  "taskNotification", "skillEcho", "slashOrTag", "continuation", "pasteDump", "empty",
-]);
 
 /**
  * The subset of {@link LOW_SIGNAL_CLASSES} whose union is the headline
@@ -335,29 +353,12 @@ function validateLowSignalUnion(unionClasses, ratio = null) {
 }
 
 /**
- * Classifier thresholds and prefixes. Shared verbatim by transform.js (which
- * classifies) and the UI legend (which explains), so the two cannot drift.
- *
- * `PASTE_DUMP_MIN_CHARS` is 495, not 500: `truncate()` does
- * `slice(0, 500).trimEnd() + "..."`, so a capped record lands a few chars either
- * side of the ceiling depending on trailing whitespace. 495 catches the band
- * without reaching down into genuinely long-but-complete records.
- *
- * There is deliberately no bare minimum-length constant here. `CONTINUATION_MAX_CHARS`
- * is a bound on an assent token, not a quality threshold, and it is only ever valid
- * in conjunction with `CONTINUATION_OPENERS` — see the `tooShort` rejection above.
+ * Classifier thresholds and prefixes ({@link LOW_SIGNAL}) are likewise declared in
+ * `scripts/constants.js` and re-exported here, for the same reason and with the
+ * same effect: shared verbatim by the classifier (`low_signal.js`, which
+ * transform.js re-exports) and the UI legend, so the two cannot drift. The
+ * derivation of `PASTE_DUMP_MIN_CHARS = 495` is documented beside the value.
  */
-const LOW_SIGNAL = Object.freeze({
-  CONTINUATION_MAX_CHARS: 60,
-  PASTE_DUMP_MIN_CHARS: 495,
-  TASK_NOTIFICATION_PREFIX: "<task-notification>",
-  SKILL_ECHO_PREFIX: "base directory for this skill:",
-  SLASH_OR_TAG_PREFIXES: Object.freeze(["/", "<"]),
-  CONTINUATION_OPENERS: Object.freeze([
-    "ok", "okay", "oke", "yes", "y", "yep", "sure", "go", "go ahead", "continue",
-    "next", "tiếp", "tiep", "tiếp tục", "ừ", "u", "đồng ý", "dong y", "được", "duoc",
-  ]),
-});
 
 /**
  * Duplicate detection tiers. `exact` compares trimmed content verbatim;
@@ -1024,24 +1025,37 @@ function validateCoverage(cov, label = "coverage") {
  *   drift verdict against {@link LOW_SIGNAL_BASELINE}. Declared because a consumer
  *   that cannot find this field renders "not measured" over a number that WAS
  *   measured — the original blending bug inverted, and just as wrong.
- * @property {number} scenesVisibleInNav    Scenes that fit inside the scene-nav
- *   budget, SUMMED OVER THE PER-PROJECT NAV BLOCKS — one block per project store,
- *   each budgeted independently, and no session ever renders more than one of
- *   them. It answers "across every project, how many written scenes are reachable
- *   at all"; it is NOT the number of lines in any single block. A single block
- *   holds about five (a rendered line is ~130 chars against an 800-char budget),
- *   so quoting this sum as one block's contents overstates what any turn receives
- *   by the number of projects. Measured stores only — see `scenesNavUnmeasured`.
- * @property {number} scenesInvisibleInNav  Scenes written but never rendered into
- *   their project's nav block. Sits beside `scenes` deliberately: a scene count
- *   with no visibility count is the "5,496 records" screen this whole view exists
- *   to refuse.
+ * @property {number} scenesReachableInSomeNav  Scenes that fit inside the nav
+ *   block of the project they live in — SUMMED OVER THE PER-PROJECT NAV BLOCKS,
+ *   one block per project store, each budgeted independently, and no session ever
+ *   renders more than one of them. Hence the quantifier in the name: this answers
+ *   "across every project, how many written scenes are reachable at all", and it
+ *   is NOT the number of lines in any single block. A single block holds about
+ *   five (a rendered line is ~130 chars against an 800-char budget), so quoting
+ *   this sum as one block's contents overstates what any turn receives by roughly
+ *   the number of projects. Per-block figures are exact and live on
+ *   {@link SceneStats}.visibleInNav. Measured stores only — see
+ *   `scenesNavUnmeasured`.
+ * @property {number} scenesUnreachableInEveryNav  Scenes written but never
+ *   rendered into their own project's nav block — and a scene lives in exactly one
+ *   store, so a scene counted here is offered in NO project, ever. Not "withheld
+ *   this turn": every turn withholds far more than this, because it renders only
+ *   one project's block. Sits beside `scenes` deliberately: a scene count with no
+ *   reachability count is the "5,496 records" screen this whole view exists to
+ *   refuse.
  * @property {number} scenesNavUnmeasured   Scenes living in stores whose nav
  *   visibility could not be measured (today: `global`, whose scenes render behind
  *   whichever project is active). NOT in either count above and never folded into
  *   one, exactly as {@link Coverage}.unmeasuredRecords is not folded into a ratio.
- * @property {string[]} scenesNavUnmeasuredReasons  Deduped, so the caveat can be
- *   rendered rather than inferred.
+ * @property {string|null} scenesNavUnmeasuredReason  Why, when
+ *   `scenesNavUnmeasured > 0`; `null` otherwise. Singular, and deliberately not a
+ *   list: the reason is generated at one site ({@link SceneStats}.navReason, from
+ *   `transform.sceneNavVisibility`) out of one template whose only variable is the
+ *   root-level nav budget, which every store in a pass shares. A Set of it could
+ *   only ever hold one string, so the plural field, the de-duplication and the
+ *   `join("; ")` in every consumer were machinery for a case that cannot arise.
+ *   If a second reason is ever generated, this becomes a list again — and that is
+ *   a schema bump, which is the point of it being singular now.
  * @property {Object<string, number>} gapsBySeverity   Excludes unmeasured gaps.
  * @property {number} unmeasuredGaps                   Counted separately, on purpose.
  */
@@ -1093,10 +1107,10 @@ function validateCoverage(cov, label = "coverage") {
  *   3. Append `persona\t${personaBytes|"NA"}\t${personaMtime|""}`.
  *   4. Join with `\n`, prefix `v${SCHEMA_VERSION}\n`, and take
  *        sha256(utf8) -> hex -> first 16 chars.
- *   5. Format: `s<SCHEMA_VERSION>-<16 hex>` — currently `s2-<16 hex>`.
+ *   5. Format: `s<SCHEMA_VERSION>-<16 hex>` — currently `s3-<16 hex>`.
  *      The version is inside the id on purpose: two runs over identical state
  *      but different contract semantics MUST NOT share an id, and a file named
- *      `snapshot-s1-*.json` is self-evidently pre-v2.
+ *      `snapshot-s2-*.json` is self-evidently pre-v3.
  *
  * Deliberately cheap: no content hashing, so it is O(stores) not O(records).
  * It answers "is this the same state I exported?", not "is every byte identical".

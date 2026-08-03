@@ -15,27 +15,22 @@
  * dashboard names a class of junk the writer quietly keeps admitting, or the
  * writer drops records the lens never counted and nobody can audit the loss.
  *
- * Hence: predicates here, thresholds in `view/contract.js` (which they were
- * already read from), and nothing else. This module is PURE and REQUIRE-LIGHT
- * on purpose — `contract.js` has zero requires and loads in ~1.5 ms — because
- * the Stop hook pays this cost on every single turn.
+ * Hence: predicates here, thresholds in `constants.js`, and nothing else. This
+ * module is PURE and REQUIRE-LIGHT on purpose — the Stop hook pays this cost on
+ * every single turn, so it reads the two values from the leaf rather than from
+ * `view/contract.js`, which re-exports them but costs ~1.2 ms of module load to
+ * do it.
  *
- * Requiring `view/transform.js` instead (which also exports `classifyLowSignal`)
- * was tried and rejected: it drags in persona_projection, scene_nav and a
- * load-time assertion that THROWS when the heat ladder and the contract
- * disagree. That assertion fired during development, which would have taken the
- * whole capture path down with it — a lens invariant must never be able to stop
- * the writer.
- *
- * DRIFT. `transform.js` still carries a byte-identical copy of these predicates;
- * that file is under concurrent edit and could not be touched in this change.
- * `test/noise_gate.test.js` pins the two implementations equal over a battery of
- * inputs, so the copy cannot drift silently, and the follow-up is one line: have
- * transform.js `require("../low_signal.js")` and delete its copy.
+ * Requiring `view/transform.js` instead (which also exports `classifyLowSignal`,
+ * by re-exporting THIS module) was tried and rejected: it drags in
+ * persona_projection, scene_nav and a load-time assertion that THROWS when the
+ * heat ladder and the contract disagree. That assertion fired during
+ * development, which would have taken the whole capture path down with it — a
+ * lens invariant must never be able to stop the writer.
  */
 "use strict";
 
-const { LOW_SIGNAL, LOW_SIGNAL_CLASSES } = require("./view/contract.js");
+const { LOW_SIGNAL, LOW_SIGNAL_CLASSES } = require("./constants.js");
 
 const ESCAPE_RE = /[.*+?^${}()|[\]\\]/g;
 const escapeRe = (s) => String(s).replace(ESCAPE_RE, "\\$&");
@@ -142,7 +137,7 @@ function assertGateClassesAreReal() {
   const unknown = NOISE_GATE_CLASSES.filter((c) => !LOW_SIGNAL_CLASSES.includes(c));
   if (unknown.length) {
     throw new RangeError(
-      `low_signal.js: gate class(es) ${unknown.join(", ")} are not in contract.LOW_SIGNAL_CLASSES — ` +
+      `low_signal.js: gate class(es) ${unknown.join(", ")} are not in LOW_SIGNAL_CLASSES — ` +
       "the write-side gate would match nothing and the noise would return silently",
     );
   }

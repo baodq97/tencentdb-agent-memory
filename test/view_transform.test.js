@@ -176,17 +176,73 @@ test("purity: importing and running transform loads no I/O module", () => {
 // Schema version — the id must say which rules produced it
 // ───────────────────────────────────────────────────────────────────────────
 
-test("schema version: every snapshot id carries it, so a pre-bump file is self-identifying", () => {
-  // Pinned deliberately. This branch moved READER_FIRST_FLAME_AT 50 -> 4, dropped
-  // the SCENE_ORPHANED/SCENE_DANGLING gap kinds and grew SceneStats/Totals — all
-  // changes of *meaning*, which is what this number tracks. Anyone changing the
-  // contract's semantics again should have to change this line too.
-  assert.equal(C.SCHEMA_VERSION, 2);
-  assert.equal(C.SNAPSHOT_ID_SPEC.prefix, `s${C.SCHEMA_VERSION}-`);
+// A literal `assert.equal(C.SCHEMA_VERSION, 2)` used to stand here. It could only
+// fail when someone CHANGED the version — never when someone changed the meaning
+// and forgot to — so it re-encoded the manual discipline it was supposed to
+// replace. What follows pins the contract's exported VALUES instead: rename a
+// field, move a threshold, add or retire a gap kind, and the digest moves, whether
+// or not the author remembered the version. SCHEMA_VERSION is itself one of those
+// values, so the intended fix (bump it, re-pin this line) is also the only thing
+// that makes the test green again.
+//
+// Values, not source text: functions are dropped and only data is hashed, so
+// editing a comment — or a function body, which the rest of this file tests
+// behaviourally — does not trip it.
+const CONTRACT_DIGEST = "d82451af00bbd12d";
 
-  // The retired kinds really are gone — the bump above is not cosmetic.
-  assert.equal(Object.values(C.GAP_KIND).includes("scene_orphaned"), false);
-  assert.equal(Object.values(C.GAP_KIND).includes("scene_dangling"), false);
+/** Stable serialisation of the contract's data exports. */
+function canonicaliseContract(value) {
+  const enc = (v) => {
+    if (v === null) return "null";
+    if (Array.isArray(v)) return `[${v.map(enc).join(",")}]`;
+    if (v instanceof RegExp) return `re(${v.source}|${v.flags})`;
+    switch (typeof v) {
+      // String(), not JSON: Infinity is a real value in HEAT_BUCKETS and
+      // JSON.stringify silently turns it into null — the kind of collapse that
+      // would let a threshold move without moving the digest.
+      case "number": return `n(${String(v)})`;
+      case "string": return `s(${v})`;
+      case "boolean": return `b(${v})`;
+      case "undefined": return "undef";
+      case "function": return null; // behaviour is pinned by the tests, not the hash
+      default: {
+        const parts = [];
+        for (const k of Object.keys(v).sort()) {
+          const e = enc(v[k]);
+          if (e !== null) parts.push(`${k}=${e}`);
+        }
+        return `{${parts.join(",")}}`;
+      }
+    }
+  };
+  return enc(value);
+}
+
+const contractDigest = (exports_) => require("node:crypto")
+  .createHash("sha256").update(canonicaliseContract(exports_), "utf8").digest("hex").slice(0, 16);
+
+test("contract: the exported semantics are pinned by a digest, not by remembering to bump", () => {
+  const digest = contractDigest(C);
+
+  assert.equal(
+    digest, CONTRACT_DIGEST,
+    "contract semantics changed: bump SCHEMA_VERSION and update this digest " +
+    `(CONTRACT_DIGEST = "${digest}")`,
+  );
+
+  // Values, not source text. Rewriting a function body — or the comments around
+  // it, which are 70% of that file and explain rather than declare — must not
+  // trip the pin; only the declared data may.
+  assert.equal(contractDigest({ ...C, gap: () => "rewritten" }), digest);
+  assert.notEqual(contractDigest({ ...C, SCHEMA_VERSION: C.SCHEMA_VERSION + 1 }), digest);
+  assert.notEqual(contractDigest({ ...C, HEAT_SCALE: { ...C.HEAT_SCALE, READER_FIRST_FLAME_AT: 50 } }), digest);
+  assert.notEqual(contractDigest({ ...C, GAP_KIND: { ...C.GAP_KIND, scene_orphaned: "scene_orphaned" } }), digest);
+  // The retired scene-join kinds are pinned by their own test below; here they
+  // only demonstrate that re-adding one would move this number.
+});
+
+test("schema version: every snapshot id carries it, so a pre-bump file is self-identifying", () => {
+  assert.equal(C.SNAPSHOT_ID_SPEC.prefix, `s${C.SCHEMA_VERSION}-`);
 
   const snap = T.transformRoot(rootExtract([
     storeExtract("global", { records: [rec("m_1")], vectors: ["m_1"], scenes: [scene("alpha")] }),
@@ -388,7 +444,23 @@ test("classifyLowSignal: transform re-exports low_signal.js, it does not re-impl
     /require\(["'](node:)?http["']\)/, /require\(["'](node:)?child_process["']\)/]) {
     assert.equal(re.test(src), false, `low_signal.js gained a ${re} and would break transform's purity`);
   }
-  assert.ok(/require\(["']\.\/view\/contract\.js["']\)/.test(src));
+  // It reads its thresholds from the LEAF, not from the contract: the Stop hook
+  // pays this require on every captured turn, and contract.js costs ~1.2 ms of
+  // module load to hand over two frozen objects it re-exports from constants.js.
+  assert.ok(/require\(["']\.\/constants\.js["']\)/.test(src),
+    "low_signal.js must read its thresholds from the leaf, not by loading the contract");
+  assert.equal(/require\(["']\.\/view\/contract\.js["']\)/.test(src), false,
+    "low_signal.js pulled contract.js back onto the capture path");
+
+  // The leaf is only cheap while it stays a leaf.
+  const leaf = fs.readFileSync(path.join(__dirname, "..", "scripts", "constants.js"), "utf-8");
+  assert.equal(/(^|[^.\w])require\s*\(/.test(leaf), false, "constants.js gained a require and stopped being a leaf");
+
+  // And the values it hands out are the ones the contract publishes — a
+  // re-export, so a consumer of either sees the same objects.
+  const constants = require("../scripts/constants.js");
+  assert.equal(constants.LOW_SIGNAL, C.LOW_SIGNAL);
+  assert.equal(constants.LOW_SIGNAL_CLASSES, C.LOW_SIGNAL_CLASSES);
 });
 
 test("classifyLowSignal: crafted records land in the intended classes", () => {
@@ -665,9 +737,10 @@ test("scenes: written-but-invisible is a finding", () => {
 
   // The totals sum PER-PROJECT blocks. With one project it is that project's
   // block; with several it is a reachability count, never one block's line count.
-  assert.equal(snap.totals.scenesVisibleInNav, s.scenes.visibleInNav);
-  assert.equal(snap.totals.scenesInvisibleInNav, s.scenes.invisibleInNav);
+  assert.equal(snap.totals.scenesReachableInSomeNav, s.scenes.visibleInNav);
+  assert.equal(snap.totals.scenesUnreachableInEveryNav, s.scenes.invisibleInNav);
   assert.equal(snap.totals.scenesNavUnmeasured, 0);
+  assert.equal(snap.totals.scenesNavUnmeasuredReason, null, "nothing went unmeasured, so there is no reason to give");
 });
 
 test("scenes: the totals are a sum over per-project blocks, not one block's contents", () => {
@@ -685,12 +758,13 @@ test("scenes: the totals are a sum over per-project blocks, not one block's cont
   const perStore = snap.stores.map((s) => s.scenes.visibleInNav);
   assert.deepEqual(perStore, [5, 5, 5], "each block holds about five lines at 800 chars");
   assert.equal(snap.totals.scenes, 90);
-  assert.equal(snap.totals.scenesVisibleInNav, 15);
-  assert.equal(snap.totals.scenesInvisibleInNav, 75);
+  assert.equal(snap.totals.scenesReachableInSomeNav, 15);
+  assert.equal(snap.totals.scenesUnreachableInEveryNav, 75);
   // The sum is NOT what one turn sees. Whoever reads it as such gets 15 where the
   // agent gets 5 — the same misreading in the other direction as reading 219
-  // scenes as one queue.
-  assert.ok(snap.totals.scenesVisibleInNav > Math.max(...perStore));
+  // scenes as one queue. The field names now carry the quantifier ("in some nav" /
+  // "in every nav") so the sentence that makes them true travels with them.
+  assert.ok(snap.totals.scenesReachableInSomeNav > Math.max(...perStore));
 });
 
 test("scenes: global nav visibility is unmeasured, never a plausible number", () => {
@@ -718,10 +792,12 @@ test("scenes: global nav visibility is unmeasured, never a plausible number", ()
   // store's records leave a Coverage denominator.
   const t = snap.totals;
   assert.equal(t.scenes, 13);
-  assert.equal(t.scenesVisibleInNav, 1);
-  assert.equal(t.scenesInvisibleInNav, 0);
+  assert.equal(t.scenesReachableInSomeNav, 1);
+  assert.equal(t.scenesUnreachableInEveryNav, 0);
   assert.equal(t.scenesNavUnmeasured, 12);
-  assert.equal(t.scenesNavUnmeasuredReasons.length, 1);
+  // One reason, not a list of one: it is generated at a single site from a single
+  // template whose only variable is the shared root-level budget.
+  assert.match(t.scenesNavUnmeasuredReason, /active project/);
 
   // Reported as an absence, not dropped — and `unmeasured` caps it below critical.
   const g0 = snap.gaps.find((x) => x.kind === GAP_KIND.SCENE_INVISIBLE && x.subject.slug === "global");
