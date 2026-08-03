@@ -216,45 +216,129 @@ test("gate classes are real contract classes", () => {
   }
 });
 
-test("low_signal.js and view/transform.js classify identically", (t) => {
-  // transform.js still carries a copy of these predicates (its file was under
-  // concurrent edit and could not be touched here). This is the pin that stops
-  // the copy drifting — the lens must never report a class the writer silently
-  // allows, or vice versa.
-  let transform;
-  try {
-    transform = require("../scripts/view/transform.js");
-  } catch (e) {
-    // Refuse to claim a pass we did not measure: transform.js asserts at load
-    // that the heat ladder matches the contract, and that is not this gate's
-    // business to satisfy.
-    t.skip(`view/transform.js could not be loaded, so drift is unmeasured: ${e.message}`);
-    return;
-  }
-  const { classifyLowSignal } = require("../scripts/low_signal.js");
+test("the classifier's output is pinned case by case, and the gate is its gated subset", () => {
+  // This battery used to assert `transform.classifyLowSignal` equalled
+  // `lowSignal.classifyLowSignal` over these same cases. transform.js now
+  // RE-EXPORTS that exact function object, so every case compared a value to
+  // itself and the loop could not fail — and function identity is already pinned
+  // properly, once, in view_transform.test.js ("transform re-exports
+  // low_signal.js, it does not re-implement it").
+  //
+  // The cases were worth keeping; the assertion was not. So they now pin what
+  // the predicates ACTUALLY RETURN — which the identity version never did: it
+  // would have passed just as happily if both sides returned []. Each row is
+  // (content, all classes, gated classes), and the second column is the write
+  // gate's decision: [] means "stored".
+  const { classifyLowSignal, noiseClasses, NOISE_GATE_CLASSES } = require("../scripts/low_signal.js");
   const cases = [
-    "<task-notification>\n<summary>verify loop failed</summary>\n</task-notification>",
-    "Base directory for this skill: /home/dev/.claude/skills/harness",
-    "BASE DIRECTORY FOR THIS SKILL: /x",
-    "/v1/admin/providers => luồng này lưu vào đâu?",
-    "<bash-stdout>installed claude integration hook</bash-stdout>",
-    "ok push và tạo pr and merge main đi",
-    "đồng ý",
-    "được rồi",
-    "Go ahead thanks",
-    "gonna refactor this",           // 'go' must not match inside a word
-    "   ",
-    "",
-    "x".repeat(494),
-    "x".repeat(495),
-    "please refactor the recall budget",
-    null,
-    12345,
+    // gated
+    ["<task-notification>\n<summary>verify loop failed</summary>\n</task-notification>",
+      ["taskNotification", "slashOrTag"], ["taskNotification"]],
+    ["Base directory for this skill: /home/dev/.claude/skills/harness", ["skillEcho"], ["skillEcho"]],
+    ["BASE DIRECTORY FOR THIS SKILL: /x", ["skillEcho"], ["skillEcho"]],
+    ["   ", ["empty"], ["empty"]],
+    ["", ["empty"], ["empty"]],
+    // classified but NOT gated — these are the classes that match genuine user
+    // content, and the whole point is that the third column stays empty.
+    ["/v1/admin/providers => luồng này lưu vào đâu?", ["slashOrTag"], []],
+    ["<bash-stdout>installed claude integration hook</bash-stdout>", ["slashOrTag"], []],
+    ["ok push và tạo pr and merge main đi", ["continuation"], []],
+    ["đồng ý", ["continuation"], []],
+    ["được rồi", ["continuation"], []],
+    ["Go ahead thanks", ["continuation"], []],
+    ["x".repeat(495), ["pasteDump"], []],
+    // clean
+    ["gonna refactor this", [], []],           // 'go' must not match inside a word
+    ["x".repeat(494), [], []],                 // one byte under the pasteDump edge
+    ["please refactor the recall budget", [], []],
+    // non-strings reach this from real call sites; neither may throw
+    [null, ["empty"], ["empty"]],
+    [12345, [], []],
   ];
-  for (const c of cases) {
-    assert.deepStrictEqual(
-      classifyLowSignal(c), transform.classifyLowSignal(c),
-      `classifier drift on ${JSON.stringify(String(c).slice(0, 40))}`,
-    );
+  for (const [content, all, gated] of cases) {
+    const label = JSON.stringify(String(content).slice(0, 40));
+    assert.deepStrictEqual(classifyLowSignal(content), all, `classes changed for ${label}`);
+    assert.deepStrictEqual(noiseClasses(content), gated, `gate decision changed for ${label}`);
+    for (const c of gated) {
+      assert.ok(NOISE_GATE_CLASSES.includes(c), `${c} was gated but is not a gate class`);
+    }
   }
+});
+
+/* ── partial deployments must degrade, not stop capturing ──────────────
+ * This file is loaded by the Stop hook on every turn. A sibling module that is
+ * missing (half-finished upgrade, partial install, a file lost in packaging) is
+ * a reason to capture less well — never a reason to capture nothing.
+ */
+
+/** A throwaway copy of scripts/ with `missing` deleted, plus a temp HOME. */
+function withScriptsMissing(missing, fn) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-partial-"));
+  try {
+    const scripts = path.join(root, "scripts");
+    fs.cpSync(path.join(__dirname, "..", "scripts"), scripts, { recursive: true });
+    for (const m of [].concat(missing)) fs.rmSync(path.join(scripts, m));
+    const home = path.join(root, "home");
+    fs.mkdirSync(home);
+    return fn({ capture: path.join(scripts, "memory_auto_capture.js"), home, root });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+const runIn = (capture, home, body) => JSON.parse(execFileSync("node", ["-e",
+  `const c = require(${JSON.stringify(capture)}); ${body}`,
+], { env: { ...process.env, HOME: home, USERPROFILE: home, MEMORY_PERSONA_MAX_TOKENS: "" }, encoding: "utf-8" }));
+
+test("the persona-budget fallback literal is the real DEFAULT_TIER0_MAX_TOKENS", () => {
+  // memory_auto_capture.js carries a literal copy for the degraded path. It is
+  // only reachable when persona_projection.js is absent, which means nothing
+  // else can catch it drifting — this assertion is the only thing that can.
+  const { DEFAULT_TIER0_MAX_TOKENS } = require("../scripts/persona_projection.js");
+  const src = fs.readFileSync(
+    path.join(__dirname, "..", "scripts", "memory_auto_capture.js"), "utf-8");
+  const m = src.match(/const FALLBACK = (\d+);/);
+  assert.ok(m, "the degraded persona budget must stay a single named literal");
+  assert.strictEqual(Number(m[1]), DEFAULT_TIER0_MAX_TOKENS,
+    "fallback drifted from persona_projection.DEFAULT_TIER0_MAX_TOKENS");
+});
+
+test("a missing persona_projection.js degrades the budget and keeps capturing", () => {
+  const { DEFAULT_TIER0_MAX_TOKENS } = require("../scripts/persona_projection.js");
+  withScriptsMissing("persona_projection.js", ({ capture, home, root }) => {
+    const proj = path.join(root, "proj");
+    fs.mkdirSync(proj, { recursive: true });
+    const out = runIn(capture, home, `
+      const budget = c.getPersonaMaxTokens();
+      const r = c.autoCapture({
+        userText: "please refactor the recall budget so it stops truncating",
+        assistantText: "ok", sessionId: "s1", cwd: ${JSON.stringify(proj)},
+      });
+      process.stdout.write(JSON.stringify({ budget, captured: r.captured }));
+    `);
+    assert.strictEqual(out.captured, true, "a missing sibling must not cost the turn");
+    assert.strictEqual(out.budget, DEFAULT_TIER0_MAX_TOKENS, "and the budget stays sane");
+  });
+});
+
+test("a missing memory_reader.js still captures — to global, never nowhere", () => {
+  withScriptsMissing("memory_reader.js", ({ capture, home, root }) => {
+    const proj = path.join(root, "proj");
+    fs.mkdirSync(proj, { recursive: true });
+    const out = runIn(capture, home, `
+      const r = c.autoCapture({
+        userText: "please refactor the recall budget so it stops truncating",
+        assistantText: "ok", sessionId: "s1", cwd: ${JSON.stringify(proj)},
+      });
+      process.stdout.write(JSON.stringify(r));
+    `);
+    assert.strictEqual(out.captured, true);
+    // Without the reader there is no trustworthy project slug, and inventing one
+    // would split a project's memories across two stores silently. Global is the
+    // wrong shelf but a real one.
+    const base = path.join(home, ".memory-tencentdb");
+    assert.ok(fs.existsSync(path.join(base, "global", "index.db")), "the atom landed in global");
+    assert.strictEqual(fs.existsSync(path.join(base, "projects")), false,
+      "and no guessed project slug was invented");
+  });
 });

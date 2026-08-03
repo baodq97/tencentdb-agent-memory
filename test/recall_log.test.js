@@ -185,6 +185,101 @@ test("every candidate lands in exactly one list", () => {
     candidates.map((m) => m.record_id).sort());
 });
 
+/* ── rotation ──────────────────────────────────────────────────────────
+ * Unrotated, this file grows 35-50 KB/day of verbatim prompts (~15 MB/year) and
+ * nothing prunes it. These pin the bound, not the exact size: read the threshold
+ * from the module so raising it stays a one-line change.
+ */
+
+const { RECALL_LOG_MAX_BYTES } = requireRecallInternals();
+
+/** A single valid JSONL line of exactly `bytes` bytes including its newline. */
+function filler(bytes) {
+  const line = JSON.stringify({ filler: true, pad: "" });
+  const pad = "x".repeat(bytes - line.length - 1);
+  return JSON.stringify({ filler: true, pad }) + "\n";
+}
+
+function seedLog(home, bytes) {
+  fs.mkdirSync(baseDir(home), { recursive: true });
+  fs.writeFileSync(logPath(home), filler(bytes), "utf-8");
+}
+
+test("a log at the threshold is rotated to .1, and the new line starts a fresh file", () => {
+  withFakeHome((home) => {
+    seedStore(home);
+    seedLog(home, RECALL_LOG_MAX_BYTES);
+
+    runCli(home, "sqlite-vec embedding sync");
+
+    const rotated = logPath(home) + ".1";
+    assert.equal(fs.statSync(rotated).size, RECALL_LOG_MAX_BYTES,
+      "the old log is moved aside intact, not truncated in place");
+    const rows = readLog(home);
+    assert.equal(rows.length, 1, "the live log now holds only the recall that triggered rotation");
+    assert.equal(rows[0].query, "sqlite-vec embedding sync",
+      "and the entry that triggered it is not the one that gets lost");
+  });
+});
+
+test("a log below the threshold is left alone — rotation is size-based, not per-call", () => {
+  withFakeHome((home) => {
+    seedStore(home);
+    seedLog(home, RECALL_LOG_MAX_BYTES - 1024);
+
+    runCli(home, "first");
+    runCli(home, "second");
+
+    assert.equal(fs.existsSync(logPath(home) + ".1"), false);
+    assert.equal(readLog(home).length, 3, "filler + both recalls");
+  });
+});
+
+test("exactly ONE generation is kept: a second rotation replaces .1, it does not create .2", () => {
+  withFakeHome((home) => {
+    seedStore(home);
+    seedLog(home, RECALL_LOG_MAX_BYTES);
+    runCli(home, "rotation one");
+    // Re-fill and rotate again. The first generation is expected to be GONE:
+    // this log is bounded on purpose (ceiling = 2 x threshold), it is not an
+    // archive, and a .1/.2/.3 cascade was rejected deliberately.
+    seedLog(home, RECALL_LOG_MAX_BYTES);
+    runCli(home, "rotation two");
+
+    assert.equal(fs.existsSync(logPath(home) + ".2"), false, "no second generation may appear");
+    assert.equal(fs.statSync(logPath(home) + ".1").size, RECALL_LOG_MAX_BYTES);
+    assert.deepEqual(readLog(home).map((r) => r.query), ["rotation two"]);
+  });
+});
+
+test("total on-disk size stays bounded by 2x the threshold", () => {
+  withFakeHome((home) => {
+    seedStore(home);
+    seedLog(home, RECALL_LOG_MAX_BYTES);
+    for (const q of ["a", "b", "c"]) runCli(home, q);
+
+    const size = (p) => (fs.existsSync(p) ? fs.statSync(p).size : 0);
+    const total = size(logPath(home)) + size(logPath(home) + ".1");
+    assert.ok(total <= 2 * RECALL_LOG_MAX_BYTES, `bounded, got ${total}`);
+  });
+});
+
+test("a rotation that cannot happen still lets the append happen", () => {
+  withFakeHome((home) => {
+    seedStore(home);
+    seedLog(home, RECALL_LOG_MAX_BYTES);
+    // A non-empty DIRECTORY at the rotation target: rename() raises. Rotation is
+    // the housekeeping half of a log write and must not take the write with it.
+    fs.mkdirSync(path.join(logPath(home) + ".1", "occupied"), { recursive: true });
+
+    const out = runCli(home, "sqlite-vec embedding sync");
+    assert.match(out, /<memory-context>/, "recall must still return its context");
+    const rows = readLog(home);
+    assert.equal(rows.length, 2, "filler + the new entry: the append still landed");
+    assert.equal(rows[1].query, "sqlite-vec embedding sync");
+  });
+});
+
 test("a log write failure does not break recall", () => {
   withFakeHome((home) => {
     seedStore(home);

@@ -53,11 +53,24 @@ const PERSONA_TIER1_MAX_CHARS = DEFAULT_TIER1_MAX_CHARS;
  * token-cheap.
  *
  * WHY THE QUERY IS NOW AN ARGUMENT: without it this block was byte-identical on
- * every turn of every session. With 219 scenes and an 800-char budget it showed
- * the same 78 and 141 could never appear at all, so it was pure query-independent
- * overhead — a fixed per-turn tax that no prompt could redirect. Ranking makes
- * the slice a function of the turn; see scene_nav.rankScenes for the scorer and
- * for why an empty query reproduces the previous ordering exactly.
+ * every turn of a session in a given project — a fixed per-turn tax no prompt
+ * could redirect. Ranking makes the slice a function of the turn; see
+ * scene_nav.rankScenes for the scorer and for why an empty query reproduces the
+ * previous ordering exactly.
+ *
+ * WHAT THIS BLOCK CONTAINS — READ THIS BEFORE QUOTING A NUMBER. One call renders
+ * ONE project's scenes plus global's. It never renders the store. Verified
+ * against all 52 stores: the 219 scenes people quote are spread over 19 separate
+ * projects, so NO block has ever contained 219 candidates and none ever can. A
+ * real block is about 5 lines: the busiest project shows 5 of its 75, the next 5
+ * of 25, a third 5 of 23.
+ *
+ * So the store-wide "77 shown / 142 hidden" figure is a SUM over 19 independent
+ * blocks with 19 independent budgets. Reading it as one block's shown-vs-hidden
+ * says this function drops ~142 scenes it had in hand, which is false by two
+ * orders of magnitude — it has ~5-80 in hand and drops from that. That misreading
+ * has already reached a downstream metric TWICE. Any per-block claim has to be
+ * measured per project, against the projectHash actually passed in.
  *
  * Ranking is per GROUP, not across the concatenation: project-before-global
  * decides who drops first under budget, which is a recall policy and not
@@ -150,8 +163,41 @@ function detectSource() {
  */
 const RECALL_LOG_FILE = "recall_log.jsonl";
 
+/**
+ * Rotate at 2 MB, keeping exactly ONE previous generation (`.jsonl.1`).
+ *
+ * Sized from the measured growth of a real store: 35-50 KB/day, i.e. ~15 MB/year
+ * with no rotation at all, of verbatim user prompts nothing prunes. 2 MB is
+ * ~40-60 days of traffic, so the generation that is kept is on its own longer
+ * than any window this log is read over (ranking feedback is a weeks-scale
+ * question), and the steady-state ceiling is 4 MB — current + `.1` — instead of
+ * unbounded.
+ *
+ * ONE generation on purpose. A `.1/.2/.3` cascade renames N files per rotation
+ * on the UserPromptSubmit hot path and buys history nobody has asked for; the
+ * choice here is a bound, not an archive. Anyone who wants the archive can copy
+ * `.1` out — it only turns over every ~6 weeks.
+ */
+const RECALL_LOG_MAX_BYTES = 2 * 1024 * 1024;
+
 function recallLogPath() {
   return path.join(memoryBaseDir(), RECALL_LOG_FILE);
+}
+
+/**
+ * Rename the log aside once it passes the threshold, dropping whatever `.1` held.
+ *
+ * Called from inside appendRecallLog's catch-all, and deliberately not defended
+ * any further than that: a missing file (ENOENT from stat) is the fresh-install
+ * case, and a rename that fails leaves an over-sized log that still accepts
+ * appends. Both are "the log is imperfect", never "the turn has no context".
+ *
+ * rename() over unlink()+rename(): it replaces an existing `.1` atomically on
+ * POSIX, so there is no window in which neither generation exists.
+ */
+function rotateRecallLogIfNeeded(file) {
+  if (fs.statSync(file).size < RECALL_LOG_MAX_BYTES) return;
+  fs.renameSync(file, file + ".1");
 }
 
 /**
@@ -166,6 +212,9 @@ function appendRecallLog(entry) {
   try {
     const file = recallLogPath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
+    // Its OWN catch: on a fresh install stat throws ENOENT, and rotation failing
+    // must never cost us the append it was supposed to precede.
+    try { rotateRecallLogIfNeeded(file); } catch {}
     fs.appendFileSync(file, JSON.stringify(entry) + "\n", "utf-8");
   } catch {}
 }
@@ -211,7 +260,7 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
   // L3 persona, tier 1 (own budget — NOT charged to atoms' `used`, same
   // convention as the scene-nav block below). Charging it used to eat 425 of
   // the 1120-char atom pool before a single memory was considered.
-  const persona = getPersona(query);
+  const persona = getPersona(query, PERSONA_TIER1_MAX_CHARS, projectHash);
   if (persona) parts.push(`<persona>\n${persona}\n</persona>`);
 
   // L2 scene navigation (own budget — NOT charged to atoms' `used`)
@@ -257,6 +306,50 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
 }
 
 /**
+ * Scope context for tier-1 persona selection: `{slug, hasPath}` for the project
+ * `projectHash` keys, or null when there is no project context (CLI outside a
+ * repo) — persona_projection then behaves exactly as before.
+ *
+ * The slug is a LOSSY flattening of the project root (both `/` and a literal `-`
+ * became `-`), so there is no cheap reverse mapping and no registry of project
+ * names anywhere in the store. Two honest consequences:
+ *   - name matching runs against the slug itself, which still contains every
+ *     path segment, so a tag like "(orchard-ops)" is found without resolving anything;
+ *   - path existence needs a real root, and the only reverse mapping that exists
+ *     is `pathFromSlugProbe`, which walks the filesystem with backtracking
+ *     (~20 statSync calls, sub-millisecond). When it returns null — the
+ *     directory was deleted or renamed — `hasPath` is omitted and every
+ *     path-scoped bullet is kept.
+ *
+ * `hasPath` memoises: the same handful of paths is probed for several bullets on
+ * every turn, and this is the per-turn hot path.
+ */
+function projectScopeFor(projectHash) {
+  if (!projectHash) return null;
+  let root = null;
+  try {
+    const { pathFromSlugProbe } = require("./memory_reader.js");
+    root = pathFromSlugProbe(projectHash);
+  } catch { root = null; }
+  if (!root) return { slug: projectHash };
+
+  const cache = new Map();
+  const hasPath = (rel) => {
+    if (cache.has(rel)) return cache.get(rel);
+    let ok = false;
+    try {
+      const abs = path.resolve(root, rel);
+      // Containment guard: `rel` comes out of persona text, never trust it to
+      // stay inside the repo even though the extractor rejects "..".
+      ok = abs.startsWith(root + path.sep) && fs.existsSync(abs);
+    } catch { ok = false; }
+    cache.set(rel, ok);
+    return ok;
+  };
+  return { slug: projectHash, hasPath };
+}
+
+/**
  * Tier-1 (per-turn) persona slice for `query`.
  *
  * Was: the first 5 non-heading lines cut at 400 chars — ~1% of a 39k-char
@@ -273,8 +366,14 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
  * Falls back to `legacyProjection` — today's exact output — whenever the tiered
  * projection comes back empty (unparseable persona, nothing classified as
  * always/conditional): never emit nothing where we used to emit something.
+ *
+ * `projectHash` scopes the selection to the current project: persona.md is a
+ * single GLOBAL document, so without it a conditional bullet written for another
+ * repo is injected here as a standing rule (see persona_projection's
+ * project-scope note). Empty projectHash = no project context = today's exact
+ * behaviour.
  */
-function getPersona(query = "", maxChars = PERSONA_TIER1_MAX_CHARS) {
+function getPersona(query = "", maxChars = PERSONA_TIER1_MAX_CHARS, projectHash = "") {
   const persona = readPersona(globalDir());
   if (!persona || !persona.trim()) return "";
   try {
@@ -283,6 +382,7 @@ function getPersona(query = "", maxChars = PERSONA_TIER1_MAX_CHARS) {
       query,
       maxChars,
       insuranceChars: DEFAULT_INSURANCE_MAX_CHARS,
+      projectScope: projectScopeFor(projectHash),
     });
     if (projection.text.trim()) return projection.text;
   } catch {
@@ -314,7 +414,7 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   // L3 persona, tier 1 (own budget — NOT charged to atoms' `used`, same
   // convention as the scene-nav block below). Charging it used to eat 425 of
   // the 1120-char atom pool before a single memory was considered.
-  const persona = getPersona(query);
+  const persona = getPersona(query, PERSONA_TIER1_MAX_CHARS, projectHash);
   if (persona) parts.push(`<persona>\n${persona}\n</persona>`);
 
   // L2 scene navigation (own budget — NOT charged to atoms' `used`)
@@ -426,6 +526,6 @@ Commands:
 if (require.main === module) main();
 
 module.exports = {
-  recall, recallAsync, buildSceneNav, renderMemories,
-  RECALL_SOURCE, RECALL_LOG_FILE, recallLogPath, appendRecallLog, detectSource,
+  recall, recallAsync, buildSceneNav, renderMemories, projectScopeFor,
+  RECALL_SOURCE, RECALL_LOG_FILE, RECALL_LOG_MAX_BYTES, recallLogPath, appendRecallLog, detectSource,
 };

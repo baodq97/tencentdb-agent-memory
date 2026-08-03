@@ -42,8 +42,30 @@ const DEFAULT_SCENE_MAX_TOKENS = 200;
 // At the old 300 tok this budget delivered 5 of 47 always-duty bullets, 4 of them
 // cut mid-rule; standing instructions truncated before their operative clause are
 // worse than absent, because they read as a different rule.
-const { DEFAULT_TIER0_MAX_TOKENS } = require("./persona_projection.js");
-const DEFAULT_PERSONA_MAX_TOKENS = DEFAULT_TIER0_MAX_TOKENS;
+//
+// GUARDED, and it fails OPEN to the literal — same rule as noiseClassesFor()
+// below. This file is on the Stop hook's capture path, and an unguarded
+// top-level require makes every future turn's capture depend on a second file
+// being present: one missing sibling (a partial install, a half-finished
+// upgrade) threw at load time and took the whole path down, to read ONE number
+// that has never changed. A stale default costs a wider-or-narrower persona
+// preamble for one session; throwing costs every memory of it.
+//
+// The fallback literal is the one exception to "no second literal" above, and it
+// only applies when the module it would have drifted from is not there to be
+// drifted from. It is still pinned by test/noise_gate.test.js so that a change
+// to DEFAULT_TIER0_MAX_TOKENS cannot leave a stale number sitting here.
+const DEFAULT_PERSONA_MAX_TOKENS = (() => {
+  const FALLBACK = 1200; // copy of persona_projection.DEFAULT_TIER0_MAX_TOKENS
+  try {
+    const v = require("./persona_projection.js").DEFAULT_TIER0_MAX_TOKENS;
+    // A present-but-renamed export is the same outage as a missing file, and it
+    // would arrive here as `undefined` rather than as a throw.
+    return Number.isInteger(v) && v > 0 ? v : FALLBACK;
+  } catch {
+    return FALLBACK;
+  }
+})();
 const MAX_CONTENT_LENGTH = 500;
 const DEFAULT_NOISE_GATE = true;
 
@@ -233,9 +255,26 @@ function logSkip(projectBase, { content, classes, sessionId }) {
   } catch {}
 }
 
+/**
+ * The store slug for `cwd`. The other require on the capture path with the same
+ * exposure the top-level one had: lazy, so it does not break loading, but called
+ * from autoCapture() OUTSIDE any try, so a missing memory_reader.js threw the
+ * whole turn away rather than storing it.
+ *
+ * Degrades to "" — which autoCapture already treats as "no project context" and
+ * routes to the global store, exactly as it does for a hook invoked with no cwd.
+ * Deliberately NOT a locally reimplemented hash: a slug that disagreed with
+ * memory_reader's would split one project's memories across two stores silently,
+ * and the atom would then be unfindable from the project it belongs to. Global is
+ * the wrong shelf but a real one — cross-project search still reaches it.
+ */
 function projectHashForCwd(cwd) {
-  const { projectHashForCwd: hash } = require(path.join(__dirname, "memory_reader.js"));
-  return hash(cwd);
+  try {
+    const { projectHashForCwd: hash } = require(path.join(__dirname, "memory_reader.js"));
+    return hash(cwd);
+  } catch {
+    return "";
+  }
 }
 
 function generateId() {
