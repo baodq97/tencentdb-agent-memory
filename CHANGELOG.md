@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-08-03
+
+### Fixed
+- **`/memory-init` keyed the project store to the plugin cache dir instead of the user's project.** The command's one-liner ran the launcher bootstrap and the init in the same shell — `cd ${CLAUDE_PLUGIN_ROOT} && npm install && npm link && install scripts/tmem.js …; tmem init` — so the `cd` into the plugin cache **leaked** past the `;` into `tmem init`. `tmem init` keys the store by cwd, so it created a store slugged for the cache path (e.g. `-home-bd-.claude-plugins-cache-tencentdb-agent-memory-tencentdb-agent-memory-0.5.0`) rather than the real project root the user was sitting in. Each release cut its own dead store: four had accumulated — one per version since 0.2.3 (`0.2.3`, `0.4.2`, `0.4.3`, `0.5.0`) — every one **0 records, no scenes**, because nothing ever recalls against a cache-path slug. The real project stores were never at risk: they are keyed by the SessionStart/recall paths, which run in the session cwd and resolve the project *root*, not by `/memory-init`. The fix wraps only the bootstrap in a subshell — `( cd "${CLAUDE_PLUGIN_ROOT}" && npm install … && npm link … && install … ) 2>/dev/null; tmem init` — so the `cd` dies with the subshell and `tmem init` runs in the user's original cwd. Audited the whole class for the same defect: the SessionStart self-heal (`ensureLauncherInstalled`, a v0.4.3 feature) installs the launcher via absolute paths and never `chdir`s; the `tmem` launcher spawns `cli.js` with an inherited cwd and no `chdir`; `/contrib` and the README carry no `cd`-then-cwd-command pattern — `/memory-init` was the only instance. The four empty cache-keyed stores were verified (`l1_records == 0`, no `scene_blocks/`) and removed.
+
 ## [0.5.0] — 2026-08-03
 
 ### Added
