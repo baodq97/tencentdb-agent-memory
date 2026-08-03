@@ -400,11 +400,120 @@ function cmdChangelog(args) {
 }
 
 // ── persona ──
-function cmdPersona() {
+// Tier 2 of the persona delivery model. Tier 0 (`always`) rides the session
+// preamble and tier 1 (`conditional`) is injected per turn, but everything
+// classified `reference` is never injected at all — `## Environment & Access`
+// is 9-of-9 reference, so without an on-demand read it is unreachable. This
+// mirrors `tmem scene <name>`: the always-on surface carries the index, the
+// full block is fetched by name when someone actually needs it.
+
+// Fold a section name or a user's guess at one into a comparable slug, so
+// "Working Style", "working style" and "working-style" all collapse to the same
+// key. `&` becomes a separator rather than being dropped, which keeps
+// "environment-access" (what a human types) matching "Environment & Access".
+function personaSlug(s) {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+// Split the raw persona on `##`+ headings so a requested section can be printed
+// byte-for-byte. parsePersona() normalizes bullets (markers stripped, newlines
+// collapsed) which is right for projection but wrong for a verbatim read, so we
+// use it for names/counts and this for the text.
+function personaRawSections(text) {
+  const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+  const out = new Map();
+  let name = null, buf = [];
+  const flush = () => { if (name !== null && !out.has(name)) out.set(name, buf.join("\n").replace(/\n+$/, "")); };
+  for (const line of lines) {
+    const h = /^(#{2,6})\s+(.*)$/.exec(line);
+    if (h) { flush(); name = h[2].trim(); buf = [line]; continue; }
+    if (name !== null) buf.push(line);
+  }
+  flush();
+  return out;
+}
+
+// Exact slug match wins; otherwise prefix, then substring. Each fallback is
+// applied only when the previous produced nothing, so a section whose name is a
+// prefix of another ("Working" vs "Working Style") still resolves exactly.
+function resolvePersonaSection(sections, query) {
+  const q = personaSlug(query);
+  if (!q) return { status: "empty" };
+  const slugs = sections.map(s => ({ section: s, slug: personaSlug(s.name) }));
+  for (const pick of [
+    slugs.filter(x => x.slug === q),
+    slugs.filter(x => x.slug.startsWith(q)),
+    slugs.filter(x => x.slug.includes(q)),
+  ]) {
+    if (pick.length === 1) return { status: "ok", section: pick[0].section };
+    if (pick.length > 1) return { status: "ambiguous", matches: pick.map(x => x.section) };
+  }
+  return { status: "missing" };
+}
+
+function printPersonaSectionList(sections, dutyCounts, prefix) {
+  for (const s of sections) {
+    const c = dutyCounts([s]);
+    console.log(`${prefix}${s.name}  (${personaSlug(s.name)})  ${s.bullets.length} bullets  always=${c.always} conditional=${c.conditional} reference=${c.reference}`);
+  }
+}
+
+function cmdPersona(args) {
   const { readPersona } = req("memory_writer.js");
   const { gDir } = getDirs();
   const p = readPersona(gDir);
-  console.log(p || "(no persona yet)");
+
+  const argv = args || [];
+  const wantList = argv.includes("--sections");
+  const secIdx = argv.indexOf("--section");
+  const wantSection = secIdx !== -1;
+  // Section names contain spaces; take every remaining token so both
+  // `--section "Working Style"` and `--section Working Style` work.
+  const sectionName = wantSection ? argv.slice(secIdx + 1).filter(a => !a.startsWith("--")).join(" ") : "";
+
+  if (!wantList && !wantSection) { console.log(p || "(no persona yet)"); return; }
+
+  if (!p) { console.error("(no persona yet)"); process.exit(1); }
+
+  const { parsePersona, annotate, dutyCounts } = req("persona_projection.js");
+  const sections = annotate(parsePersona(p)).filter(s => s.name);
+  if (!sections.length) { console.error("Persona has no `##` sections to address."); process.exit(1); }
+
+  if (wantList) {
+    const total = dutyCounts(sections);
+    console.log(`Persona sections (${sections.length}, ${p.length} chars, ${total.always + total.conditional + total.reference} bullets):`);
+    printPersonaSectionList(sections, dutyCounts, "  ");
+    console.log(`\nTotals: always=${total.always} conditional=${total.conditional} reference=${total.reference}`);
+    console.log(`Read one: tmem persona --section <name>`);
+    return;
+  }
+
+  const res = resolvePersonaSection(sections, sectionName);
+  if (res.status === "empty") {
+    console.error("Usage: tmem persona --section <name>  (names from `tmem persona --sections`)");
+    process.exit(1);
+  }
+  if (res.status === "ambiguous") {
+    console.error(`Ambiguous section: ${sectionName}. Matches:`);
+    for (const s of res.matches) console.error(`  ${s.name}  (${personaSlug(s.name)})`);
+    process.exit(1);
+  }
+  if (res.status === "missing") {
+    console.error(`Persona section not found: ${sectionName}. Available:`);
+    for (const s of sections) console.error(`  ${s.name}  (${personaSlug(s.name)})  ${s.bullets.length} bullets`);
+    process.exit(1);
+  }
+
+  const raw = personaRawSections(p).get(res.section.name);
+  if (raw) console.log(raw);
+  else {
+    // No verbatim block recovered (heading shapes disagreed) — fall back to the
+    // parsed bullets so the content is still reachable.
+    console.log(`## ${res.section.name}`);
+    for (const b of res.section.bullets) console.log(`- ${b.text}`);
+  }
+  const c = dutyCounts([res.section]);
+  console.log(`\n(${res.section.bullets.length} bullets — always=${c.always} conditional=${c.conditional} reference=${c.reference})`);
 }
 
 // ── sync ──
@@ -616,7 +725,7 @@ function cmdUnlock() {
 
 // ── config ──
 function cmdConfig(args) {
-  const { getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, loadConfig } = req("memory_auto_capture.js");
+  const { getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, loadConfig } = req("memory_auto_capture.js");
   const key = args[0];
 
   if (!key) {
@@ -626,12 +735,14 @@ function cmdConfig(args) {
     console.log(JSON.stringify({
       consolidate_every: getConsolidateEvery(),
       scene_max_tokens: getSceneMaxTokens(),
+      persona_max_tokens: getPersonaMaxTokens(),
       recall: getRecallEnabled(pHash) ? "on" : "off",
       recall_project: pHash,
       stored: loadConfig(),
       env_override: {
         MEMORY_CONSOLIDATE_EVERY: process.env.MEMORY_CONSOLIDATE_EVERY || null,
         MEMORY_SCENE_MAX_TOKENS: process.env.MEMORY_SCENE_MAX_TOKENS || null,
+        MEMORY_PERSONA_MAX_TOKENS: process.env.MEMORY_PERSONA_MAX_TOKENS || null,
       },
     }, null, 2));
     return;
@@ -677,7 +788,19 @@ function cmdConfig(args) {
     return;
   }
 
-  console.error(`Unknown config key: ${key}. Supported: consolidate-every, scene-max-tokens, recall`);
+  if (key === "persona-max-tokens") {
+    if (args[1] === undefined) { console.log(getPersonaMaxTokens()); return; }
+    try {
+      const v = setPersonaMaxTokens(args[1]);
+      console.log(`persona-max-tokens set to ${v}`);
+    } catch (e) {
+      console.error(e.message);
+      process.exit(1);
+    }
+    return;
+  }
+
+  console.error(`Unknown config key: ${key}. Supported: consolidate-every, scene-max-tokens, persona-max-tokens, recall`);
   process.exit(1);
 }
 
@@ -968,6 +1091,263 @@ async function cmdContrib(rest) {
   }
 }
 
+// ── view ──
+// The memory visualiser. This command IS the implementation surface: the skill and
+// any docs shell out to `tmem view`, and scripts/view/serve.js is an internal module,
+// never a second entry point. Everything below is argument handling — no metric, no
+// route and no payload shape is computed here; those live in view/{extract,transform}.js.
+
+const VIEW_USAGE = `tmem view — open the memory visualiser
+
+Usage: tmem view [--query <q>] [--snapshot|--no-serve] [--static] [--port N] [--root <dir>]
+
+  (no flags)        Start the live session server and print the keyed URL.
+  --query <q>       Open on "Try a prompt" and trace this query.
+  --snapshot        Run extract -> transform once, write the payload JSON, exit.
+  --no-serve        Alias of --snapshot.
+  --stdout          With --snapshot: write the payload to stdout so it can be
+                    piped. The summary moves to stderr so stdout stays valid JSON.
+  --static          Serve with the snapshot pinned, so numbers cannot move
+                    under a reader mid-measurement.
+  --port N          Listen on this port (default: an OS-assigned free port).
+  --root <dir>      Read a different memory store root (default: ~/.memory-tencentdb).
+
+The URL carries a per-session key and is required verbatim — the page renders raw
+captured prompts from every project, so localhost alone is not the boundary.
+Session output goes to <root>/view/, never inside a repo.`;
+
+// Flags that take a value. Anything else beginning with `--` is a boolean.
+const VIEW_VALUE_FLAGS = new Set(["query", "port", "root"]);
+
+function parseViewArgs(argv) {
+  const out = { _unknown: [] };
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (!a.startsWith("--")) { out._unknown.push(a); continue; }
+    const key = a.slice(2);
+    if (VIEW_VALUE_FLAGS.has(key)) { out[key] = argv[i + 1]; i += 1; }
+    else out[key] = true;
+  }
+  return out;
+}
+
+/** Human byte size; the payload is ~228 KB, so KB/MB is the only range that matters. */
+function humanBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(2)} MB`;
+}
+
+function viewFail(msg) {
+  console.error(`tmem view: ${msg}`);
+  process.exit(1);
+}
+
+/**
+ * `--snapshot` writes the payload to a FILE and prints a summary, rather than
+ * dumping it to stdout. The payload measures ~228 KB / ~5 500 records: a terminal
+ * dump is unreadable, and piping it would make the summary (which is the part a
+ * human acts on) impossible to show at all. The filename carries the snapshotId,
+ * so two exports taken around a change are self-labelling and cannot be confused —
+ * which is the whole point of a pinned baseline. The path is printed, so a script
+ * that wants the JSON reads it from there.
+ *
+ * `--stdout` exists for pipelines, and moves the summary to stderr rather than
+ * dropping it: a flag whose output cannot be fed to `jq` would defeat itself. The
+ * file is still written, so a piped run and a plain run leave the same artifact.
+ */
+function cmdViewSnapshot(opts) {
+  const os_ = require("node:os");
+  const rootDir = opts.root ? path.resolve(opts.root) : path.join(os_.homedir(), ".memory-tencentdb");
+
+  let extractAll, transformRoot;
+  try {
+    ({ extractAll } = require(path.join(SCRIPTS_DIR, "view", "extract.js")));
+    ({ transformRoot } = require(path.join(SCRIPTS_DIR, "view", "transform.js")));
+  } catch (e) {
+    viewFail(`could not load the view pipeline — ${e.message}`);
+  }
+  if (typeof extractAll !== "function") viewFail("scripts/view/extract.js does not export extractAll()");
+  if (typeof transformRoot !== "function") viewFail("scripts/view/transform.js does not export transformRoot()");
+
+  const t0 = process.hrtime.bigint();
+  let root, snapshot;
+  try {
+    root = extractAll({ rootDir });
+    snapshot = transformRoot(root);
+  } catch (e) {
+    viewFail(`snapshot failed — ${e.message}`);
+  }
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+
+  const sessionDir = path.join(root && root.rootDir ? root.rootDir : rootDir, "view");
+  const id = (snapshot && snapshot.snapshotId) || "unknown";
+  const outPath = path.join(sessionDir, `snapshot-${id}.json`);
+  try {
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(outPath, `${JSON.stringify(snapshot)}\n`);
+  } catch (e) {
+    viewFail(`could not write ${outPath} — ${e.message}`);
+  }
+
+  const bytes = fs.statSync(outPath).size;
+  const stores = Array.isArray(snapshot.stores) ? snapshot.stores.length : 0;
+  const gaps = Array.isArray(snapshot.gaps) ? snapshot.gaps.length : 0;
+  const totals = snapshot.totals || {};
+
+  // With --stdout, stdout carries the payload and nothing else — a summary line
+  // interleaved into it would make the JSON unparseable and the flag pointless.
+  const say = opts.stdout ? console.error : console.log;
+  say(`snapshot ${id}`);
+  say(`  root      ${root && root.rootDir ? root.rootDir : rootDir}`);
+  say(`  stores    ${stores}`);
+  if (totals.records !== undefined) say(`  records   ${totals.records}`);
+  if (totals.scenes !== undefined) say(`  scenes    ${totals.scenes}`);
+  say(`  gaps      ${gaps}`);
+  say(`  pipeline  ${ms.toFixed(1)} ms`);
+  say(`  wrote     ${outPath}  (${humanBytes(bytes)})`);
+
+  // Zero stores is a real, honest reading of an empty root — but it looks exactly
+  // like a healthy system with nothing in it, and the commonest cause is a typo'd
+  // --root. Name the discriminator rather than let the reader guess.
+  if (stores === 0) {
+    console.error(
+      `\ntmem view: 0 stores under ${root && root.rootDir ? root.rootDir : rootDir} — ` +
+      `that root has no global/ or projects/ store. This is an empty reading, not an error; ` +
+      `check --root if you expected data.`,
+    );
+  }
+
+  if (opts.stdout) process.stdout.write(`${JSON.stringify(snapshot)}\n`);
+}
+
+/**
+ * Live/pinned server. serve.js is spawned rather than required so that its
+ * module-level argv parsing sees a clean argv, and so a crash there cannot take
+ * the CLI's error reporting with it. Its startup JSON is consumed here and the URL
+ * is re-emitted with the lens parameters applied — forwarding serve's own line too
+ * would print a second, less complete URL and invite the user to paste the wrong one.
+ */
+function cmdViewServe(opts) {
+  const { spawn } = require("node:child_process");
+  const serveJs = path.join(SCRIPTS_DIR, "view", "serve.js");
+  if (!fs.existsSync(serveJs)) viewFail(`missing ${serveJs}`);
+
+  const argv = [serveJs];
+  if (opts.port !== undefined) argv.push("--port", String(opts.port));
+  if (opts.root) argv.push("--root", opts.root);
+  if (opts.static) argv.push("--static");
+
+  const child = spawn(process.execPath, argv, { stdio: ["ignore", "pipe", "inherit"] });
+
+  return new Promise((resolve) => {
+    let buf = "";
+    let ready = false;
+    const timer = setTimeout(() => {
+      if (ready) return;
+      console.error("tmem view: server did not report ready within 20s — giving up.");
+      try { child.kill("SIGTERM"); } catch { /* already gone */ }
+      process.exit(1);
+    }, 20000);
+
+    child.stdout.on("data", (chunk) => {
+      if (ready) return; // post-startup stdout is only serve's own URL banner
+      buf += chunk;
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith("{")) continue;
+        let info;
+        try { info = JSON.parse(line); } catch { continue; }
+        if (info.type !== "server-started") continue;
+        ready = true;
+        clearTimeout(timer);
+        child.stdout.resume(); // keep draining so the child never blocks on a full pipe
+        printViewReady(info, opts);
+        resolve();
+        return;
+      }
+    });
+
+    child.on("error", (e) => { clearTimeout(timer); viewFail(`could not start the server — ${e.message}`); });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      if (!ready) {
+        console.error(`tmem view: server exited before it was ready (code ${code}).`);
+        process.exit(code === 0 ? 1 : (code || 1));
+      }
+      process.exit(code || 0);
+    });
+
+    // Ctrl-C reaches the child through the process group, but be explicit so the
+    // server is also stopped when the CLI is terminated on its own.
+    const stop = () => { try { child.kill("SIGTERM"); } catch { /* already gone */ } };
+    process.on("SIGINT", stop);
+    process.on("SIGTERM", stop);
+  });
+}
+
+function printViewReady(info, opts) {
+  const u = new URL(info.url);
+  // `?view=trace` is the "Try a prompt" screen — the one a query belongs on. The
+  // shell's screens are health | memories | about-you | trace; the old lens names
+  // (context/signal/scenes/gaps) are gone, without aliases, on the owner's call.
+  if (opts.query) { u.searchParams.set("view", "trace"); u.searchParams.set("q", opts.query); }
+  if (opts.static) u.searchParams.set("static", "1");
+
+  console.log(`tmem view — ${info.mode} mode, pid ${info.pid}, ${info.rootDir}`);
+  if (info.snapshotId) console.log(`snapshot ${info.snapshotId} (${info.pipelineMs} ms)`);
+  if (info.pipelineError) console.error(`tmem view: pipeline error — ${info.pipelineError}`);
+  if (opts.query) console.log(`Opens on "Try a prompt", tracing: ${opts.query}`);
+  console.log(`\nOpen this URL verbatim — the session key is required:\n  ${u.toString()}\n`);
+  console.log(`Session dir: ${info.sessionDir}`);
+  console.log(`Stop with Ctrl-C, or: kill ${info.pid}   (auto-stops after ${info.idleTimeoutMinutes}m idle)`);
+}
+
+function cmdView(rest) {
+  const args = rest || [];
+  if (args.includes("--help") || args.includes("-h")) { console.log(VIEW_USAGE); return; }
+
+  const opts = parseViewArgs(args);
+  for (const stray of opts._unknown) viewFail(`unexpected argument: ${stray}. Run 'tmem view --help'.`);
+
+  // `in`, not `!== undefined`: a trailing `--query` with nothing after it parses to
+  // undefined, which is exactly the case this must catch.
+  if ("query" in opts && (typeof opts.query !== "string" || !opts.query.trim())) {
+    viewFail("--query needs a value. Run 'tmem view --help'.");
+  }
+  if ("port" in opts) {
+    const n = Number(opts.port);
+    if (!Number.isInteger(n) || n < 0 || n > 65535) viewFail(`--port must be an integer 0-65535, got: ${opts.port}`);
+    opts.port = n;
+  }
+  if ("root" in opts) {
+    if (typeof opts.root !== "string") viewFail("--root needs a directory. Run 'tmem view --help'.");
+    const abs = path.resolve(opts.root);
+    // Checked here, not at first read: a store root that cannot be listed should
+    // fail before a server is bound, not as a 500 on the first page load.
+    let st;
+    try { st = fs.statSync(abs); }
+    catch (e) { viewFail(`--root ${abs} — ${e.code || e.message}`); }
+    if (!st.isDirectory()) viewFail(`--root ${abs} is not a directory`);
+    try { fs.accessSync(abs, fs.constants.R_OK | fs.constants.X_OK); }
+    catch (e) { viewFail(`--root ${abs} is not readable — ${e.code || e.message}`); }
+    opts.root = abs;
+  }
+
+  const noServe = Boolean(opts.snapshot || opts["no-serve"]);
+  if (opts.stdout && !noServe) {
+    viewFail("--stdout only applies to --snapshot. There is no payload to pipe from a live server.");
+  }
+  if (noServe) {
+    // --query only opens a screen in the UI; there is no UI here.
+    if (opts.query) console.error("tmem view: --query is ignored with --snapshot (it only opens a screen in the UI).");
+    return cmdViewSnapshot(opts);
+  }
+  return cmdViewServe(opts);
+}
+
 // ── main ──
 /**
  * Warn (non-fatal) if this cli.js is a different version than the plugin Claude
@@ -1015,12 +1395,13 @@ Commands:
   scenes [list|dedup]        List or deduplicate scene blocks
     --dry-run                Preview dedup without removing
   changelog [--last N]       Show recent memory changes
-  persona                    Show current persona
+  persona [--sections | --section <name>]  Show full persona; list sections (name, bullets, duty split); or print one section on demand (tier 2)
   sync [--full]              Embed missing vectors (delta); --full rebuilds the index
   mark-done                  Mark consolidation complete + release lock
   unlock                     Release stale consolidation lock
-  config [consolidate-every [N] | scene-max-tokens [N] | recall [on|off]]  Show config, or get/set a setting (recall = per-project context injection)
+  config [consolidate-every [N] | scene-max-tokens [N] | persona-max-tokens [N] | recall [on|off]]  Show config, or get/set a setting (recall = per-project context injection)
   daemon <start|status|stop>  Manage the resident embed daemon (warm vector recall)
+  view [--query <q>] [--snapshot [--stdout]] [--static] [--port N] [--root <dir>]  Open the memory visualiser (live server); --snapshot exports the payload instead (tmem view --help)
   contrib <add|ingest|build|persona|playbook|compare|capabilities>  Contributor intelligence`);
     return;
   }
@@ -1041,12 +1422,13 @@ Commands:
     case "scene": return cmdScene(restStr);
     case "scenes": return cmdScenes(rest[0], rest);
     case "changelog": return cmdChangelog(rest);
-    case "persona": return cmdPersona();
+    case "persona": return cmdPersona(rest);
     case "sync": return cmdSync(rest);
     case "mark-done": return cmdMarkDone();
     case "unlock": return cmdUnlock();
     case "config": return cmdConfig(rest);
     case "daemon": return cmdDaemon(rest[0]);
+    case "view": return cmdView(rest);
     case "contrib": return cmdContrib(rest);
     default:
       console.error(`Unknown command: ${cmd}. Run 'tmem --help' for usage.`);
