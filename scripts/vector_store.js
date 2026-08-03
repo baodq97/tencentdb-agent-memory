@@ -15,20 +15,34 @@ const path = require("node:path");
 const RRF_K = 60;
 
 class VectorStore {
-  constructor(dbPath, dimensions = 768) {
+  constructor(dbPath, dimensions = 768, { readOnly = false } = {}) {
     this.dbPath = path.resolve(dbPath);
     this.dimensions = dimensions;
+    this.readOnly = readOnly;
     this.degraded = false;
     this.db = null;
 
-    fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
+    // READ path (readOnly): open read-only and touch nothing — no mkdir, no WAL
+    // pragma, no CREATE VIRTUAL TABLE. A missing file, a store with no l1_vec
+    // table, or a failed sqlite-vec load all fall through to degraded=true here
+    // (or on the first searchVec/count), so the read path can never create the
+    // l1_vec schema. The writer path (readOnly=false) is byte-for-byte unchanged.
+    if (!readOnly) {
+      fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
+    }
 
     try {
-      this.db = new DatabaseSync(this.dbPath, { allowExtension: true });
-      this.db.exec("PRAGMA journal_mode=WAL");
-      this.db.enableLoadExtension(true);
-      require("sqlite-vec").load(this.db);
-      this._initSchema();
+      if (readOnly) {
+        this.db = new DatabaseSync(this.dbPath, { readOnly: true, allowExtension: true });
+        this.db.enableLoadExtension(true);
+        require("sqlite-vec").load(this.db);
+      } else {
+        this.db = new DatabaseSync(this.dbPath, { allowExtension: true });
+        this.db.exec("PRAGMA journal_mode=WAL");
+        this.db.enableLoadExtension(true);
+        require("sqlite-vec").load(this.db);
+        this._initSchema();
+      }
     } catch {
       this.degraded = true;
       this.db = null;

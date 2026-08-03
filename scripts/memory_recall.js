@@ -32,6 +32,31 @@ const {
 const DEFAULT_MAX_TOKENS = 280;
 
 /**
+ * Open an FTS MemoryStore READ-ONLY for recall, returning null (never throwing)
+ * when the store cannot contribute. This is the per-store degradation gate: the
+ * read path must never create schema, so three failure modes that schema-creation
+ * used to mask are now real and must each degrade THIS store to "no memories" —
+ * WITHOUT taking down the sibling store (a missing PROJECT store must still let
+ * the GLOBAL store answer, and vice versa):
+ *   - the DB file does not exist yet          → DatabaseSync throws SQLITE_CANTOPEN
+ *   - the file exists but has no l1_fts table  → the probe SELECT throws "no such table"
+ *   - any other open/schema surprise           → treated the same
+ * The probe fires the "no such table" failure here, at open time, instead of
+ * mid-search, so callers get a clean null-or-usable store.
+ */
+function openMemoryStoreRO(dbPath) {
+  let store = null;
+  try {
+    store = new MemoryStore(dbPath, { readOnly: true });
+    store.db.prepare("SELECT 1 FROM l1_fts LIMIT 1").get();
+    return store;
+  } catch {
+    if (store) { try { store.close(); } catch {} }
+    return null;
+  }
+}
+
+/**
  * Per-turn persona budget (chars), OWN pool — see getPersona().
  *
  * Deliberately not `getPersonaMaxTokens()`: that (1200 tok ≈ 4800 chars) is the
@@ -283,18 +308,22 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
   const gDir = globalDir();
   const gDb = path.join(gDir, "index.db");
   if (fs.existsSync(gDb)) {
-    const store = new MemoryStore(gDb);
-    memories.push(...store.search(query, topK));
-    store.close();
+    const store = openMemoryStoreRO(gDb);
+    if (store) {
+      memories.push(...store.search(query, topK));
+      store.close();
+    }
   }
 
   if (projectHash) {
     const pDir = projectDir(projectHash);
     const pDb = path.join(pDir, "index.db");
     if (fs.existsSync(pDb)) {
-      const store = new MemoryStore(pDb);
-      memories.push(...store.search(query, topK));
-      store.close();
+      const store = openMemoryStoreRO(pDb);
+      if (store) {
+        memories.push(...store.search(query, topK));
+        store.close();
+      }
     }
   }
 
@@ -440,7 +469,8 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   for (const dir of dirs) {
     const db = path.join(dir, "index.db");
     if (!fs.existsSync(db)) continue;
-    const store = new MemoryStore(db);
+    const store = openMemoryStoreRO(db);
+    if (!store) continue;
     ftsResults.push(...store.search(query, topK * 2));
     store.close();
   }
@@ -454,17 +484,19 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
         for (const dir of dirs) {
           const vecDb = path.join(dir, "vectors.db");
           if (!fs.existsSync(vecDb)) continue;
-          const vecStore = new VectorStore(vecDb);
+          const vecStore = new VectorStore(vecDb, undefined, { readOnly: true });
           if (!vecStore.degraded) {
             const hits = vecStore.searchVec(queryVec, topK * 2);
             const ftsDb = path.join(dir, "index.db");
             if (fs.existsSync(ftsDb)) {
-              const ftsStore = new MemoryStore(ftsDb);
-              for (const hit of hits) {
-                const meta = ftsStore.get(hit.record_id);
-                if (meta) vecResults.push({ ...meta, distance: hit.distance });
+              const ftsStore = openMemoryStoreRO(ftsDb);
+              if (ftsStore) {
+                for (const hit of hits) {
+                  const meta = ftsStore.get(hit.record_id);
+                  if (meta) vecResults.push({ ...meta, distance: hit.distance });
+                }
+                ftsStore.close();
               }
-              ftsStore.close();
             }
           }
           vecStore.close();

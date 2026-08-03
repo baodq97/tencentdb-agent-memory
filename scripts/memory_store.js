@@ -53,8 +53,19 @@ CREATE TABLE IF NOT EXISTS store_meta (
 )`;
 
 class MemoryStore {
-  constructor(dbPath) {
+  constructor(dbPath, { readOnly = false } = {}) {
     this.dbPath = path.resolve(dbPath);
+    this.readOnly = readOnly;
+    // READ path: open read-only and touch nothing. No mkdir, no WAL pragma, no
+    // CREATE TABLE, no schema_version INSERT — so recalling against a missing or
+    // never-synced store can never manufacture schema (a would-be "unmeasured"
+    // store silently becoming a "measured 0%"). Callers must be ready for the
+    // open — or the first query — to throw (see openMemoryStoreRO in
+    // memory_recall.js), and degrade that store to "contributes nothing".
+    if (readOnly) {
+      this.db = new DatabaseSync(this.dbPath, { readOnly: true });
+      return;
+    }
     fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec("PRAGMA journal_mode=WAL");
