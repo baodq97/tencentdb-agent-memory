@@ -9,3 +9,9 @@ node_modules/
 
 # local working docs (plans, specs, design notes) — not part of the published plugin
 docs/superpowers/
+
+# tooling scratch — not project content
+.playwright-cli/
+
+# design-skill scratch (candidate variants, preview state) — not shipped
+.design-flow/
