@@ -19,7 +19,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
-  NAV, heatEmoji, navLine, sceneText, rankScenes, renderSceneNav,
+  NAV, heatEmoji, navLine, sceneText, byHeatDesc, rankScenes, renderSceneNav,
 } = require("../scripts/scene_nav.js");
 
 const scene = (name, summary, heat = 5) => ({ name, heat, summary });
@@ -162,4 +162,38 @@ test("navLine: the cue reaches the rendered line", () => {
   assert.ok(!navLine(scene("s", "sum", 3)).includes("🔥"));
   // Unparseable heat still renders a line rather than throwing.
   assert.ok(navLine({ name: "s", heat: undefined, summary: "" }).startsWith("- s (heat=0"));
+});
+
+// ── byHeatDesc — the fallback order, in one place ──
+//
+// rankScenes is an exact no-op for an empty query, so this ordering IS what the
+// agent sees on a prompt that matches nothing, and view/transform.js has to
+// reproduce it exactly for `visibleInNav` to count the block that actually
+// renders. It used to be spelled by hand at both call sites, with different
+// coercion: `parseInt(x, 10) || 0` in memory_recall.js, `Number(x) || 0` in
+// transform.js.
+
+test("byHeatDesc: heat descending, stable within a heat, input untouched", () => {
+  const input = [scene("a", "", 2), scene("b", "", 5), scene("c", "", 5), scene("d", "", 4)];
+  const out = byHeatDesc(input);
+  assert.deepEqual(names(out), ["b", "c", "d", "a"]);
+  assert.deepEqual(names(input), ["a", "b", "c", "d"], "the caller's array must not be mutated");
+  assert.notEqual(out, input);
+});
+
+test("byHeatDesc: coerces heat the way the RENDERER reads it — parseInt, not Number", () => {
+  // navLine prints parseInt(heat), so an order built on Number could disagree
+  // with the numbers printed on the lines it ordered.
+  // Under `Number` these coerce to NaN->0 and 4.7, which would put both BELOW
+  // the heat-3 row; under parseInt they read 5 and 4, as printed.
+  const rows = [{ name: "three", heat: 3 }, { name: "junk", heat: "5x" }, { name: "flt", heat: "4.7" }];
+  assert.deepEqual(names(byHeatDesc(rows)), ["junk", "flt", "three"]);
+  assert.ok(navLine({ name: "num", heat: "5x", summary: "" }).includes("heat=5"));
+  assert.ok(navLine({ name: "flt", heat: "4.7", summary: "" }).includes("heat=4"));
+});
+
+test("byHeatDesc: junk in, an array out — the nav must never throw at the caller", () => {
+  assert.deepEqual(byHeatDesc(undefined), []);
+  assert.deepEqual(byHeatDesc(null), []);
+  assert.deepEqual(names(byHeatDesc([{ name: "x" }, { name: "y", heat: 3 }])), ["y", "x"]);
 });

@@ -46,9 +46,13 @@
 
 const { significantTokens } = require("./grounding.js");
 const { buildIdf, relevanceScore } = require("./persona_projection.js");
-
-/** Token→char factor shared with memory_recall.js and the persona budgets. */
-const CHARS_PER_TOKEN = 4;
+/**
+ * Token→char factor shared with memory_recall.js and the persona budgets. Read
+ * from the leaf rather than redeclared: this file used to carry its own `= 4`,
+ * which is exactly the drift persona_projection's copy of the comment warns
+ * about. Re-exported because transform.js imports it from here.
+ */
+const { CHARS_PER_TOKEN } = require("./constants.js");
 
 /**
  * Literal parts of the block. Exported because the view reports the budget
@@ -117,6 +121,36 @@ function sceneText(scene) {
   return `${(scene && scene.name) || ""} ${(scene && scene.summary) || ""}`.trim();
 }
 
+/** Heat as the renderer reads it. `parseInt` — see {@link byHeatDesc}. */
+const heatOf = (s) => parseInt(s && s.heat, 10) || 0;
+
+/**
+ * The FALLBACK order every caller hands to {@link rankScenes}: heat descending,
+ * input order preserved within a heat (Array#sort is stable).
+ *
+ * WHY IT IS HERE AND NOT AT THE CALL SITES. `rankScenes` is an exact no-op for an
+ * empty query, which makes the caller-supplied order load-bearing — it IS the
+ * rendered order on every turn with no prompt text. And `transform.sceneNavVisibility()`
+ * must reproduce whatever `memory_recall.buildSceneNav()` does, exactly, or the
+ * `visibleInNav` count it reports is a count of a different block. Both spelled
+ * this sort out by hand and they had already diverged on coercion:
+ * `parseInt(x, 10) || 0` on one side, `Number(x) || 0` on the other.
+ *
+ * `parseInt` is the one kept, because it is what the RENDERER uses: `navLine()`
+ * prints `heat=${parseInt(...)}` and `rankScenes` breaks ties with the same
+ * reading. An order sorted by `Number` could therefore disagree with the numbers
+ * printed on the very lines it ordered ("4.7" prints as 4 but sorts above 5's
+ * neighbours; "5x" prints as 5 but sorts as 0). Heat is written as a small
+ * integer by the consolidator; where it is not, matching the printed value is the
+ * only reading with a defensible meaning.
+ *
+ * @param {Array<{heat: number|string}>} scenes
+ * @returns {Array} A new array; the input is never mutated.
+ */
+function byHeatDesc(scenes) {
+  return (Array.isArray(scenes) ? scenes : []).slice().sort((a, b) => heatOf(b) - heatOf(a));
+}
+
 /**
  * Order one group of scenes by relevance to `query`.
  *
@@ -153,7 +187,6 @@ function rankScenes(scenes, query) {
   const qTokens = new Set(significantTokens(query || ""));
   if (!qTokens.size || list.length < 2) return list.slice();
 
-  const heatOf = (s) => parseInt(s && s.heat, 10) || 0;
   // buildIdf reads `.text` off each item and keys its token cache by identity,
   // so the wrapper is what gets passed in and what gets looked up.
   const docs = list.map((s, i) => ({ scene: s, i, text: sceneText(s) }));
@@ -218,5 +251,5 @@ function renderSceneNav(orderedScenes, maxChars) {
 }
 
 module.exports = {
-  CHARS_PER_TOKEN, NAV, heatEmoji, truncate, navLine, sceneText, rankScenes, renderSceneNav,
+  CHARS_PER_TOKEN, NAV, heatEmoji, truncate, navLine, sceneText, byHeatDesc, rankScenes, renderSceneNav,
 };
