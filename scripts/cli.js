@@ -1161,6 +1161,64 @@ function viewFail(msg) {
 }
 
 /**
+ * How many snapshot files `<root>/view/` retains.
+ *
+ * Ten, because each file is ~280 KB and nothing in this system ever reads one
+ * back (serve.js always recomputes live) — they exist so a human can diff two
+ * states around a change or attach one to a bug report. Ten covers a full
+ * debugging session with room to spare (an unpruned real store accumulated 14
+ * over a single afternoon) while bounding the directory at ~2.8 MB, so an
+ * unattended cron'd `--snapshot` can no longer grow without limit. Retention is
+ * by mtime, not by id: ids are content-derived, so re-taking an unchanged
+ * snapshot rewrites the same file and its freshness is what should count.
+ */
+const SNAPSHOT_KEEP = 10;
+
+/**
+ * Only files this exact pattern produces, in this exact directory, are ever
+ * candidates — `view/` also holds events.jsonl, server-info.json and lockfiles,
+ * and this function deletes. `isFile()` on a Dirent is lstat-based, so a symlink
+ * pointing anywhere is not a candidate either.
+ */
+const SNAPSHOT_FILE_RE = /^snapshot-s\d+-[0-9a-f]{16}\.json$/;
+
+/**
+ * Delete all but the newest `keep` snapshots in `dir`. Best-effort by design:
+ * housekeeping must never turn a successful export into a failed command, so
+ * every failure path returns/continues rather than throwing.
+ *
+ * @param {string} dir       The `view/` directory. Not searched recursively.
+ * @param {number} keep
+ * @param {string} [protect] Path that must survive regardless (the file just written).
+ * @returns {string[]} Paths actually removed.
+ */
+function pruneSnapshots(dir, keep, protect) {
+  const removed = [];
+  try {
+    const protectReal = protect ? path.resolve(protect) : null;
+    const files = [];
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!ent.isFile() || !SNAPSHOT_FILE_RE.test(ent.name)) continue;
+      const full = path.join(dir, ent.name);
+      try {
+        files.push({ full, mtime: fs.statSync(full).mtimeMs });
+      } catch { /* vanished or unreadable — leave it alone */ }
+    }
+    if (files.length <= keep) return removed;
+    // Newest first; name as a tiebreaker so the order is total and deterministic.
+    files.sort((a, b) => b.mtime - a.mtime || (a.full < b.full ? -1 : 1));
+    for (const f of files.slice(keep)) {
+      if (protectReal && path.resolve(f.full) === protectReal) continue;
+      try {
+        fs.unlinkSync(f.full);
+        removed.push(f.full);
+      } catch { /* best-effort */ }
+    }
+  } catch { /* unreadable dir — nothing to prune */ }
+  return removed;
+}
+
+/**
  * `--snapshot` writes the payload to a FILE and prints a summary, rather than
  * dumping it to stdout. The payload measures ~228 KB / ~5 500 records: a terminal
  * dump is unreadable, and piping it would make the summary (which is the part a
@@ -1207,6 +1265,8 @@ function cmdViewSnapshot(opts) {
     viewFail(`could not write ${outPath} — ${e.message}`);
   }
 
+  const pruned = pruneSnapshots(sessionDir, SNAPSHOT_KEEP, outPath);
+
   const bytes = fs.statSync(outPath).size;
   const stores = Array.isArray(snapshot.stores) ? snapshot.stores.length : 0;
   const gaps = Array.isArray(snapshot.gaps) ? snapshot.gaps.length : 0;
@@ -1223,6 +1283,7 @@ function cmdViewSnapshot(opts) {
   say(`  gaps      ${gaps}`);
   say(`  pipeline  ${ms.toFixed(1)} ms`);
   say(`  wrote     ${outPath}  (${humanBytes(bytes)})`);
+  if (pruned.length) say(`  pruned    ${pruned.length} older snapshot${pruned.length === 1 ? "" : "s"} (keeping ${SNAPSHOT_KEEP})`);
 
   // Zero stores is a real, honest reading of an empty root — but it looks exactly
   // like a healthy system with nothing in it, and the commonest cause is a typo'd
