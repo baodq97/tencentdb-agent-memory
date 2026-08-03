@@ -48,7 +48,7 @@ Group project-scoped atoms by topic into narrative scenes.
 Write each scene using a heredoc to handle multiline content:
 
 ```bash
-cat <<'SCENE_EOF' | tmem write-scene --name "Scene Name" --summary "One-line summary" --heat 3
+cat <<'SCENE_EOF' | tmem write-scene --name "Scene Name" --summary "One-line summary, max 80 chars" --heat 3
 ## Key Facts
 - Fact 1
 - Fact 2
@@ -61,8 +61,41 @@ SCENE_EOF
 **Guidelines:**
 - Group by topic, not by session
 - Aim for 5-15 scenes per project — fewer if topics are narrow, more if diverse
-- Heat 4-5: active this week. Heat 2-3: recent but not current. Heat 1: historical.
+- Heat 4-5: active this week. Heat 2-3: recent but not current. Heat 1: historical. Only heat 5 (two flames) and heat 4 (one flame) get a flame cue in the nav; 1-3 render none, so reserve 4-5 for genuinely current work rather than defaulting there.
 - Each scene should be understandable on its own
+
+**How the summary is delivered** (write for the reader, it cannot summarise you):
+
+The `--summary` is not part of the scene body. It becomes one line in the per-turn scene-navigation block — `- Scene Name (heat=5 🔥🔥) <summary>` — and that block has a hard **800-char** budget. The renderer truncates every summary at **80 characters** and appends `...`. Whatever you write past character 80 is displayed nowhere, in any surface: not in the nav, not on the way to the body. It is not "extra detail", it is discarded text.
+
+Last measurement: real summaries averaged **164 chars** (median 152), so a rendered nav line ran ~130 chars and the 800-char budget fitted about **5 lines**. The store held **219 scenes** — **214 of them were unreachable in a given turn**. Query-ranked ordering changed *which* five appear; it cannot change *how many*, because the count is bounded by line width. That is fixable only here, on the write side.
+
+**Summary-length rule: 80 characters — about 12 words — hard ceiling.**
+
+The derivation is the truncation point itself: at 80 chars the renderer cuts, so 80 is the longest summary that is fully shown. Aim at ~60. Every char you save is budget that buys another scene a line in the same block.
+
+Check your own output before writing it — no tool needed:
+
+- An 80-char summary is **one wrapped line at 80 columns**. If it wraps to a second line, it is over.
+- Or count words: **≤ 12**. If you have to re-read it to know, it is too long.
+
+**A summary is a signpost, not an abstract.** Its only job is to let the reader decide whether to run `tmem scene <name>`. It should name the subject and the distinguishing detail — enough to tell this scene apart from its neighbours — and nothing else. The full narrative belongs in the scene body, which is loaded on demand and has no budget. Do not restate the body in miniature; do not open with "This scene covers…". Lead with the distinguishing noun, since the tail is what gets cut.
+
+**This applies to summaries you are only carrying through, not just to new ones.** When you reuse an existing scene name (step 4), you rewrite its summary too — pass the old one through the same 80-char test and shorten it. Scenes you never re-touch keep their over-long summaries forever, so shortening on re-consolidation is the only path by which an already-bloated store improves.
+
+Example, using synthetic data:
+
+```
+before (171 chars — cut at 80, the rest never rendered):
+--summary "Investigation into why the Orchard API deploy pipeline was failing on
+  Node 20, including the pnpm lockfile mismatch Dev Aster found and the CI matrix
+  change that finally fixed it"
+
+after (58 chars):
+--summary "Orchard API deploy failed on Node 20: pnpm lockfile mismatch"
+```
+
+The dropped clauses are not lost — they are Key Facts and Decisions in the scene body, where they belong.
 
 ### 5. Generate L3 persona
 
