@@ -173,6 +173,96 @@ test("purity: importing and running transform loads no I/O module", () => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+// Schema version — the id must say which rules produced it
+// ───────────────────────────────────────────────────────────────────────────
+
+test("schema version: every snapshot id carries it, so a pre-bump file is self-identifying", () => {
+  // Pinned deliberately. This branch moved READER_FIRST_FLAME_AT 50 -> 4, dropped
+  // the SCENE_ORPHANED/SCENE_DANGLING gap kinds and grew SceneStats/Totals — all
+  // changes of *meaning*, which is what this number tracks. Anyone changing the
+  // contract's semantics again should have to change this line too.
+  assert.equal(C.SCHEMA_VERSION, 2);
+  assert.equal(C.SNAPSHOT_ID_SPEC.prefix, `s${C.SCHEMA_VERSION}-`);
+
+  // The retired kinds really are gone — the bump above is not cosmetic.
+  assert.equal(Object.values(C.GAP_KIND).includes("scene_orphaned"), false);
+  assert.equal(Object.values(C.GAP_KIND).includes("scene_dangling"), false);
+
+  const snap = T.transformRoot(rootExtract([
+    storeExtract("global", { records: [rec("m_1")], vectors: ["m_1"], scenes: [scene("alpha")] }),
+  ]));
+  assert.equal(snap.schemaVersion, C.SCHEMA_VERSION);
+  assert.ok(snap.snapshotId.startsWith(C.SNAPSHOT_ID_SPEC.prefix), `${snap.snapshotId} lost its version prefix`);
+  assert.ok(C.isSnapshotId(snap.snapshotId));
+
+  // The envelope agrees with the payload; a client checks one number, not two.
+  assert.equal(C.apiOk(null).schemaVersion, C.SCHEMA_VERSION);
+  assert.equal(C.apiError("x", "y").schemaVersion, C.SCHEMA_VERSION);
+
+  // Ids from an older contract stay *readable* (they are quoted in bug reports
+  // and ack events) but are no longer mistakable for current output.
+  assert.ok(C.isSnapshotId("s1-b41d81cf395452e7"));
+  assert.equal("s1-b41d81cf395452e7".startsWith(C.SNAPSHOT_ID_SPEC.prefix), false);
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Snapshot retention (cli.js, the I/O layer — transform stays pure)
+//
+// The one test in this file that spawns a process and touches a filesystem,
+// because the code under test *deletes files*. It runs against a throwaway
+// --root under os.tmpdir(); it never goes near ~/.memory-tencentdb.
+// ───────────────────────────────────────────────────────────────────────────
+
+test("tmem view --snapshot: keeps the newest 10 snapshots and touches nothing else", () => {
+  const os = require("node:os");
+  const { spawnSync } = require("node:child_process");
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-prune-"));
+  const viewDir = path.join(root, "view");
+  fs.mkdirSync(viewDir, { recursive: true });
+
+  // 14 plausible snapshots, oldest first, one minute apart.
+  const hex = (i) => String(i).padStart(16, "0");
+  const made = [];
+  for (let i = 0; i < 14; i++) {
+    const p = path.join(viewDir, `snapshot-s2-${hex(i)}.json`);
+    fs.writeFileSync(p, "{}\n");
+    const t = new Date(Date.UTC(2026, 0, 1, 0, i));
+    fs.utimesSync(p, t, t);
+    made.push(path.basename(p));
+  }
+
+  // Everything else that legitimately lives in view/ — and one near-miss name.
+  const decoys = ["events.jsonl", "server-info.json", "server-stopped", "snapshot-README.md", "snapshot-s2-nothex.json"];
+  for (const d of decoys) fs.writeFileSync(path.join(viewDir, d), "keep me");
+  fs.mkdirSync(path.join(viewDir, "snapshot-s2-0000000000000099.json"), { recursive: true }); // a directory, not a file
+
+  const cli = path.join(__dirname, "..", "scripts", "cli.js");
+  const res = spawnSync(process.execPath, [cli, "view", "--snapshot", "--root", root], { encoding: "utf8" });
+  assert.equal(res.status, 0, res.stderr);
+
+  const left = fs.readdirSync(viewDir).filter((n) => /^snapshot-s\d+-[0-9a-f]{16}\.json$/.test(n)).sort();
+  const leftFiles = left.filter((n) => fs.statSync(path.join(viewDir, n)).isFile());
+
+  // 14 old + 1 new = 15; the 5 oldest go, the newest 10 stay.
+  assert.equal(leftFiles.length, 10, `expected 10 snapshots, got ${leftFiles.length}: ${leftFiles.join(", ")}`);
+  for (const gone of made.slice(0, 5)) assert.equal(leftFiles.includes(gone), false, `${gone} should have been pruned`);
+  for (const kept of made.slice(5)) assert.equal(leftFiles.includes(kept), true, `${kept} was pruned too eagerly`);
+
+  // The file this run just wrote is never a pruning candidate, whatever its mtime.
+  const written = /wrote\s+(\S+snapshot-s\d+-[0-9a-f]{16}\.json)/.exec(res.stdout);
+  assert.ok(written, `no 'wrote' line in:\n${res.stdout}`);
+  assert.ok(fs.existsSync(written[1]));
+  assert.ok(path.basename(written[1]).startsWith(`snapshot-s${C.SCHEMA_VERSION}-`), written[1]);
+
+  // Nothing that is not a snapshot was considered.
+  for (const d of decoys) assert.ok(fs.existsSync(path.join(viewDir, d)), `pruning removed ${d}`);
+  assert.ok(fs.statSync(path.join(viewDir, "snapshot-s2-0000000000000099.json")).isDirectory());
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 // Vector states — the three-way split
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -279,6 +369,27 @@ test("coverage: every metric a transform emits satisfies validateCoverage", () =
 // ───────────────────────────────────────────────────────────────────────────
 // Low-signal classification
 // ───────────────────────────────────────────────────────────────────────────
+
+// The lens and the write-side noise gate must classify with ONE function, not two
+// that agree today. `test/noise_gate.test.js` used to pin the two copies equal
+// over a battery of inputs; identity is the stronger pin, because a battery only
+// covers the inputs somebody thought of.
+test("classifyLowSignal: transform re-exports low_signal.js, it does not re-implement it", () => {
+  const lowSignal = require("../scripts/low_signal.js");
+  assert.equal(T.classifyLowSignal, lowSignal.classifyLowSignal,
+    "transform.js has grown its own copy of the classifier again");
+
+  // And the reason it can be imported at all: low_signal.js does no I/O either,
+  // so the purity transform.js is tested on survives the dependency. (Its own
+  // docstring mentions `require("../low_signal.js")` in prose, so this checks what
+  // must NOT be there rather than the exact list.)
+  const src = fs.readFileSync(path.join(__dirname, "..", "scripts", "low_signal.js"), "utf-8");
+  for (const re of [/require\(["'](node:)?fs["']\)/, /require\(["']node:sqlite["']\)/,
+    /require\(["'](node:)?http["']\)/, /require\(["'](node:)?child_process["']\)/]) {
+    assert.equal(re.test(src), false, `low_signal.js gained a ${re} and would break transform's purity`);
+  }
+  assert.ok(/require\(["']\.\/view\/contract\.js["']\)/.test(src));
+});
 
 test("classifyLowSignal: crafted records land in the intended classes", () => {
   const cls = T.classifyLowSignal;
@@ -489,6 +600,7 @@ test("sceneNavVisibility: heat-descending fill that BREAKS on overflow, not skip
   assert.equal(tight.visible, 1);
   // short-b would have fitted; the long line in front of it hides everything behind.
   assert.equal(tight.invisible, 2);
+  assert.equal(tight.status, STATUS.OK);
 
   const roomy = T.sceneNavVisibility(scenes, 4000);
   assert.equal(roomy.visible, 3);
@@ -496,21 +608,127 @@ test("sceneNavVisibility: heat-descending fill that BREAKS on overflow, not skip
   assert.ok(roomy.usedChars <= 4000);
 
   // A disabled nav budget makes every scene invisible — an honest 0, not a crash.
-  assert.deepEqual(T.sceneNavVisibility(scenes, 0), { visible: 0, invisible: 3, usedChars: 0, budgetChars: 0 });
-  assert.deepEqual(T.sceneNavVisibility(scenes, null), { visible: 0, invisible: 3, usedChars: 0, budgetChars: null });
+  // Measured, and measured for the global store too: nothing renders for anyone.
+  assert.deepEqual(T.sceneNavVisibility(scenes, 0),
+    { status: STATUS.OK, reason: null, visible: 0, invisible: 3, usedChars: 0, budgetChars: 0 });
+  assert.deepEqual(T.sceneNavVisibility(scenes, null),
+    { status: STATUS.OK, reason: null, visible: 0, invisible: 3, usedChars: 0, budgetChars: null });
+  assert.deepEqual(T.sceneNavVisibility(scenes, 0, { scope: SCOPE.GLOBAL }),
+    { status: STATUS.OK, reason: null, visible: 0, invisible: 3, usedChars: 0, budgetChars: 0 });
   assert.equal(T.sceneNavVisibility([], 800).visible, 0);
+});
+
+// The point of contract.js is that the lens does not invent its own arithmetic.
+// This is the pin: whatever `sceneNavVisibility` reports must be what the REAL
+// renderer — the one memory_recall.buildSceneNav() injects with — returns for the
+// same list at the same budget. A hand-rolled estimate would show up here as a
+// disagreement long before it showed up as a wrong number on a dashboard.
+test("sceneNavVisibility: the renderer is the source of truth, not a second estimate", () => {
+  const { renderSceneNav, navLine, NAV } = require("../scripts/scene_nav.js");
+
+  // Realistic shape: live summaries average 164 chars, the renderer cuts them to
+  // 80, so a line runs ~130 and an 800-char block holds about five of them.
+  const scenes = Array.from({ length: 40 }, (_, i) =>
+    scene(`scene-block-name-${i}`, { heat: 5 - (i % 4), summary: "s".repeat(164) }));
+
+  for (const budget of [140, 300, 800, 2000, 40000]) {
+    const ordered = scenes.slice().sort((a, b) => (Number(b.heat) || 0) - (Number(a.heat) || 0));
+    const rendered = renderSceneNav(
+      ordered.map((s) => ({ name: s.name, heat: s.heat, summary: s.summary })), budget);
+    const got = T.sceneNavVisibility(scenes, budget);
+    assert.equal(got.visible, rendered.visibleCount, `visible disagrees with the renderer at ${budget} chars`);
+    assert.equal(got.usedChars, rendered.usedChars, `usedChars disagrees with the renderer at ${budget} chars`);
+    assert.equal(got.visible + got.invisible, scenes.length);
+  }
+
+  // And the shape that makes ~5 the right answer at the default budget: the cut
+  // is the renderer's, not a number this file re-derived.
+  assert.equal(NAV.SUMMARY_MAX_CHARS, 80);
+  assert.ok(navLine(scenes[0]).length > 110 && navLine(scenes[0]).length < 145,
+    `a rendered line should run ~130 chars, got ${navLine(scenes[0]).length}`);
+  assert.equal(T.sceneNavVisibility(scenes, 800).visible, 5);
 });
 
 test("scenes: written-but-invisible is a finding", () => {
   const scenes = Array.from({ length: 40 }, (_, i) => scene(`scene-${i}`, { heat: 5, summary: "x".repeat(70) }));
   const records = [rec("m_1"), rec("m_2")];
-  const snap = T.transformRoot(rootExtract([storeExtract("global", { records, scenes })]));
+  // A PROJECT store: its scenes render first in its own nav block, so the count
+  // is exact. (Global is the one that cannot be measured standalone — below.)
+  const snap = T.transformRoot(rootExtract([storeExtract("proj-a", { records, scenes })]));
 
   const s = snap.stores[0];
   assert.equal(s.scenes.count, 40);
+  assert.equal(s.scenes.navStatus, STATUS.OK);
   assert.ok(s.scenes.invisibleInNav > 0);
   assert.equal(s.scenes.visibleInNav + s.scenes.invisibleInNav, 40);
   assert.ok(gapKinds(snap).includes(GAP_KIND.SCENE_INVISIBLE));
+
+  // The totals sum PER-PROJECT blocks. With one project it is that project's
+  // block; with several it is a reachability count, never one block's line count.
+  assert.equal(snap.totals.scenesVisibleInNav, s.scenes.visibleInNav);
+  assert.equal(snap.totals.scenesInvisibleInNav, s.scenes.invisibleInNav);
+  assert.equal(snap.totals.scenesNavUnmeasured, 0);
+});
+
+test("scenes: the totals are a sum over per-project blocks, not one block's contents", () => {
+  // Three projects, each with its own `<scene-navigation>` and its own budget. No
+  // session ever renders more than one of them, so the sum below is "reachable in
+  // some project", and it is legitimately larger than any single block.
+  const many = (n, tag) => Array.from({ length: n }, (_, i) =>
+    scene(`${tag}-scene-block-name-${i}`, { heat: 5, summary: "s".repeat(164) }));
+  const snap = T.transformRoot(rootExtract([
+    storeExtract("proj-a", { records: [rec("m_1")], scenes: many(30, "a") }),
+    storeExtract("proj-b", { records: [rec("m_2")], scenes: many(30, "b") }),
+    storeExtract("proj-c", { records: [rec("m_3")], scenes: many(30, "c") }),
+  ]));
+
+  const perStore = snap.stores.map((s) => s.scenes.visibleInNav);
+  assert.deepEqual(perStore, [5, 5, 5], "each block holds about five lines at 800 chars");
+  assert.equal(snap.totals.scenes, 90);
+  assert.equal(snap.totals.scenesVisibleInNav, 15);
+  assert.equal(snap.totals.scenesInvisibleInNav, 75);
+  // The sum is NOT what one turn sees. Whoever reads it as such gets 15 where the
+  // agent gets 5 — the same misreading in the other direction as reading 219
+  // scenes as one queue.
+  assert.ok(snap.totals.scenesVisibleInNav > Math.max(...perStore));
+});
+
+test("scenes: global nav visibility is unmeasured, never a plausible number", () => {
+  // Global scenes render AFTER the active project's, in the same block, so how
+  // many appear is a different answer per project. Computed as if global rendered
+  // alone it was an upper bound presented as a measurement.
+  const scenes = Array.from({ length: 12 }, (_, i) => scene(`g-${i}`, { heat: 5, summary: "s".repeat(164) }));
+  const snap = T.transformRoot(rootExtract([
+    storeExtract("global", { records: [rec("m_1")], scenes }),
+    storeExtract("proj-a", { records: [rec("m_2")], scenes: [scene("p-0", { heat: 5 })] }),
+  ]));
+
+  const g = snap.stores.find((s) => s.slug === "global");
+  assert.equal(g.scenes.count, 12);
+  assert.equal(g.scenes.navStatus, STATUS.UNMEASURED);
+  assert.match(g.scenes.navReason, /active project/);
+  // Contract §1: an unmeasured reading carries nulls, not zeros.
+  assert.equal(g.scenes.visibleInNav, null);
+  assert.equal(g.scenes.invisibleInNav, null);
+  assert.equal(g.scenes.navUsedChars, null);
+  // The budget IS known; it is the split that is not.
+  assert.equal(g.scenes.navBudgetChars, 800);
+
+  // The 12 leave both totals and land in the caveat, exactly as an unmeasured
+  // store's records leave a Coverage denominator.
+  const t = snap.totals;
+  assert.equal(t.scenes, 13);
+  assert.equal(t.scenesVisibleInNav, 1);
+  assert.equal(t.scenesInvisibleInNav, 0);
+  assert.equal(t.scenesNavUnmeasured, 12);
+  assert.equal(t.scenesNavUnmeasuredReasons.length, 1);
+
+  // Reported as an absence, not dropped — and `unmeasured` caps it below critical.
+  const g0 = snap.gaps.find((x) => x.kind === GAP_KIND.SCENE_INVISIBLE && x.subject.slug === "global");
+  assert.ok(g0, "a store whose visibility cannot be measured must still say so");
+  assert.equal(g0.unmeasured, true);
+  assert.equal(g0.severity, SEVERITY.WARN);
+  assert.equal(g0.evidence.invisibleInNav, undefined, "no invented number in the evidence");
 });
 
 // ── A deleted join, and the test shape that hid it ──────────────────────────
@@ -565,7 +783,8 @@ test("scene join: a fixture that constructs the link still produces no finding a
   const s = snap.stores[0];
   assert.deepEqual(
     Object.keys(s.scenes).sort(),
-    ["count", "heatBuckets", "heatValues", "navBudgetChars", "navUsedChars", "invisibleInNav", "staleHot", "visibleInNav"].sort(),
+    ["count", "heatBuckets", "heatValues", "navBudgetChars", "navUsedChars", "navStatus", "navReason",
+      "invisibleInNav", "staleHot", "visibleInNav"].sort(),
     "SceneStats grew or lost a field — if it is a scene_name join, it is not measurable",
   );
   for (const g of snap.gaps) {

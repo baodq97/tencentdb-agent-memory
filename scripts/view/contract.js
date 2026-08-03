@@ -34,7 +34,23 @@
  */
 "use strict";
 
-const SCHEMA_VERSION = 1;
+/**
+ * Version of the *meaning* of everything in this file, not just its shape.
+ *
+ * It is embedded in every snapshotId (`s${SCHEMA_VERSION}-…`, see
+ * {@link SNAPSHOT_ID_SPEC}) and in every API envelope, so a persisted snapshot
+ * can always be told apart from one produced by code that judges it differently.
+ * Bump it whenever a field is added or removed, a threshold moves, or a gap kind
+ * appears or disappears — an old file that keeps the old number then reads as
+ * "computed under other rules" instead of silently masquerading as current.
+ *
+ * History:
+ *   1 — initial contract.
+ *   2 — HEAT_SCALE.READER_FIRST_FLAME_AT 50 -> 4; gap kinds SCENE_ORPHANED and
+ *       SCENE_DANGLING removed; SceneStats gained navStatus/navReason (`global`
+ *       is `unmeasured`, not zero); Totals gained fields.
+ */
+const SCHEMA_VERSION = 2;
 
 /* ------------------------------------------------------------------ *
  * 1. Status + Source
@@ -633,9 +649,27 @@ function storeSizeBytes(ref) {
  * @property {number} count
  * @property {Object<string, number>} heatBuckets   Keyed by {@link HEAT_BUCKETS} key.
  * @property {number} staleHot                      Hot per {@link STALE_HOT} but not recently updated.
- * @property {number} visibleInNav    Scenes that fit inside the scene-navigation char budget.
- * @property {number} invisibleInNav  count - visibleInNav. Written, never seen.
+ * @property {Status} navStatus  Whether the nav split below is a measurement.
+ *   `ok` for every project store: `memory_recall.buildSceneNav()` renders THAT
+ *   project's scenes first, so nothing competes with them and the count is exact.
+ *   `unmeasured` for the `global` store when it holds scenes — global renders
+ *   AFTER the active project's, so how many appear is a different number in every
+ *   project (usually zero, a project's own scenes having already filled the
+ *   block). It was previously computed as if global rendered alone, which is an
+ *   upper bound wearing a measurement's clothes; there is no single answer to
+ *   publish, so none is.
+ * @property {string|null} navReason  Why, when `navStatus` is not `ok`.
+ * @property {number|null} visibleInNav  Scenes that fit inside THIS store's
+ *   `<scene-navigation>` block — measured by running the real renderer
+ *   (`scene_nav.renderSceneNav`) over the real ordering, at the effective budget,
+ *   NOT by a second estimate. At the default 800 chars that is about five lines:
+ *   a rendered line is ~130 chars once the summary is cut to
+ *   `NAV.SUMMARY_MAX_CHARS`. `null` when `navStatus` is not `ok` — never 0.
+ * @property {number|null} invisibleInNav  count - visibleInNav. Written, never seen.
+ *   `null` when `navStatus` is not `ok`.
  * @property {number|null} navBudgetChars  Budget used for the split; null if unknown.
+ * @property {number|null} navUsedChars    Chars the rendered block occupies,
+ *   scaffolding included; `null` when `navStatus` is not `ok`.
  *
  * REMOVED: `orphanScenes` and `danglingSceneNames`. They counted the two sides of
  * a join between `l1_records.scene_name` and scene filenames that nothing in this
@@ -990,11 +1024,24 @@ function validateCoverage(cov, label = "coverage") {
  *   drift verdict against {@link LOW_SIGNAL_BASELINE}. Declared because a consumer
  *   that cannot find this field renders "not measured" over a number that WAS
  *   measured — the original blending bug inverted, and just as wrong.
- * @property {number} scenesVisibleInNav    Scenes that fit inside the scene-nav budget,
- *   summed over stores.
- * @property {number} scenesInvisibleInNav  Scenes written but never rendered into the
- *   nav block. Sits beside `scenes` deliberately: a scene count with no visibility
- *   count is the "5,496 records" screen this whole view exists to refuse.
+ * @property {number} scenesVisibleInNav    Scenes that fit inside the scene-nav
+ *   budget, SUMMED OVER THE PER-PROJECT NAV BLOCKS — one block per project store,
+ *   each budgeted independently, and no session ever renders more than one of
+ *   them. It answers "across every project, how many written scenes are reachable
+ *   at all"; it is NOT the number of lines in any single block. A single block
+ *   holds about five (a rendered line is ~130 chars against an 800-char budget),
+ *   so quoting this sum as one block's contents overstates what any turn receives
+ *   by the number of projects. Measured stores only — see `scenesNavUnmeasured`.
+ * @property {number} scenesInvisibleInNav  Scenes written but never rendered into
+ *   their project's nav block. Sits beside `scenes` deliberately: a scene count
+ *   with no visibility count is the "5,496 records" screen this whole view exists
+ *   to refuse.
+ * @property {number} scenesNavUnmeasured   Scenes living in stores whose nav
+ *   visibility could not be measured (today: `global`, whose scenes render behind
+ *   whichever project is active). NOT in either count above and never folded into
+ *   one, exactly as {@link Coverage}.unmeasuredRecords is not folded into a ratio.
+ * @property {string[]} scenesNavUnmeasuredReasons  Deduped, so the caveat can be
+ *   rendered rather than inferred.
  * @property {Object<string, number>} gapsBySeverity   Excludes unmeasured gaps.
  * @property {number} unmeasuredGaps                   Counted separately, on purpose.
  */
@@ -1046,7 +1093,10 @@ function validateCoverage(cov, label = "coverage") {
  *   3. Append `persona\t${personaBytes|"NA"}\t${personaMtime|""}`.
  *   4. Join with `\n`, prefix `v${SCHEMA_VERSION}\n`, and take
  *        sha256(utf8) -> hex -> first 16 chars.
- *   5. Format: `s1-<16 hex>` (`s` + SCHEMA_VERSION + `-` + digest).
+ *   5. Format: `s<SCHEMA_VERSION>-<16 hex>` — currently `s2-<16 hex>`.
+ *      The version is inside the id on purpose: two runs over identical state
+ *      but different contract semantics MUST NOT share an id, and a file named
+ *      `snapshot-s1-*.json` is self-evidently pre-v2.
  *
  * Deliberately cheap: no content hashing, so it is O(stores) not O(records).
  * It answers "is this the same state I exported?", not "is every byte identical".

@@ -69,7 +69,7 @@ const C = require("./contract.js");
 const {
   STATUS, SCOPE, RECORD_TYPES, RECORD_TYPE_OTHER,
   WRITE_PATH, WRITE_PATHS, writePathForRecordId,
-  LOW_SIGNAL, LOW_SIGNAL_CLASSES, LOW_SIGNAL_UNION_CLASSES, LOW_SIGNAL_BASELINE,
+  LOW_SIGNAL_CLASSES, LOW_SIGNAL_UNION_CLASSES, LOW_SIGNAL_BASELINE,
   validateLowSignalUnion,
   DUPLICATE_TIERS, HEAT_BUCKETS, HEAT_SCALE, STALE_HOT,
   DUTY_CLASSES, INJECTION_TIERS,
@@ -141,63 +141,25 @@ function vectorStateFor(vectors) {
  * 2. Low-signal classification
  * ------------------------------------------------------------------ */
 
-const ESCAPE_RE = /[.*+?^${}()|[\]\\]/g;
-const escapeRe = (s) => String(s).replace(ESCAPE_RE, "\\$&");
-
 /**
- * Assent-token matcher for the `continuation` class.
+ * The classifier is IMPORTED, not defined here.
  *
- * Built from {@link LOW_SIGNAL.CONTINUATION_OPENERS} rather than hand-written so
- * the legend and the classifier cannot drift. Longest-first alternation ("go
- * ahead" before "go"), and the trailing boundary is an explicit
- * `(?![\p{L}\p{N}])` instead of `\b`: `\b` is ASCII-only, so after "ừ" or "được"
- * it demands a following word character and the Vietnamese openers — half the
- * list — would never match.
+ * It used to live in this file, and `memory_auto_capture.js`'s write-side noise
+ * gate could not reuse it: requiring transform.js drags in persona_projection,
+ * scene_nav and the load-time ladder assertion below, which THROWS when the heat
+ * ladder and the contract disagree — a lens invariant able to take the capture
+ * path down with it. So the predicates moved to `low_signal.js` (pure, requires
+ * only contract.js) and both sides import them. That is the whole point: the
+ * dashboard must never name a class of junk the writer silently keeps admitting,
+ * and the writer must never drop a record the lens never counted.
+ *
+ * `low_signal.js` is safe for a module whose contract is "no I/O": its only
+ * require is `./view/contract.js`, which requires nothing at all.
+ *
+ * Re-exported below so existing consumers (and `buildRecordRows`) keep reading
+ * one definition rather than acquiring a second one.
  */
-const CONTINUATION_RE = new RegExp(
-  `^\\s*(?:${[...LOW_SIGNAL.CONTINUATION_OPENERS]
-    .sort((a, b) => b.length - a.length)
-    .map(escapeRe)
-    .join("|")})(?![\\p{L}\\p{N}])`,
-  "iu",
-);
-
-const SLASH_OR_TAG_RE = new RegExp(
-  `^\\s*[${LOW_SIGNAL.SLASH_OR_TAG_PREFIXES.map(escapeRe).join("")}]`,
-);
-
-/**
- * Which low-signal classes a record's content matches.
- *
- * Classes overlap on purpose — a truncated `<task-notification>` is three of them
- * — so the per-class counts sum well above the number of affected records and the
- * UNION is the only number that may be quoted as a share. See
- * {@link LOW_SIGNAL_CLASSES} for why `tooShort`, `sceneless` and `defaultPriority`
- * are absent: each flags volume rather than noise.
- *
- * Prefixes are tested with a leading-whitespace tolerance but no trimming of the
- * body, because `pasteDump` is a statement about the raw stored length (the
- * 500-char capture ceiling in memory_auto_capture.truncate()).
- *
- * @param {string} content
- * @returns {string[]} subset of {@link LOW_SIGNAL_CLASSES}, in declaration order
- */
-function classifyLowSignal(content) {
-  const text = typeof content === "string" ? content : String(content == null ? "" : content);
-  const hit = [];
-  const lead = text.replace(/^\s+/, "");
-
-  if (lead.startsWith(LOW_SIGNAL.TASK_NOTIFICATION_PREFIX)) hit.push("taskNotification");
-  if (lead.slice(0, LOW_SIGNAL.SKILL_ECHO_PREFIX.length).toLowerCase() === LOW_SIGNAL.SKILL_ECHO_PREFIX) {
-    hit.push("skillEcho");
-  }
-  if (SLASH_OR_TAG_RE.test(text)) hit.push("slashOrTag");
-  if (text.length < LOW_SIGNAL.CONTINUATION_MAX_CHARS && CONTINUATION_RE.test(text)) hit.push("continuation");
-  if (text.length >= LOW_SIGNAL.PASTE_DUMP_MIN_CHARS) hit.push("pasteDump");
-  if (!text.trim()) hit.push("empty");
-
-  return hit;
-}
+const { classifyLowSignal } = require("../low_signal.js");
 
 /** True when any matched class is in the pinned union set. */
 function isLowSignalUnion(classes) {
@@ -413,33 +375,70 @@ const SCENE_NAV = Object.freeze({
 });
 
 /**
- * How many of a store's scenes actually fit inside the scene-navigation block.
+ * How many of a store's scenes actually fit inside the scene-navigation block
+ * that `memory_recall.buildSceneNav()` renders for THAT store's project.
  *
- * No longer *replays* `buildSceneNav()` — it now RUNS the same renderer
- * (`scene_nav.renderSceneNav`), so "the agent can see five of them" is measured
- * by the code that decides it rather than by a copy that agreed on the day it was
- * written. What stays here is the part that is genuinely the view's: the ordering
- * (heat-descending; the runtime additionally puts project scenes before global
- * ones, see the caveat below) and the visible/invisible split.
+ * ONE NAV BLOCK PER PROJECT — WHICH IS WHAT THIS COUNTS. `buildSceneNav()` is
+ * called with the active project's hash and renders that project's scenes,
+ * followed by the global store's, into ONE budget. So there is no such thing as
+ * a corpus-wide "how many of the 219 scenes are visible": the 219 live in 19
+ * different projects, each with its own block, and no session ever renders more
+ * than one of them. Summing per-store counts (what `totals.scenesVisibleInNav`
+ * does) answers "across every project, how many written scenes are reachable at
+ * all"; it is NOT the size of any single block, which is ~5 lines at the default
+ * 800-char budget because a rendered line runs ~130 chars (a real summary
+ * averages 164 and the renderer cuts it to {@link NAV.SUMMARY_MAX_CHARS}).
+ * Reading the sum as one block's contents is how "78 of 219 visible" and "5 of
+ * 219 visible" get mistaken for the same measurement.
+ *
+ * It does not *replay* `buildSceneNav()`: it RUNS the same renderer
+ * (`scene_nav.renderSceneNav`) over the same ordering, so "the agent can see five
+ * of them" is measured by the code that decides it rather than by a second
+ * estimate. The ordering is heat-descending, which is `buildSceneNav`'s own
+ * fallback order — the runtime then applies `rankScenes(…, query)`, and an EMPTY
+ * query is documented to be an exact no-op, so the unranked order this reproduces
+ * is the one a query-less turn renders. The lens has no query, and inventing one
+ * would make the count a function of a prompt nobody typed.
  *
  * The fill BREAKS on the first overflowing line rather than skipping it, so one
- * long line hides every scene behind it. That behaviour now lives in one place;
- * changing it is one edit, not two. This is the difference between "219 scenes"
- * and "the agent can see five of them".
+ * long line hides every scene behind it. That behaviour lives in the renderer;
+ * changing it is one edit, not two.
  *
- * CAVEAT worth knowing when reading the number for the `global` store: the real
- * nav renders project scenes first and global scenes after, so global's scenes
- * compete for whatever budget a project left. Computed standalone here, `global`
- * is therefore an upper bound; every project store's figure is exact.
+ * THE `global` STORE IS NOT MEASURABLE STANDALONE, and says so rather than
+ * reporting a number. Global scenes render AFTER the active project's, so how
+ * many of them appear depends on which project you are in — it is a different
+ * answer per project (usually zero, because a project with five scenes already
+ * fills the budget), and there is no "the" answer to publish. Computed as if
+ * global rendered alone, it was an upper bound that the docstring admitted and
+ * the payload did not; the contract has a status vocabulary for exactly this, so
+ * it now returns `unmeasured` with the reason instead of a plausible zero-shaped
+ * number. Every project store's figure remains exact — project scenes go first,
+ * so nothing competes with them.
  *
  * @param {import("./contract.js").SceneFile[]} scenes
  * @param {number|null} budgetChars null/0 => nav disabled, nothing is visible
- * @returns {{visible: number, invisible: number, usedChars: number, budgetChars: number|null}}
+ * @param {{scope?: string}} [opts] {@link SCOPE} of the owning store.
+ * @returns {{status: string, reason: string|null, visible: number|null,
+ *            invisible: number|null, usedChars: number|null, budgetChars: number|null}}
  */
-function sceneNavVisibility(scenes, budgetChars) {
+function sceneNavVisibility(scenes, budgetChars, { scope = SCOPE.PROJECT } = {}) {
   const list = scenes || [];
   if (!budgetChars || budgetChars <= 0) {
-    return { visible: 0, invisible: list.length, usedChars: 0, budgetChars: budgetChars ?? null };
+    // A disabled nav is a MEASURED zero, global or not: nothing renders for anyone.
+    return {
+      status: STATUS.OK, reason: null,
+      visible: 0, invisible: list.length, usedChars: 0, budgetChars: budgetChars ?? null,
+    };
+  }
+
+  if (scope === SCOPE.GLOBAL && list.length > 0) {
+    return {
+      status: STATUS.UNMEASURED,
+      reason: "global scenes render after the active project's in a shared " +
+        `${budgetChars}-char nav block, so their visibility differs per project — ` +
+        "there is no standalone count",
+      visible: null, invisible: null, usedChars: null, budgetChars,
+    };
   }
 
   const ordered = list.slice().sort((a, b) => (Number(b.heat) || 0) - (Number(a.heat) || 0));
@@ -452,6 +451,8 @@ function sceneNavVisibility(scenes, budgetChars) {
   );
 
   return {
+    status: STATUS.OK,
+    reason: null,
     visible: rendered.visibleCount,
     invisible: list.length - rendered.visibleCount,
     usedChars: rendered.usedChars,
@@ -477,6 +478,8 @@ const EMPTY_SCENE_STATS = Object.freeze({
   heatBuckets: Object.freeze(zeroMap(HEAT_BUCKETS.map((b) => b.key))),
   heatValues: Object.freeze({}),
   staleHot: 0,
+  navStatus: STATUS.OK,
+  navReason: null,
   visibleInNav: 0,
   invisibleInNav: 0,
   navBudgetChars: null,
@@ -530,7 +533,7 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
       lowSignal: null, lowSignalUnion: null, duplicates: null,
       vectors: unmeasuredVectors(`store unreadable: ${rd.reason}`),
       vectorState: VECTOR_STATE.UNMEASURED,
-      scenes: summariseScenes(sr, { now, navBudgetChars }),
+      scenes: summariseScenes(sr, { now, navBudgetChars, scope: ref.scope }),
       newestRecordAt: null, oldestRecordAt: null,
       missingByMonth: null,
     };
@@ -692,7 +695,7 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
     // unknown, so this stays measured even when `vectors` above does not, and no
     // fourth state is needed to express the difference.
     vectorState: vectorStateFor(vr),
-    scenes: summariseScenes(sr, { now, navBudgetChars }),
+    scenes: summariseScenes(sr, { now, navBudgetChars, scope: ref.scope }),
     newestRecordAt,
     oldestRecordAt,
     // Slice-derived, so it is only reportable when the slice is the whole store.
@@ -710,9 +713,14 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
  * them. Nothing else needed the record-side scene names, so summariseStore no
  * longer collects them.
  *
+ * `scope` is passed down because nav visibility is only measurable for a project
+ * store — see {@link sceneNavVisibility}. It defaults to `project`, the case that
+ * IS measurable, so a caller with no ref in hand gets the exact figure rather
+ * than an unmeasured one it did not ask for.
+ *
  * @param {import("./contract.js").ScenesRead} sr
  */
-function summariseScenes(sr, { now, navBudgetChars }) {
+function summariseScenes(sr, { now, navBudgetChars, scope = SCOPE.PROJECT }) {
   if (!sr || sr.status !== STATUS.OK || !Array.isArray(sr.scenes)) return null;
 
   const scenes = sr.scenes;
@@ -730,13 +738,19 @@ function summariseScenes(sr, { now, navBudgetChars }) {
     }
   }
 
-  const nav = sceneNavVisibility(scenes, navBudgetChars);
+  const nav = sceneNavVisibility(scenes, navBudgetChars, { scope });
 
   return {
     count: scenes.length,
     heatBuckets,
     heatValues,
     staleHot,
+    // The nav split carries its own status: the scenes were read perfectly, it is
+    // the VISIBILITY of them that is unknowable for the global store. Contract §1
+    // — an unmeasured reading holds nulls, never numbers, so nothing downstream
+    // can add an upper bound into a total and call it measured.
+    navStatus: nav.status,
+    navReason: nav.reason,
     visibleInNav: nav.visible,
     invisibleInNav: nav.invisible,
     navBudgetChars: nav.budgetChars,
@@ -1152,7 +1166,29 @@ function buildGaps({ stores, persona, state, config, captureState, heat }) {
 
     // ---- scenes ----------------------------------------------------
     if (!s.scenes) continue;
-    if (s.scenes.invisibleInNav > 0) {
+    if (s.scenes.navStatus !== STATUS.OK && s.scenes.count > 0) {
+      // The scenes ARE written and the block IS budgeted; what cannot be computed
+      // is how many survive, because global renders behind whichever project is
+      // active. Reported as an absence of measurement rather than dropped: a store
+      // that says nothing looks like a store with nothing to say. `unmeasured`
+      // caps it at warn by construction (contract.gap), and carries no
+      // invisibleInNav — there is no honest number to put there.
+      gaps.push(gap({
+        kind: GAP_KIND.SCENE_INVISIBLE,
+        severity: SEVERITY.WARN,
+        unmeasured: true,
+        subject: subjectFor(s),
+        title: `${s.label}: how many of ${s.scenes.count} scenes appear in scene-navigation ` +
+          "depends on the active project and was not measured",
+        evidence: {
+          slug: s.slug,
+          scenes: s.scenes.count,
+          navBudgetChars: s.scenes.navBudgetChars,
+          reason: s.scenes.navReason,
+        },
+        suggestion: null,
+      }));
+    } else if (s.scenes.invisibleInNav > 0) {
       gaps.push(gap({
         kind: GAP_KIND.SCENE_INVISIBLE,
         severity: s.scenes.visibleInNav === 0 ? SEVERITY.CRITICAL : SEVERITY.WARN,
@@ -1447,6 +1483,8 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
   let readableStores = 0, erroredStores = 0;
   let lowSignalUnion = 0;
   let scenesVisibleInNav = 0, scenesInvisibleInNav = 0, staleHot = 0;
+  let scenesNavUnmeasured = 0;
+  const scenesNavUnmeasuredReasons = new Set();
   let observedMinHeat = null, observedMaxHeat = null;
 
   const covEntries = [];
@@ -1524,8 +1562,17 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
 
     if (s.scenes) {
       scenes += s.scenes.count;
-      scenesVisibleInNav += s.scenes.visibleInNav;
-      scenesInvisibleInNav += s.scenes.invisibleInNav;
+      // Measured stores only. A store whose nav visibility is unmeasurable keeps
+      // its scenes OUT of both counts and into `scenesNavUnmeasured` — the same
+      // rule Coverage applies to records, for the same reason: an upper bound
+      // added to a sum is indistinguishable from a measurement afterwards.
+      if (s.scenes.navStatus === STATUS.OK) {
+        scenesVisibleInNav += s.scenes.visibleInNav;
+        scenesInvisibleInNav += s.scenes.invisibleInNav;
+      } else {
+        scenesNavUnmeasured += s.scenes.count;
+        if (s.scenes.navReason) scenesNavUnmeasuredReasons.add(s.scenes.navReason);
+      }
       staleHot += s.scenes.staleHot;
       for (const k of Object.keys(heatBuckets)) heatBuckets[k] += s.scenes.heatBuckets[k];
       for (const [h, n] of Object.entries(s.scenes.heatValues)) {
@@ -1615,8 +1662,15 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     duplicates,
     duplicateGroups: duplicateGroupCount,
     heat: { values: heatValues, buckets: heatBuckets, observedMin: heat.observedMin, observedMax: heat.observedMax, scenesWithACue: heat.scenesWithACue },
+    // Summed over the PER-PROJECT nav blocks, not over one block: each project
+    // renders its own `<scene-navigation>` and no session ever sees two of them.
+    // See sceneNavVisibility() — misreading this sum as the size of a single
+    // block is what turns "77 of 219 reachable somewhere" into a false claim that
+    // one block shows 77 lines (it shows about five).
     scenesVisibleInNav,
     scenesInvisibleInNav,
+    scenesNavUnmeasured,
+    scenesNavUnmeasuredReasons: [...scenesNavUnmeasuredReasons],
     navBudgetChars,
     gapsBySeverity,
     unmeasuredGaps,
@@ -1744,7 +1798,12 @@ function main() {
   console.log(`                observed ${t.heat.observedMin}-${t.heat.observedMax}, reader flames at ` +
     `${HEAT_SCALE.READER_FIRST_FLAME_AT} => ${t.heat.scenesWithACue} scenes ever rendered a flame`);
   console.log(`scene nav       ${t.scenesVisibleInNav} visible / ${t.scenesInvisibleInNav} invisible ` +
-    `(budget ${t.navBudgetChars} chars)`);
+    `(budget ${t.navBudgetChars} chars, summed over ${t.scenes ? "per-project blocks" : "no blocks"} — ` +
+    "one block holds ~5 lines)");
+  if (t.scenesNavUnmeasured > 0) {
+    console.log(`                ${t.scenesNavUnmeasured} scenes excluded as unmeasurable: ` +
+      t.scenesNavUnmeasuredReasons.join("; "));
+  }
   console.log("");
   const pj = snap.persona.projection;
   if (pj) {
