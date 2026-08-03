@@ -19,7 +19,7 @@ const { getSceneMaxTokens } = require("./memory_auto_capture.js");
 // Pure renderer + ranker, shared with view/transform.js so the block the agent
 // receives and the block the visualiser measures can never be two different
 // algorithms.
-const { renderSceneNav, rankScenes } = require("./scene_nav.js");
+const { renderSceneNav, rankScenes, byHeatDesc } = require("./scene_nav.js");
 const {
   parsePersona,
   projectTier1,
@@ -86,16 +86,16 @@ function buildSceneNav(projectHash, query = "", sceneMaxTokens = getSceneMaxToke
   // Normalised here, at the boundary: `listScenes` yields `filename`, the block
   // prints a bare name, so the extension is stripped on the way in rather than
   // inside the shared core. Heat desc is the FALLBACK order rankScenes keeps
-  // when the query says nothing about a scene.
+  // when the query says nothing about a scene — `byHeatDesc` rather than a local
+  // sort, because the view has to reproduce this order exactly for its
+  // visible-scene count to be a count of THIS block.
   const group = (dir) =>
     rankScenes(
-      listScenes(dir)
-        .map((s) => ({
-          name: (s.filename || "").replace(/\.md$/, ""),
-          heat: parseInt(s.heat, 10) || 0,
-          summary: s.summary || "",
-        }))
-        .sort((x, y) => y.heat - x.heat),
+      byHeatDesc(listScenes(dir).map((s) => ({
+        name: (s.filename || "").replace(/\.md$/, ""),
+        heat: parseInt(s.heat, 10) || 0,
+        summary: s.summary || "",
+      }))),
       query,
     );
 
@@ -118,26 +118,13 @@ function buildSceneNav(projectHash, query = "", sceneMaxTokens = getSceneMaxToke
  * every prompt whether or not anyone wanted memory, while `tmem recall` /
  * `tmem search` is someone deliberately looking something up. Mixing the two
  * would make the log's hit rate meaningless.
+ *
+ * Every caller states which it is via `recall()`/`recallAsync()`'s `source`
+ * argument. It defaults to HOOK because the hook is the caller that fires
+ * unattended on every prompt; the two deliberate entry points (`cli.js:cmdRecall`
+ * and this file's own `main()`) pass CLI explicitly.
  */
 const RECALL_SOURCE = Object.freeze({ HOOK: "hook", CLI: "cli" });
-
-/**
- * Infer the source from the entry point, so no call site has to be rewritten.
- *
- * Both existing callers pass exactly `(query, projectHash)` — `hooks/scripts/
- * on_user_prompt.js` and `cli.js:cmdRecall` — so nothing in the arguments can
- * tell them apart. They ARE distinct processes though: cli.js is spawned by the
- * `tmem` launcher (scripts/tmem.js spawns it with `spawnSync`), and the hook is
- * spawned by Claude Code. `require.main` therefore already carries the answer.
- *
- * An explicit `source` argument overrides this and is the preferred way for any
- * NEW caller to identify itself; the sniff exists so adding the log did not
- * require editing files on the hot path to get a correct first data point.
- */
-function detectSource() {
-  const entry = (require.main && require.main.filename) || "";
-  return /(^|[\\/])cli\.js$/.test(entry) ? RECALL_SOURCE.CLI : RECALL_SOURCE.HOOK;
-}
 
 /**
  * Append-only READ log, one line per recall, at the memory root beside
@@ -253,7 +240,32 @@ function renderMemories(memories, maxChars) {
   };
 }
 
-function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 5, source = detectSource()) {
+/**
+ * Close out a recall: append the rendered atoms to `parts`, wrap the whole thing
+ * in `<memory-context>`, log the read, and hand back the block.
+ *
+ * Shared by recall() and recallAsync() for the same reason renderMemories() is:
+ * these two paths differ only in how they FIND candidates, and when the tail was
+ * copy-pasted the log schema was defined twice and free to drift. One definition
+ * of what a log row contains, one definition of the wrapper.
+ */
+function finishRecall(parts, rendered, { source, query }) {
+  if (rendered.text) parts.push(rendered.text);
+  const context = parts.length ? "<memory-context>\n" + parts.join("\n") + "\n</memory-context>" : "";
+  // Logged on EVERY path, including the empty one: a recall that returned
+  // nothing is the most interesting row in the file.
+  appendRecallLog({
+    at: new Date().toISOString(),
+    source,
+    query,
+    injectedIds: rendered.injectedIds,
+    droppedIds: rendered.droppedIds,
+    chars: context.length,
+  });
+  return context;
+}
+
+function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 5, source = RECALL_SOURCE.HOOK) {
   const maxChars = maxTokens * CHARS_PER_TOKEN;
   const parts = [];
 
@@ -288,21 +300,7 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
 
   memories = dedupeAndRank(memories, topK);
 
-  const rendered = renderMemories(memories, maxChars);
-  if (rendered.text) parts.push(rendered.text);
-
-  const context = parts.length ? "<memory-context>\n" + parts.join("\n") + "\n</memory-context>" : "";
-  // Logged on EVERY path, including the empty one: a recall that returned
-  // nothing is the most interesting row in the file.
-  appendRecallLog({
-    at: new Date().toISOString(),
-    source,
-    query,
-    injectedIds: rendered.injectedIds,
-    droppedIds: rendered.droppedIds,
-    chars: context.length,
-  });
-  return context;
+  return finishRecall(parts, renderMemories(memories, maxChars), { source, query });
 }
 
 /**
@@ -317,24 +315,38 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
  *     path segment, so a tag like "(orchard-ops)" is found without resolving anything;
  *   - path existence needs a real root, and the only reverse mapping that exists
  *     is `pathFromSlugProbe`, which walks the filesystem with backtracking
- *     (~20 statSync calls, sub-millisecond). When it returns null — the
- *     directory was deleted or renamed — `hasPath` is omitted and every
- *     path-scoped bullet is kept.
+ *     (~16 statSync calls, ~0.5 ms cold). When it returns null — the directory
+ *     was deleted or renamed — there is no path evidence either way, so
+ *     `hasPath` answers TRUE for everything and every path-scoped bullet is
+ *     kept. Keep-on-uncertainty is the whole asymmetry of this design.
  *
- * `hasPath` memoises: the same handful of paths is probed for several bullets on
- * every turn, and this is the per-turn hot path.
+ * The root is resolved LAZILY, on the first `hasPath` call, and memoised. Only
+ * bullets carrying a repo-relative path hint ever reach `hasPath` (8 of 85 in the
+ * real persona — a name-tagged bullet is decided by the slug alone), so probing
+ * eagerly spent that ~0.5 ms on every turn to answer a question most turns never
+ * ask. `hasPath` memoises its own answers too: the same handful of paths is
+ * probed for several bullets, and this is the per-turn hot path.
  */
 function projectScopeFor(projectHash) {
   if (!projectHash) return null;
-  let root = null;
-  try {
-    const { pathFromSlugProbe } = require("./memory_reader.js");
-    root = pathFromSlugProbe(projectHash);
-  } catch { root = null; }
-  if (!root) return { slug: projectHash };
+
+  let root; // undefined = not probed yet; null = probed, unresolvable
+  const resolveRoot = () => {
+    if (root === undefined) {
+      try {
+        const { pathFromSlugProbe } = require("./memory_reader.js");
+        root = pathFromSlugProbe(projectHash) || null;
+      } catch { root = null; }
+    }
+    return root;
+  };
 
   const cache = new Map();
   const hasPath = (rel) => {
+    // No root → "cannot tell", and cannot-tell keeps the bullet. Same answer the
+    // eager version produced by OMITTING hasPath entirely (admitsProject treats a
+    // missing hasPath as true), just decided here instead of at the call site.
+    if (!resolveRoot()) return true;
     if (cache.has(rel)) return cache.get(rel);
     let ok = false;
     try {
@@ -395,7 +407,7 @@ function dedupeAndRank(memories, limit) {
   const seen = new Set();
   const unique = [];
   for (const m of memories) {
-    const rid = m.record_id || m.id || "";
+    const rid = memoryId(m);
     if (seen.has(rid)) continue;
     seen.add(rid);
     unique.push(m);
@@ -407,7 +419,7 @@ function dedupeAndRank(memories, limit) {
 /* `truncate()` moved to scene_nav.js: the scene-nav summary cut was its only
  * caller, and the renderer that needs it now lives there. */
 
-async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 5, source = detectSource()) {
+async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 5, source = RECALL_SOURCE.HOOK) {
   const maxChars = maxTokens * CHARS_PER_TOKEN;
   const parts = [];
 
@@ -471,19 +483,7 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
     memories = dedupeAndRank([...ftsResults, ...vecResults], topK);
   }
 
-  const rendered = renderMemories(memories, maxChars);
-  if (rendered.text) parts.push(rendered.text);
-
-  const context = parts.length ? "<memory-context>\n" + parts.join("\n") + "\n</memory-context>" : "";
-  appendRecallLog({
-    at: new Date().toISOString(),
-    source,
-    query,
-    injectedIds: rendered.injectedIds,
-    droppedIds: rendered.droppedIds,
-    chars: context.length,
-  });
-  return context;
+  return finishRecall(parts, renderMemories(memories, maxChars), { source, query });
 }
 
 // ── CLI ──
@@ -510,8 +510,7 @@ Commands:
       flag("--project-hash"),
       parseInt(flag("--max-tokens") || String(DEFAULT_MAX_TOKENS)),
       parseInt(flag("--top-k") || "5"),
-      // Explicit: detectSource() only recognises cli.js, and running this file
-      // directly is still someone at a terminal, not the prompt hook.
+      // Running this file directly is someone at a terminal, not the prompt hook.
       RECALL_SOURCE.CLI
     );
     const fmt = flag("--format") || "text";
@@ -525,7 +524,11 @@ Commands:
 
 if (require.main === module) main();
 
+// Exported: what another file or a test actually reads. The log's own plumbing
+// (recallLogPath, appendRecallLog, RECALL_LOG_FILE) stays private — it has no
+// caller outside this file, and the tests assert against the log ON DISK, which
+// is the contract that matters.
 module.exports = {
   recall, recallAsync, buildSceneNav, renderMemories, projectScopeFor,
-  RECALL_SOURCE, RECALL_LOG_FILE, RECALL_LOG_MAX_BYTES, recallLogPath, appendRecallLog, detectSource,
+  RECALL_SOURCE, RECALL_LOG_MAX_BYTES,
 };

@@ -37,14 +37,19 @@
 "use strict";
 
 const { significantTokens } = require("./grounding.js");
+// Two shared budget values live in the leaf `constants.js` (which requires
+// nothing, so this module's no-I/O guarantee is untouched) and are re-exported
+// below: memory_auto_capture.js reads DEFAULT_TIER0_MAX_TOKENS on the Stop
+// hook's path and must not load this file to get it. Their meaning is documented
+// here, where the tier economics are.
+const { CHARS_PER_TOKEN, DEFAULT_TIER0_MAX_TOKENS } = require("./constants.js");
 
 // ── Budgets (chars; ~4 chars/token for mixed EN/VI) ──
 //
-// The ONE definition of the chars/token approximation. It was declared
-// independently in three modules, each with a comment naming the other two,
-// which is the drift hazard those comments were describing. Exported so
-// memory_recall.js, memory_auto_capture.js and the SessionStart hook share it.
-const CHARS_PER_TOKEN = 4;
+// CHARS_PER_TOKEN is the ONE definition of the chars/token approximation. It was
+// declared independently in three modules, each with a comment naming the other
+// two, which is the drift hazard those comments were describing. Re-exported so
+// memory_recall.js, scene_nav.js and the SessionStart hook share it.
 //
 // THE TIERS ARE PRICED DIFFERENTLY ON PURPOSE. Tier 0 is paid ONCE per session;
 // tier 1 is paid EVERY TURN. So "~1200 tokens of persona" costs ~1200 tokens for
@@ -67,7 +72,8 @@ const CHARS_PER_TOKEN = 4;
 // forced a `Math.floor` on the way back to tokens, making the round trip lossy
 // for any budget not divisible by 4 — this way it is exact by construction and
 // there is nothing to guard.
-const DEFAULT_TIER0_MAX_TOKENS = 1200;  // ONCE PER SESSION (see above)
+// DEFAULT_TIER0_MAX_TOKENS = 1200 — ONCE PER SESSION (see above); declared in
+// constants.js, re-exported below.
 const DEFAULT_TIER0_MAX_CHARS = DEFAULT_TIER0_MAX_TOKENS * CHARS_PER_TOKEN; // 4800
 const DEFAULT_TIER1_MAX_CHARS = 420;    // ~105 tok, EVERY TURN — economics unchanged
 const DEFAULT_INSURANCE_MAX_CHARS = 180; // slice of tier 1 reserved for cover
@@ -940,15 +946,22 @@ function projectTier1(sections, options = {}) {
   // a raw NUL makes the file "binary" to file(1) and grep, which then reports
   // "no matches" for patterns that are in fact present.
   const seen = new Set(chosen.map((c) => `${c.sectionName}\x00${c.index}`));
-  // Scope is checked BEFORE scoring, not after: a foreign rule that outranks a
-  // universal one would otherwise take the budget and then be discarded, and the
-  // universal one would never be reconsidered.
+  // Scope is checked BEFORE SELECTION — the loop below — and that is the part
+  // that matters: a foreign rule that outranks a universal one must not take the
+  // budget and then be discarded, leaving the universal one unreconsidered.
+  //
+  // WHERE in the pre-selection pipeline it runs is free, and it runs last: it is
+  // one more stable filter over the same array, so the survivors and their order
+  // are identical either way, but `projectScopeHints` (NFKC normalise + a global
+  // matchAll) is by far the most expensive predicate here and the cheap
+  // `minScore` cut already discards most conditional bullets. Running it first
+  // paid full price for ~10% of the persona pass on bullets nothing could select.
   const scope = options.projectScope || null;
   const inScope = scope ? (b) => admitsProject(projectScopeHints(b.text), scope) : () => true;
   const ranked = flat
-    .filter((b) => b.duty === "conditional" && !seen.has(`${b.sectionName}\x00${b.index}`) && inScope(b))
+    .filter((b) => b.duty === "conditional" && !seen.has(`${b.sectionName}\x00${b.index}`))
     .map((b) => ({ b, s: relevanceScore(b.text, qTokens, idf, bulletTokens && bulletTokens.get(b)) }))
-    .filter((x) => x.s >= minScore)
+    .filter((x) => x.s >= minScore && inScope(x.b))
     .sort((x, y) => y.s - x.s || x.b.sectionIndex - y.b.sectionIndex || x.b.index - y.b.index);
 
   for (const { b, s } of ranked) {

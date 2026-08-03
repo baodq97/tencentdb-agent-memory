@@ -225,6 +225,43 @@ test("projectScopeFor resolves the project root and probes inside it", (t) => {
 test("projectScopeFor degrades to keep-everything with no project or no root", () => {
   assert.strictEqual(projectScopeFor(""), null);
   const gone = projectScopeFor("-no-such-directory-anywhere-42");
-  assert.strictEqual(gone.hasPath, undefined, "unresolvable root → no path evidence → keep");
+  // Unresolvable root → no path evidence either way → "cannot tell" → KEEP.
+  // The probe is deferred, so this is answered by hasPath itself rather than by
+  // omitting hasPath; the admitsProject verdict below is the invariant, and it
+  // is the same one the eager version produced.
+  assert.strictEqual(gone.hasPath("tools/kg.py"), true, "cannot tell → keep");
+  assert.strictEqual(gone.hasPath("literally/anything"), true);
   assert.strictEqual(admitsProject(projectScopeHints(bulletStartingWith(KG).text), gone), true);
+});
+
+test("projectScopeFor does not touch the filesystem until a path is actually probed", (t) => {
+  // The root is consumed ONLY by hasPath, and only bullets carrying a
+  // repo-relative path hint ever reach it — 8 of 85 in the real persona, since a
+  // name-tagged bullet is decided by the slug alone. Resolving eagerly spent
+  // ~16 statSync calls per turn to answer a question most turns never ask.
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-scope-lazy-"));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const root = path.join(base, "orchard-kg");
+  fs.mkdirSync(path.join(root, "tools"), { recursive: true });
+  const slug = root.replace(/:/g, "-").replace(/[\\/]/g, "-");
+
+  // pathFromSlugProbe walks with fs.statSync; memory_reader holds the same
+  // node:fs module object this file does, so counting on the property works.
+  const realStat = fs.statSync;
+  let stats = 0;
+  fs.statSync = (...a) => { stats++; return realStat.apply(fs, a); };
+  t.after(() => { fs.statSync = realStat; });
+
+  const scope = projectScopeFor(slug);
+  assert.strictEqual(scope.slug, slug);
+  assert.strictEqual(stats, 0, "constructing the scope must not probe the filesystem");
+
+  assert.strictEqual(scope.hasPath("tools"), true, "and the deferred probe still resolves the root");
+  assert.ok(stats > 0, "the probe happens on first use");
+
+  const afterFirst = stats;
+  scope.hasPath("tools");
+  assert.strictEqual(stats, afterFirst, "repeat probe of the same path is memoised");
+  scope.hasPath("docs");
+  assert.strictEqual(stats, afterFirst, "and the ROOT resolution is not redone for a new path");
 });

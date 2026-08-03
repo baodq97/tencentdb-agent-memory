@@ -89,13 +89,16 @@ function cmdStatus() {
 // ── recall ──
 async function cmdRecall(query) {
   if (!query) { console.error("Usage: tmem recall <query>"); process.exit(1); }
-  const { recallAsync, recall } = req("memory_recall.js");
+  const { recallAsync, recall, RECALL_SOURCE } = req("memory_recall.js");
   const { pHash } = getDirs();
+  // `source` is stated, not sniffed: this is someone deliberately looking
+  // something up, which the read log must not mix with the prompt hook's
+  // unattended per-turn recall. maxTokens/topK keep their defaults.
   try {
-    const ctx = await recallAsync(query, pHash);
+    const ctx = await recallAsync(query, pHash, undefined, undefined, RECALL_SOURCE.CLI);
     console.log(ctx || "(no relevant memories)");
   } catch {
-    console.log(recall(query, pHash) || "(no relevant memories)");
+    console.log(recall(query, pHash, undefined, undefined, RECALL_SOURCE.CLI) || "(no relevant memories)");
   }
 }
 
@@ -725,7 +728,7 @@ function cmdUnlock() {
 
 // ── config ──
 function cmdConfig(args) {
-  const { getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, loadConfig } = req("memory_auto_capture.js");
+  const { getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, parseBoolish, loadConfig } = req("memory_auto_capture.js");
   const key = args[0];
 
   if (!key) {
@@ -755,12 +758,14 @@ function cmdConfig(args) {
     const { setRecallEnabled, getRecallEnabled } = req("memory_writer.js");
     const pHash = projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || ".");
     if (args[1] === undefined) { console.log(getRecallEnabled(pHash) ? "on" : "off"); return; }
-    const v = String(args[1]).toLowerCase();
-    if (!["on", "off", "true", "false"].includes(v)) {
-      console.error("usage: tmem config recall <on|off>");
+    // The same parser `config noise-gate` goes through, not a second accept-list:
+    // one `tmem config` command must not take `yes` for one key and exit 1 for
+    // another.
+    const enabled = parseBoolish(args[1]);
+    if (enabled === null) {
+      console.error("usage: tmem config recall <on|off> (also accepts 1/0, true/false, yes/no)");
       process.exit(1);
     }
-    const enabled = v === "on" || v === "true";
     setRecallEnabled(pHash, enabled);
     console.log(`recall ${enabled ? "on" : "off"} for this project (${pHash})`);
     return;
@@ -1175,17 +1180,39 @@ function viewFail(msg) {
 const SNAPSHOT_KEEP = 10;
 
 /**
- * Only files this exact pattern produces, in this exact directory, are ever
- * candidates — `view/` also holds events.jsonl, server-info.json and lockfiles,
- * and this function deletes. `isFile()` on a Dirent is lstat-based, so a symlink
- * pointing anywhere is not a candidate either.
+ * The snapshot filename, in ONE place: the writer below composes it and the
+ * pruner takes it apart. `view/` also holds events.jsonl, server-info.json and
+ * lockfiles, and the pruner deletes, so only what this affix pair produces —
+ * wrapped around an id the CONTRACT recognises — is ever a candidate.
  */
-const SNAPSHOT_FILE_RE = /^snapshot-s\d+-[0-9a-f]{16}\.json$/;
+const SNAPSHOT_FILE_PREFIX = "snapshot-";
+const SNAPSHOT_FILE_EXT = ".json";
+const snapshotFileName = (id) => `${SNAPSHOT_FILE_PREFIX}${id}${SNAPSHOT_FILE_EXT}`;
+
+/**
+ * Is `name` a file this CLI wrote? The id grammar is not restated here — it is
+ * `contract.isSnapshotId()`, the same predicate that validates ids everywhere
+ * else. A local regex was the earlier spelling and it is the wrong shape for a
+ * deleter: change the id format and a stale copy silently stops matching,
+ * retention silently stops running, and the only symptom is a directory that
+ * grows. Deriving it means the deleter cannot fall behind the format.
+ *
+ * @param {(v: string) => boolean} isSnapshotId  Injected so the pruner resolves
+ *   the contract once rather than per directory entry.
+ */
+function isSnapshotFileName(name, isSnapshotId) {
+  if (!name.startsWith(SNAPSHOT_FILE_PREFIX) || !name.endsWith(SNAPSHOT_FILE_EXT)) return false;
+  return isSnapshotId(name.slice(SNAPSHOT_FILE_PREFIX.length, name.length - SNAPSHOT_FILE_EXT.length));
+}
 
 /**
  * Delete all but the newest `keep` snapshots in `dir`. Best-effort by design:
  * housekeeping must never turn a successful export into a failed command, so
  * every failure path returns/continues rather than throwing.
+ *
+ * Conservative on every axis: this directory only, never recursive, and
+ * `isFile()` on a Dirent is lstat-based — so a directory or a symlink pointing
+ * anywhere is not a candidate whatever it is named.
  *
  * @param {string} dir       The `view/` directory. Not searched recursively.
  * @param {number} keep
@@ -1194,11 +1221,16 @@ const SNAPSHOT_FILE_RE = /^snapshot-s\d+-[0-9a-f]{16}\.json$/;
  */
 function pruneSnapshots(dir, keep, protect) {
   const removed = [];
+  // No contract, no candidates: a deleter that cannot check the id grammar must
+  // delete nothing at all.
+  let isSnapshotId;
+  try { ({ isSnapshotId } = req(path.join("view", "contract.js"))); } catch { return removed; }
+  if (typeof isSnapshotId !== "function") return removed;
   try {
     const protectReal = protect ? path.resolve(protect) : null;
     const files = [];
     for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (!ent.isFile() || !SNAPSHOT_FILE_RE.test(ent.name)) continue;
+      if (!ent.isFile() || !isSnapshotFileName(ent.name, isSnapshotId)) continue;
       const full = path.join(dir, ent.name);
       try {
         files.push({ full, mtime: fs.statSync(full).mtimeMs });
@@ -1257,7 +1289,7 @@ function cmdViewSnapshot(opts) {
 
   const sessionDir = path.join(root && root.rootDir ? root.rootDir : rootDir, "view");
   const id = (snapshot && snapshot.snapshotId) || "unknown";
-  const outPath = path.join(sessionDir, `snapshot-${id}.json`);
+  const outPath = path.join(sessionDir, snapshotFileName(id));
   try {
     fs.mkdirSync(sessionDir, { recursive: true });
     fs.writeFileSync(outPath, `${JSON.stringify(snapshot)}\n`);
