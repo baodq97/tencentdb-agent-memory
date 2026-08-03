@@ -160,7 +160,7 @@ right column is a concept that was not already in the left.**
 | `orphanScenes` / `danglingSceneNames` | `SceneStats` | **a summary nothing points at** / **points at a summary that is not there** | |
 | heat 1–5 | `HEAT_BUCKETS` | **active this week / active / recent / historical** | Uses the bucket `label`s already in the contract, verbatim. |
 | `HEAT_SCALE_MISMATCH` | `GAP_KIND` | **"the activity marker is never shown"** | |
-| `snapshotId` | `SNAPSHOT_ID_SPEC` | **reading** — `reading s1-b41d81cf395452e7` | Kept as a literal string; it is quoted into bug reports. |
+| `snapshotId` | `SNAPSHOT_ID_SPEC` | **reading** — `reading s1-b41d81cf395452e7` | Kept as a literal string; it is quoted into bug reports. Example id taken under schema v1; live ids now read `s2-…`. |
 | `Gap.suggestion` | `contract.js:815` | the command, shown in mono beside a **Copy command** button | |
 
 **One thing kept from the audited surface on purpose: the dashed duty chip.** The dashed border
@@ -284,7 +284,9 @@ From the audit's never-changes-silently list, the redesign touches exactly one i
 
 Everything else on that list — routes, query parameters, the envelope, `SCHEMA_VERSION`, the
 snapshot id format, the three-way `Status`, `LOW_SIGNAL_UNION_CLASSES`, the `tmem view` command —
-is untouched by this design.
+is untouched by this design. (`SCHEMA_VERSION` has since moved `1` → `2`, and with it the id
+prefix `s1-` → `s2-`, but for semantic contract changes in the scene-nav work, not for anything
+in this design.)
 
 ## Out of scope
 

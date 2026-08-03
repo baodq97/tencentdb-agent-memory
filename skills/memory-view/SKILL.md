@@ -28,7 +28,7 @@ It prints:
 
 ```
 tmem view — live mode, pid 363161, /home/dev/.memory-tencentdb
-snapshot s1-12f246b66c7e650b (175.6 ms)
+snapshot s2-12f246b66c7e650b (175.6 ms)
 Opens on "Try a prompt", tracing: how do I like tests written
 
 Open this URL verbatim — the session key is required:
@@ -57,7 +57,7 @@ One JSON object per line — anything posted to `/api/events`, each line carryin
 its target, the `snapshotId` it was seen against, and `at`/`timestamp`:
 
 ```json
-{"kind":"gap.ack","gapId":"vectors_missing:global","snapshotId":"s1-27bb076f40017b87","at":"2026-08-03T03:45:00.097Z","timestamp":1785728700}
+{"kind":"gap.ack","gapId":"vectors_missing:global","snapshotId":"s2-27bb076f40017b87","at":"2026-08-03T03:45:00.097Z","timestamp":1785728700}
 ```
 
 Expect it to be thin or absent: the rebuilt screens read the live channel but post no

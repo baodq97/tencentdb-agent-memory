@@ -234,12 +234,16 @@ Changing any of these requires the owner's explicit direction, recorded in the b
 - **Query parameters.** `?key`, `?view`, `?static`, `?demo`, `?theme`, `?q`, `?slug`. `?static=1`
   and `?theme=` are load-bearing for deterministic screenshots and CI.
 - **The API envelope** `{ok, schemaVersion, snapshotId, generatedAt, data, error}` and
-  `SCHEMA_VERSION = 1`. A UI change must not require a schema bump.
+  `SCHEMA_VERSION` (`2` since the scene-nav honesty work). A UI change must not require a schema
+  bump — the bump to `2` was not one: it paid for four semantic contract changes (heat ladder
+  50 → 4 buckets, two gap kinds removed, `SceneStats` gaining `unmeasured` semantics, new
+  `Totals` fields).
 - **The lens names** `Context`, `Signal`, `Scenes`, `Gaps` and their order — they are `?view=`
   values, i.e. URLs. *A rename is a route change.* The redesign proposes renaming them; that is
   therefore flagged in the brief as an owner decision with a compatibility note, not done
   quietly.
-- **Snapshot id format** `s1-<16 hex>` and its derivation. Shown in the UI as provenance; a bug
+- **Snapshot id format** `s<SCHEMA_VERSION>-<16 hex>` — currently `s2-<16 hex>` — and its
+  derivation. Shown in the UI as provenance; a bug
   report quotes it.
 - **The three-way `Status`** (`ok` / `unmeasured` / `error`) and the `Coverage` shape. Non-
   negotiable at any layer, including copy.
