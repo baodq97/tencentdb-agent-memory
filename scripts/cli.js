@@ -725,7 +725,7 @@ function cmdUnlock() {
 
 // ── config ──
 function cmdConfig(args) {
-  const { getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, loadConfig } = req("memory_auto_capture.js");
+  const { getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, loadConfig } = req("memory_auto_capture.js");
   const key = args[0];
 
   if (!key) {
@@ -736,6 +736,7 @@ function cmdConfig(args) {
       consolidate_every: getConsolidateEvery(),
       scene_max_tokens: getSceneMaxTokens(),
       persona_max_tokens: getPersonaMaxTokens(),
+      noise_gate: getNoiseGateEnabled() ? "on" : "off",
       recall: getRecallEnabled(pHash) ? "on" : "off",
       recall_project: pHash,
       stored: loadConfig(),
@@ -743,6 +744,7 @@ function cmdConfig(args) {
         MEMORY_CONSOLIDATE_EVERY: process.env.MEMORY_CONSOLIDATE_EVERY || null,
         MEMORY_SCENE_MAX_TOKENS: process.env.MEMORY_SCENE_MAX_TOKENS || null,
         MEMORY_PERSONA_MAX_TOKENS: process.env.MEMORY_PERSONA_MAX_TOKENS || null,
+        MEMORY_NOISE_GATE: process.env.MEMORY_NOISE_GATE || null,
       },
     }, null, 2));
     return;
@@ -800,7 +802,22 @@ function cmdConfig(args) {
     return;
   }
 
-  console.error(`Unknown config key: ${key}. Supported: consolidate-every, scene-max-tokens, persona-max-tokens, recall`);
+  // The one switch here that governs whether input is DISCARDED rather than how
+  // much output is injected, so it is spelled on/off and shown in the summary
+  // above: someone hunting a missing turn must be able to see it in one command.
+  if (key === "noise-gate") {
+    if (args[1] === undefined) { console.log(getNoiseGateEnabled() ? "on" : "off"); return; }
+    try {
+      const v = setNoiseGateEnabled(args[1]);
+      console.log(`noise-gate ${v ? "on" : "off"} (skips are logged to changelog.jsonl as action=skipped)`);
+    } catch (e) {
+      console.error(e.message);
+      process.exit(1);
+    }
+    return;
+  }
+
+  console.error(`Unknown config key: ${key}. Supported: consolidate-every, scene-max-tokens, persona-max-tokens, noise-gate, recall`);
   process.exit(1);
 }
 
@@ -1399,7 +1416,7 @@ Commands:
   sync [--full]              Embed missing vectors (delta); --full rebuilds the index
   mark-done                  Mark consolidation complete + release lock
   unlock                     Release stale consolidation lock
-  config [consolidate-every [N] | scene-max-tokens [N] | persona-max-tokens [N] | recall [on|off]]  Show config, or get/set a setting (recall = per-project context injection)
+  config [consolidate-every [N] | scene-max-tokens [N] | persona-max-tokens [N] | noise-gate [on|off] | recall [on|off]]  Show config, or get/set a setting (noise-gate = refuse low-signal turns at capture; recall = per-project context injection)
   daemon <start|status|stop>  Manage the resident embed daemon (warm vector recall)
   view [--query <q>] [--snapshot [--stdout]] [--static] [--port N] [--root <dir>]  Open the memory visualiser (live server); --snapshot exports the payload instead (tmem view --help)
   contrib <add|ingest|build|persona|playbook|compare|capabilities>  Contributor intelligence`);

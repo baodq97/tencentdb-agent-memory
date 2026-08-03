@@ -45,6 +45,7 @@ const DEFAULT_SCENE_MAX_TOKENS = 200;
 const { DEFAULT_TIER0_MAX_TOKENS } = require("./persona_projection.js");
 const DEFAULT_PERSONA_MAX_TOKENS = DEFAULT_TIER0_MAX_TOKENS;
 const MAX_CONTENT_LENGTH = 500;
+const DEFAULT_NOISE_GATE = true;
 
 function memoryBaseDir() {
   return path.join(os.homedir(), ".memory-tencentdb");
@@ -151,6 +152,87 @@ function setPersonaMaxTokens(n) {
   return v;
 }
 
+/**
+ * Is the low-signal noise gate on? env override > persisted config > default (ON).
+ *
+ * `MEMORY_NOISE_GATE=0|off|false` disables it for one run; `tmem config
+ * noise-gate off` disables it persistently. The escape hatch exists because this
+ * is the only setting in this file that DESTROYS input rather than trimming
+ * output — if a predicate turns out to be wrong for someone's corpus, they must
+ * be able to switch it off without editing code, and then read
+ * `changelog.jsonl` to see exactly what it ate.
+ */
+function getNoiseGateEnabled() {
+  const env = parseBoolish(process.env.MEMORY_NOISE_GATE);
+  if (env !== null) return env;
+  const stored = parseBoolish(loadConfig().noise_gate);
+  if (stored !== null) return stored;
+  return DEFAULT_NOISE_GATE;
+}
+
+/** null = "not set / unparseable", which is what lets env fall through to config. */
+function parseBoolish(v) {
+  if (v === true || v === false) return v;
+  const s = String(v == null ? "" : v).trim().toLowerCase();
+  if (["1", "on", "true", "yes"].includes(s)) return true;
+  if (["0", "off", "false", "no"].includes(s)) return false;
+  return null;
+}
+
+/** Persist the noise-gate switch. Throws on anything that isn't clearly on or off. */
+function setNoiseGateEnabled(v) {
+  const parsed = parseBoolish(v);
+  if (parsed === null) throw new Error("noise-gate must be on or off");
+  const cfg = loadConfig();
+  cfg.noise_gate = parsed;
+  saveConfig(cfg);
+  return parsed;
+}
+
+/**
+ * Which gated low-signal classes this content matches — the predicates come from
+ * `low_signal.js`, the same ones `tmem view` reports with, never a local copy.
+ *
+ * FAILS OPEN. If the classifier cannot be loaded at all, this returns `[]` and
+ * the record is stored. A gate that cannot be evaluated must not become a gate
+ * that rejects everything: losing a turn is worse than keeping a noisy one, and
+ * that is the whole reason the audit chose a write-side filter over a delete.
+ */
+function noiseClassesFor(content) {
+  try {
+    return require(path.join(__dirname, "low_signal.js")).noiseClasses(content);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Record a refusal where `tmem changelog` will show it.
+ *
+ * A gate that drops input silently is unauditable — the point of logging the
+ * matched CLASS (not just "skipped") is that a wrong rule can be found later by
+ * grepping for it, and the 100-char preview matches what `writeL1Record()`
+ * stores for a creation, so the two entry kinds read the same way.
+ */
+function logSkip(projectBase, { content, classes, sessionId }) {
+  try {
+    fs.mkdirSync(projectBase, { recursive: true });
+    const { appendChangelog } = require(path.join(__dirname, "memory_writer.js"));
+    appendChangelog(projectBase, {
+      action: "skipped",
+      type: "l1",
+      id: null,
+      memoryType: "episodic",
+      reason: "low-signal",
+      classes,
+      chars: content.length,
+      session_id: sessionId || "",
+      content: content.slice(0, 100),
+      timestamp: new Date().toISOString(),
+    });
+  } catch {}
+}
+
 function projectHashForCwd(cwd) {
   const { projectHashForCwd: hash } = require(path.join(__dirname, "memory_reader.js"));
   return hash(cwd);
@@ -193,6 +275,19 @@ function autoCapture({ userText, assistantText, sessionId, cwd }) {
     : path.join(memoryBaseDir(), "global");
 
   const content = truncate(userText, MAX_CONTENT_LENGTH);
+
+  // The low-signal gate. Classifies the string AS IT WOULD BE STORED, so the
+  // writer and `tmem view` are looking at the same text. See low_signal.js for
+  // which classes are gated and — more importantly — which measured classes are
+  // deliberately NOT (pasteDump, slashOrTag, continuation all match genuine user
+  // content in the real corpus).
+  if (getNoiseGateEnabled()) {
+    const classes = noiseClassesFor(content);
+    if (classes.length) {
+      logSkip(projectBase, { content, classes, sessionId });
+      return { captured: false, skipped: true, skipClasses: classes, turnCount: 0, consolidationDue: false };
+    }
+  }
 
   const record = {
     id: generateId(),
@@ -326,4 +421,4 @@ Commands:
 
 if (require.main === module) main();
 
-module.exports = { autoCapture, checkConsolidationDue, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, loadConfig };
+module.exports = { autoCapture, checkConsolidationDue, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, loadConfig };
