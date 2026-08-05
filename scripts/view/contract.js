@@ -66,8 +66,14 @@ const { LOW_SIGNAL, LOW_SIGNAL_CLASSES } = require("../constants.js");
  *       Totals.scenesNavUnmeasuredReasons (string[]) became
  *       scenesNavUnmeasuredReason (string|null): the array was a de-duplicated
  *       set of copies of one constant.
+ *   4 — Hybrid persona (0.7.0). RootExtract and Snapshot gained `projectDoctrine`
+ *       (a {@link PersonaRead}/{@link PersonaSummary}): the CURRENT project's
+ *       `<project-doctrine>`, read parallel to the cross-project global `persona`.
+ *   5 — Snapshot gained `upgradeNudges` (string[]): doctor.buildUpgradeNudges'
+ *       activation hints, surfaced on the health screen. RootExtract gained
+ *       `currentSlug` (the resolved current-project slug) to feed them.
  */
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 5;
 
 /* ------------------------------------------------------------------ *
  * 1. Status + Source
@@ -611,8 +617,15 @@ function storeSizeBytes(ref) {
 /**
  * @typedef {Object} RootExtract
  * @property {string} rootDir            `~/.memory-tencentdb`
+ * @property {string|null} currentSlug   The resolved current-project store slug
+ *   (memory_reader.projectHashForCwd), or null outside any project. A plain
+ *   identifier, not a Source: transform uses it to pick the current project's store.
  * @property {StoreExtract[]} stores
- * @property {PersonaRead} persona
+ * @property {PersonaRead} persona          The cross-project global L3 persona.
+ * @property {PersonaRead} projectDoctrine  The CURRENT project's `<project-doctrine>`
+ *   (project-scoped `persona.md`: SOPs / anti-patterns, injected once at
+ *   SessionStart). Same shape as `persona`; `unmeasured` when there is no current
+ *   project (a global-only view), never an error.
  * @property {StateRead} state
  * @property {ConfigRead} config
  * @property {CaptureStateRead} captureState
@@ -1107,7 +1120,7 @@ function validateCoverage(cov, label = "coverage") {
  *   3. Append `persona\t${personaBytes|"NA"}\t${personaMtime|""}`.
  *   4. Join with `\n`, prefix `v${SCHEMA_VERSION}\n`, and take
  *        sha256(utf8) -> hex -> first 16 chars.
- *   5. Format: `s<SCHEMA_VERSION>-<16 hex>` — currently `s3-<16 hex>`.
+ *   5. Format: `s<SCHEMA_VERSION>-<16 hex>` — currently `s5-<16 hex>`.
  *      The version is inside the id on purpose: two runs over identical state
  *      but different contract semantics MUST NOT share an id, and a file named
  *      `snapshot-s2-*.json` is self-evidently pre-v3.
@@ -1152,7 +1165,15 @@ function isSnapshotId(v) {
  * @property {string} rootDir
  * @property {Totals} totals
  * @property {StoreSummary[]} stores   Sorted by records desc, global first.
- * @property {PersonaSummary} persona
+ * @property {PersonaSummary} persona           The cross-project global persona.
+ * @property {PersonaSummary} projectDoctrine   The current project's doctrine, projected
+ *   through the SAME projection as `persona` so the two are directly comparable.
+ *   `unmeasured` when there is no current project. Deliberately NOT part of
+ *   `computeSnapshotId` — additive, like `recallUsage`.
+ * @property {string[]} upgradeNudges  Activation hints from doctor.buildUpgradeNudges
+ *   (the SAME function `tmem doctor` prints): re-consolidate to activate latent
+ *   post-0.7.0 features. `[]` when every store is already in the new shape. Additive,
+ *   and out of `computeSnapshotId`.
  * @property {Gap[]} gaps              Sorted: measured before unmeasured, then severity desc.
  * @property {{state: Object, config: Object, captureState: Object}} health
  *   Each carries its own `status`/`reason` (they are Sources).
