@@ -293,7 +293,7 @@ function isSubstantive(text) {
  * @param {string} opts.cwd - Current working directory (for project hash)
  * @returns {{ captured: boolean, turnCount: number, consolidationDue: boolean }}
  */
-function autoCapture({ userText, assistantText, sessionId, cwd }) {
+function autoCapture({ userText, assistantText, sessionId, cwd, sourceMessageIds, gitBranch, transcriptPath }) {
   if (!isSubstantive(userText)) {
     return { captured: false, turnCount: 0, consolidationDue: false };
   }
@@ -324,8 +324,23 @@ function autoCapture({ userText, assistantText, sessionId, cwd }) {
     type: "episodic",
     priority: 50,
     scene_name: "auto-capture",
-    source_message_ids: [],
-    metadata: { auto_captured: true, session_id: sessionId || "" },
+    // The cross-layer link, measured DEAD (always []). Record the real transcript
+    // uuids so consolidate can read the whole turn (user + assistant + tool
+    // results) back and distil an outcome-aware atom, instead of the verbatim
+    // prompt this row currently holds.
+    source_message_ids: Array.isArray(sourceMessageIds) ? sourceMessageIds : [],
+    metadata: {
+      auto_captured: true,
+      session_id: sessionId || "",
+      // Pointer to the L0 slice for consolidate-time distillation (WS5).
+      pointer: {
+        sessionId: sessionId || "",
+        lastUuid: (Array.isArray(sourceMessageIds) && sourceMessageIds.length) ? sourceMessageIds[sourceMessageIds.length - 1] : "",
+        cwd: cwd || "",
+        gitBranch: gitBranch || "",
+        transcriptPath: transcriptPath || "",
+      },
+    },
     timestamps: [new Date().toISOString()],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
