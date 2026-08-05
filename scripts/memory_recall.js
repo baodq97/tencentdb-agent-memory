@@ -242,6 +242,25 @@ function memoryId(m) {
 }
 
 /**
+ * The two-clock split: persona is a SESSION clock, not a per-turn one.
+ *
+ * Persona-type L1 atoms are the raw material the tier-0 persona core is
+ * consolidated from, and that core is injected ONCE per session by
+ * on_session_start.js. Re-injecting the same atoms in EVERY per-turn <memories>
+ * block is pure redundancy — measured at 46-71% of recall hits — so the per-turn
+ * clock keeps only the query-relevant NON-persona delta (episodic/instruction/…)
+ * plus the always-on tier-1 <persona> projection and the scene-nav index.
+ *
+ * Filtered HERE, on the recall path only: `MemoryStore.search()` stays a general
+ * keyword search for the CLI, the consolidator and the type-filtered lookups that
+ * legitimately want persona atoms. Defensive on shape (a row with no `type` is
+ * kept — it is not a persona atom).
+ */
+function dropPersonaAtoms(memories) {
+  return memories.filter((m) => !m || m.type !== "persona");
+}
+
+/**
  * Render the ranked memories into `<memories>`, recording what fitted and what
  * did not. Shared by recall() and recallAsync() so the two paths cannot start
  * reporting different things about the same budget.
@@ -332,7 +351,9 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
     }
   }
 
-  memories = dedupeAndRank(memories, topK);
+  // Persona is a session clock (SessionStart), not a per-turn one — drop its
+  // atoms before ranking so the delta is what remains. See dropPersonaAtoms.
+  memories = dedupeAndRank(dropPersonaAtoms(memories), topK);
 
   return finishRecall(parts, renderMemories(memories, maxChars), { source, query });
 }
@@ -509,6 +530,11 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
       }
     }
   } catch {}
+
+  // Persona is a session clock (SessionStart), not a per-turn one — drop its
+  // atoms from BOTH retrieval arms before the merge/rank. See dropPersonaAtoms.
+  ftsResults = dropPersonaAtoms(ftsResults);
+  vecResults = dropPersonaAtoms(vecResults);
 
   let memories;
   if (vecResults.length > 0 && ftsResults.length > 0) {
