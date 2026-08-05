@@ -1014,8 +1014,75 @@ function projectPersona(text, options = {}) {
   return { sections, tier0, tier1, fallback, usedCore: prefersCore(sections) };
 }
 
+/**
+ * WS2 write-side budget gate (pure). A persona is only useful if every standing
+ * (`always`) rule actually reaches the agent; the measured failure is SILENT —
+ * the reader can only drop, never condense, so overflow lands on standing rules
+ * and never surfaces. This runs the REAL tier-0 projection and reports the two
+ * write-side defects that cause the drop, so the CLI can reject at write time
+ * (gate-not-convention) instead of the consolidator learning the rule by habit.
+ *
+ * Deviation from the redesign plan's borrowed "2000 chars" cap: that was
+ * upstream's number for a whole-persona.md injection model. THIS plugin injects
+ * a tier-0 projection whose real budget is DEFAULT_TIER0_MAX_CHARS (4800), so the
+ * honest gate is "does the always-set survive tier-0 packing", not a foreign
+ * literal. Callers may override via opts for the code/team family (WS2b).
+ *
+ * Returns { ok, violations, alwaysCount, deliveredCount }. Never throws.
+ */
+function checkPersonaBudget(text, opts = {}) {
+  const maxChars = Math.max(0, opts.maxChars ?? DEFAULT_TIER0_MAX_CHARS);
+  // The per-bullet WRITE rule is the skill's documented 160 (one rule per bullet),
+  // deliberately tighter than DEFAULT_BULLET_MAX_CHARS (600), which is the tier-0
+  // ELIGIBILITY threshold above which a bullet is dropped whole. We flag at 160
+  // (discipline) and separately detect real overflow using true delivery params.
+  const bulletMax = Math.max(MIN_BULLET_CHARS, opts.bulletMaxChars ?? 160);
+  const sections = annotate(parsePersona(text));
+
+  const always = [];
+  for (const s of sections) {
+    for (const b of s.bullets) {
+      if (b.duty === "always") always.push({ ...b, section: s.name });
+    }
+  }
+
+  const violations = [];
+
+  // (1) Per-bullet ceiling — one rule per bullet, whole or not at all.
+  for (const b of always) {
+    if (b.chars > bulletMax) {
+      violations.push({
+        kind: "bullet_over_max",
+        section: b.section,
+        lineNo: b.lineNo,
+        chars: b.chars,
+        max: bulletMax,
+        preview: b.text.slice(0, 80),
+      });
+    }
+  }
+
+  // (2) Tier-0 overflow — run the real projection with TRUE delivery params
+  // (default eligibility cap, not the tighter write rule); any always bullet it
+  // can't deliver is a rule the agent silently never sees.
+  const proj = projectTier0(sections, { maxChars });
+  const delivered = proj.bullets.length;
+  if (delivered < always.length) {
+    violations.push({
+      kind: "tier0_overflow",
+      alwaysCount: always.length,
+      deliveredCount: delivered,
+      droppedCount: always.length - delivered,
+      budgetChars: maxChars,
+    });
+  }
+
+  return { ok: violations.length === 0, violations, alwaysCount: always.length, deliveredCount: delivered };
+}
+
 module.exports = {
   parsePersona,
+  checkPersonaBudget,
   classifyDuty,
   annotate,
   dutyCounts,

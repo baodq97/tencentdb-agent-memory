@@ -898,13 +898,35 @@ function cmdWriteScene(args) {
 }
 
 // ── write-persona ──
-function cmdWritePersona() {
+function cmdWritePersona(args = []) {
   const { writePersona, globalDir } = req("memory_writer.js");
+  const force = args.includes("--force");
   let content = "";
   try { content = fs.readFileSync(0, "utf-8"); } catch {}
   if (!content.trim()) { console.error("Pipe persona content to stdin. E.g.: echo '# Persona...' | tmem write-persona"); process.exit(1); }
+
+  // WS2 budget gate: a persona is only useful if every standing (`always`) rule
+  // actually reaches the agent. The reader can only drop, never condense, so
+  // overflow is SILENT data loss on standing instructions. Reject at write time
+  // (gate-not-convention) so the consolidator must compress rather than bloat.
+  // `--force` is the escape hatch for a deliberate raw write.
+  const { checkPersonaBudget } = req("persona_projection.js");
+  const budget = checkPersonaBudget(content.trim());
+  if (!budget.ok && !force) {
+    console.error("Persona rejected — it would silently drop standing rules:");
+    for (const v of budget.violations) {
+      if (v.kind === "tier0_overflow") {
+        console.error(`  • tier-0 overflow: ${v.droppedCount} of ${v.alwaysCount} always-rules won't be delivered (budget ${v.budgetChars} chars). Compress or demote bullets to reference sections.`);
+      } else if (v.kind === "bullet_over_max") {
+        console.error(`  • bullet too long (${v.chars} > ${v.max} chars) in "${v.section}" line ${v.lineNo}: "${v.preview}…" — split into one rule per bullet.`);
+      }
+    }
+    console.error("Fix the bullets, or pass --force to write anyway.");
+    process.exit(1);
+  }
+
   writePersona(globalDir(), content.trim());
-  console.log("Persona updated.");
+  console.log(force && !budget.ok ? "Persona updated (budget gate forced)." : "Persona updated.");
 }
 
 // ── mark-done ──
@@ -1829,7 +1851,7 @@ Commands:
     case "read-session": return cmdReadSession(restStr);
     case "write-l1": return cmdWriteL1(rest);
     case "write-scene": return cmdWriteScene(rest);
-    case "write-persona": return cmdWritePersona();
+    case "write-persona": return cmdWritePersona(rest);
     case "scene": return cmdScene(restStr);
     case "scenes": return cmdScenes(rest[0], rest);
     case "changelog": return cmdChangelog(rest);
