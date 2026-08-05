@@ -56,6 +56,22 @@ test("invalid scope is rejected (exit non-zero)", () => {
   assert.throws(() => run(["--scope", "team"], home, proj, CLEAN));
 });
 
+test("write-persona gate honors a lowered persona-max-tokens config", () => {
+  const { home, proj } = tmpEnv();
+  // Lower tier-0 to 200 tokens (~800 chars) — the same knob SessionStart reads.
+  execFileSync("node", [CLI, "config", "persona-max-tokens", "200"], {
+    env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: proj }, encoding: "utf-8",
+  });
+  // 12 short always-rules: ~1200 chars total — fits the 4800 default, overflows 800.
+  const lines = ["# User Persona", "", "## Standing Instructions"];
+  for (let i = 0; i < 12; i++) {
+    lines.push(`- Always keep standing rule number ${i} short, operative, and clear for the agent to follow here.`);
+  }
+  const persona = lines.join("\n") + "\n";
+  // Must REJECT under the lowered budget (before the fix the gate used 4800 and passed).
+  assert.throws(() => run(["--scope", "global"], home, proj, persona));
+});
+
 test("secret in a GLOBAL persona is rejected; project doctrine is exempt", () => {
   const { home, proj } = tmpEnv();
   const secretPersona = `# User Persona

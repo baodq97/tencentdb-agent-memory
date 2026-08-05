@@ -946,8 +946,14 @@ function cmdWritePersona(args = []) {
     }
   }
 
-  const { checkPersonaBudget } = req("persona_projection.js");
-  const budget = checkPersonaBudget(content.trim());
+  // Validate against the SAME budget the SessionStart reader uses
+  // (persona-max-tokens × CHARS_PER_TOKEN), not the hard default — otherwise a
+  // user who lowered the config passes the gate here yet still silently drops a
+  // standing rule at injection time, the exact failure this gate exists to reject.
+  const { getPersonaMaxTokens } = req("memory_auto_capture.js");
+  const { checkPersonaBudget, CHARS_PER_TOKEN } = req("persona_projection.js");
+  const maxChars = Math.max(0, Number(getPersonaMaxTokens()) || 0) * CHARS_PER_TOKEN;
+  const budget = checkPersonaBudget(content.trim(), maxChars ? { maxChars } : {});
   if (!budget.ok && !force) {
     console.error("Persona rejected — it would silently drop standing rules:");
     for (const v of budget.violations) {
