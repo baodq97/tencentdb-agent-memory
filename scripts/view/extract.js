@@ -759,6 +759,118 @@ function readCaptureStateDoc(rootDir) {
   });
 }
 
+const NO_RECALL_LOG = { entries: null, lines: null, malformed: null, excludedView: null, files: null };
+
+/** Parse one recall_log line to an object, or null if it is malformed (truncated tail, non-object). */
+function parseRecallLine(line) {
+  try { const r = JSON.parse(line); return r && typeof r === "object" ? r : null; }
+  catch { return null; }
+}
+
+/**
+ * The one definition of "counts as session activity". `view`-source lines are the
+ * visualiser's OWN /api/recall probes; every reader of recall_log drops them
+ * through this, so the rule lives in one place instead of three.
+ */
+const isSessionRecall = (entry) => !!entry && entry.source !== "view";
+
+/**
+ * `recall_log.jsonl` (+ its one rotated generation `.jsonl.1`) — the ONLY record
+ * of which memories recall ever actually injected. Root-level, not per-store: a
+ * single recall reads the global AND the project store and logs one merged line,
+ * so `injectedIds` are matched to records by id, globally.
+ *
+ * Reading, not measuring: transform folds these entries into the per-record usage
+ * overlay (hot/warm/dead + co-recall lift). We hand over the raw entries — only
+ * the fields the overlay needs — and let the pure layer count them.
+ *
+ * `source: "view"` lines are EXCLUDED here: they are the visualiser's own
+ * `/api/recall` probes (reader curiosity, not the agent's turn), and counting
+ * them would let tracing a prompt inflate that memory's measured hit rate. A
+ * malformed line is skipped and tallied, never fatal — a truncated tail from a
+ * crash mid-write must not blind the whole overlay.
+ *
+ * @returns {import("./contract.js").RecallLogRead}
+ */
+function readRecallLogDoc(rootDir) {
+  const base = rootPaths(rootDir).root;
+  // Newest generation first, then the rotated one; order does not matter to the
+  // counts, but naming both is what makes the ~6-week window, not just the tail.
+  const files = ["recall_log.jsonl", "recall_log.jsonl.1"]
+    .map((name) => path.join(base, name))
+    .filter((f) => fs.existsSync(f));
+  if (files.length === 0) {
+    return unmeasured(`recall_log.jsonl not present at ${path.join(base, "recall_log.jsonl")}`, NO_RECALL_LOG);
+  }
+  const entries = [];
+  let malformed = 0;
+  let excludedView = 0;
+  try {
+    for (const f of files) {
+      const text = fs.readFileSync(f, "utf-8");
+      for (const line of text.split("\n")) {
+        if (!line.trim()) continue;
+        const row = parseRecallLine(line);
+        if (!row) { malformed += 1; continue; }
+        if (!isSessionRecall(row)) { excludedView += 1; continue; }
+        entries.push({
+          at: typeof row.at === "string" ? row.at : null,
+          injectedIds: Array.isArray(row.injectedIds) ? row.injectedIds.map(String) : [],
+          droppedIds: Array.isArray(row.droppedIds) ? row.droppedIds.map(String) : [],
+        });
+      }
+    }
+  } catch (e) {
+    return errored(`recall_log unreadable (${base}): ${e.message}`, NO_RECALL_LOG);
+  }
+  return ok({ entries, lines: entries.length, malformed, excludedView, files });
+}
+
+/**
+ * Incremental read of `recall_log.jsonl` from a byte offset — the primitive the
+ * live activity feed tails. Returns the RAW entries (every field, every source;
+ * the caller decides what to drop), the new EOF offset to resume from, and a
+ * `rotated` flag when the file shrank under the offset (a rotation happened, so
+ * we re-read from the top). Read-only, and it never blocks recall: a missing file
+ * is `{entries:[], newOffset:0, missing:true}`, not a throw.
+ *
+ * @param {string} rootDir
+ * @param {number} [fromOffset]
+ */
+function readRecallSince(rootDir, fromOffset = 0) {
+  const file = path.join(rootPaths(rootDir).root, "recall_log.jsonl");
+  let stat;
+  try { stat = fs.statSync(file); } catch { return { entries: [], newOffset: 0, rotated: false, missing: true }; }
+  let start = fromOffset;
+  let rotated = false;
+  if (stat.size < fromOffset) { start = 0; rotated = true; }   // rotated out from under us
+  if (stat.size === start) return { entries: [], newOffset: start, rotated, missing: false };
+
+  const fd = fs.openSync(file, "r");
+  const len = stat.size - start;
+  const buf = Buffer.alloc(len);
+  try { fs.readSync(fd, buf, 0, len, start); } finally { fs.closeSync(fd); }
+
+  const entries = [];
+  for (const line of buf.toString("utf-8").split("\n")) {
+    if (!line.trim()) continue;
+    const row = parseRecallLine(line);   // null = truncated tail, skipped
+    if (row) entries.push(row);
+  }
+  return { entries, newOffset: stat.size, rotated, missing: false };
+}
+
+/** Current EOF byte-offset of recall_log.jsonl (0 if absent) — the feed's tailer seeds from this. */
+function readRecallSize(rootDir) {
+  try { return fs.statSync(path.join(rootPaths(rootDir).root, "recall_log.jsonl")).size; } catch { return 0; }
+}
+
+/** The last `limit` recall entries + the current EOF offset, for the feed's initial paint. */
+function readRecallTail(rootDir, limit = 50) {
+  const { entries, newOffset } = readRecallSince(rootDir, 0);
+  return { entries: entries.slice(-Math.max(1, limit)), offset: newOffset };
+}
+
 /* ------------------------------------------------------------------ *
  * Composition
  * ------------------------------------------------------------------ */
@@ -809,6 +921,7 @@ function extractAll({ recordLimit = DEFAULT_RECORD_LIMIT, rootDir } = {}) {
     state: readStateDoc(rootDir),
     config: readConfigDoc(rootDir),
     captureState: readCaptureStateDoc(rootDir),
+    recallLog: readRecallLogDoc(rootDir),
     extractedAt: new Date().toISOString(),
   };
 }
@@ -904,6 +1017,11 @@ module.exports = {
   readStateDoc,
   readConfigDoc,
   readCaptureStateDoc,
+  readRecallLogDoc,
+  readRecallSince,
+  readRecallSize,
+  readRecallTail,
+  isSessionRecall,
   extractStore,
   extractAll,
 };

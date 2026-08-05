@@ -133,6 +133,22 @@ test("source distinguishes the automatic hook path from an explicit CLI search",
   });
 });
 
+test("the visualiser's /api/recall probe logs as 'view', so it never inflates hit rate", () => {
+  withFakeHome((home) => {
+    seedStore(home);
+    // The server calls recallAsync(..., RECALL_SOURCE.VIEW); drive that same entry
+    // point directly rather than standing up the HTTP server for one field.
+    execFileSync("node", ["-e",
+      `const { recallAsync, RECALL_SOURCE } = require(${JSON.stringify(RECALL)});
+       recallAsync("sqlite-vec embedding sync", "", 280, 5, RECALL_SOURCE.VIEW).then(() => process.exit(0));`],
+      { env: env(home), encoding: "utf-8" });
+
+    const rows = readLog(home);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].source, "view");
+  });
+});
+
 test("a recall that returned nothing is still logged — that is the interesting row", () => {
   withFakeHome((home) => {
     // No persona, no scenes, no index.db: recall() returns "".

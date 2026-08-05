@@ -1644,6 +1644,7 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
   };
 
   const persona = summarisePersona(root && root.persona, { tier0MaxChars });
+  const recallUsage = buildRecallUsage(root && root.recallLog, now);
   const gaps = buildGaps({ stores, persona, state, config, captureState, heat });
 
   const gapsBySeverity = zeroMap(Object.values(SEVERITY));
@@ -1708,6 +1709,11 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     totals,
     stores: sorted,
     persona,
+    // The behavioural overlay: which memories recall actually injected, folded per
+    // record_id. Deliberately NOT part of computeSnapshotId — the log grows on
+    // every recall and is not in the watcher's fingerprint, so it must never churn
+    // the snapshot identity. It rides along as an additive, optional field.
+    recallUsage,
     gaps,
     health: { state, config, captureState },
     timing: { extractMs, transformMs },
@@ -1732,12 +1738,144 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
  * @param {import("./contract.js").StoreExtract} storeExtract
  * @returns {import("./contract.js").RecordRow[]}
  */
-function buildRecordRows(storeExtract) {
+/* ------------------------------------------------------------------ *
+ * Recall usage overlay
+ *
+ * The recall_log is the ONLY behavioural signal this system has: which memories
+ * recall actually injected, and which it dropped for the char budget. Folded onto
+ * records it turns a static store into a living map — a memory reads as hot (used,
+ * recently), warm (used), or dead (a repeated candidate the budget keeps
+ * discarding). "Never a candidate" is left as `null` (no dot), NOT dead: an atom
+ * the index never surfaced is a different failure from one recall chose to drop.
+ *
+ * Co-recall links use LIFT (co ÷ chance), never raw co-count. Raw co-count is
+ * dominated by the always-on persona line that rides every recall, producing one
+ * degenerate blob; lift divides that out and surfaces the real topical bonds.
+ * ------------------------------------------------------------------ */
+
+const RECALL_HEAT = Object.freeze({
+  HOT_MIN_RECALLS: 3,    // used at least this often …
+  HOT_RECENCY_DAYS: 3,   // … and within this window → hot
+  RELATED_MIN_CO: 2,     // a single co-recall is noise, not a bond
+  RELATED_TOP_N: 3,      // keep the strongest few links per atom
+});
+
+/** recalls===0 means dropped-only (a candidate that never fit); it is dead, not unseen. */
+function recallBucket(recalls, ageInDays) {
+  if (recalls === 0) return "dead";
+  if (recalls >= RECALL_HEAT.HOT_MIN_RECALLS && ageInDays !== null && ageInDays <= RECALL_HEAT.HOT_RECENCY_DAYS) {
+    return "hot";
+  }
+  return "warm";
+}
+
+/**
+ * Fold the recall_log entries into a per-record usage map + co-recall lift links.
+ * Pure: everything comes from the entries and the injected `now`.
+ *
+ * @param {import("./contract.js").RecallLogRead} recallLog
+ * @param {number} now  epoch ms, the same clock transformRoot stamps with
+ * @returns {import("./contract.js").Source<Object>}
+ */
+function buildRecallUsage(recallLog, now) {
+  if (!recallLog || recallLog.status !== STATUS.OK || !Array.isArray(recallLog.entries)) {
+    const reason = (recallLog && recallLog.reason) || "recall log not read";
+    return C.unmeasured(reason, { byId: null, recalls: null, recalledIds: null, candidateIds: null, window: null });
+  }
+
+  const stat = new Map();  // id -> { recalls, drops, lastAtMs }
+  const co = new Map();    // "a b" -> co-count
+  let coUniverse = 0;      // entries with >=1 injected id (the chance denominator)
+  let firstAtMs = null;
+  let lastAtMs = null;
+
+  const slotFor = (id) => {
+    let s = stat.get(id);
+    if (!s) { s = { recalls: 0, drops: 0, lastAtMs: null }; stat.set(id, s); }
+    return s;
+  };
+
+  for (const e of recallLog.entries) {
+    const parsed = e.at ? Date.parse(e.at) : NaN;
+    const atMs = Number.isFinite(parsed) ? parsed : null;
+    if (atMs !== null) {
+      firstAtMs = firstAtMs === null ? atMs : Math.min(firstAtMs, atMs);
+      lastAtMs = lastAtMs === null ? atMs : Math.max(lastAtMs, atMs);
+    }
+    const inj = [...new Set(e.injectedIds)];
+    for (const id of new Set(e.droppedIds)) slotFor(id).drops += 1;
+    for (const id of inj) {
+      const s = slotFor(id);
+      s.recalls += 1;
+      if (atMs !== null) s.lastAtMs = s.lastAtMs === null ? atMs : Math.max(s.lastAtMs, atMs);
+    }
+    if (inj.length) {
+      coUniverse += 1;
+      for (let i = 0; i < inj.length; i++) {
+        for (let j = i + 1; j < inj.length; j++) {
+          const key = inj[i] < inj[j] ? `${inj[i]} ${inj[j]}` : `${inj[j]} ${inj[i]}`;
+          co.set(key, (co.get(key) || 0) + 1);
+        }
+      }
+    }
+  }
+
+  const relatedBy = new Map();  // id -> [{ id, lift, co }]
+  if (coUniverse > 0) {
+    for (const [key, c] of co) {
+      if (c < RECALL_HEAT.RELATED_MIN_CO) continue;
+      const [a, b] = key.split(" ");
+      const ra = stat.get(a).recalls;
+      const rb = stat.get(b).recalls;
+      if (!ra || !rb) continue;
+      const lift = (c * coUniverse) / (ra * rb);
+      if (lift <= 1) continue;  // at-or-below chance is not a bond
+      for (const [x, y] of [[a, b], [b, a]]) {
+        if (!relatedBy.has(x)) relatedBy.set(x, []);
+        relatedBy.get(x).push({ id: y, lift, co: c });
+      }
+    }
+    for (const arr of relatedBy.values()) {
+      arr.sort((p, q) => q.lift - p.lift);
+      arr.length = Math.min(arr.length, RECALL_HEAT.RELATED_TOP_N);
+    }
+  }
+
+  const byId = {};
+  let recalledIds = 0;
+  for (const [id, s] of stat) {
+    if (s.recalls > 0) recalledIds += 1;
+    const ageInDays = s.lastAtMs === null ? null : (now - s.lastAtMs) / MS_PER_DAY;
+    byId[id] = {
+      recalls: s.recalls,
+      drops: s.drops,
+      lastRecalledAt: s.lastAtMs === null ? null : new Date(s.lastAtMs).toISOString(),
+      bucket: recallBucket(s.recalls, ageInDays),
+      related: relatedBy.get(id) || [],
+    };
+  }
+
+  return C.ok({
+    byId,
+    recalls: recallLog.entries.length,
+    recalledIds,
+    candidateIds: stat.size,
+    window: {
+      firstAt: firstAtMs === null ? null : new Date(firstAtMs).toISOString(),
+      lastAt: lastAtMs === null ? null : new Date(lastAtMs).toISOString(),
+    },
+  });
+}
+
+function buildRecordRows(storeExtract, snapshot) {
   const rd = (storeExtract && storeExtract.records) || null;
   if (!rd || rd.status !== STATUS.OK || !Array.isArray(rd.records)) return [];
 
   const vr = (storeExtract && storeExtract.vectors) || null;
   const vecIds = vr && vr.status === STATUS.OK && vr.recordIds ? vr.recordIds : null;
+  const usageById = snapshot && snapshot.recallUsage && snapshot.recallUsage.status === STATUS.OK
+    ? snapshot.recallUsage.byId
+    : null;
   const { groupIndexById } = duplicateGroups(rd.records, exactKey);
 
   return rd.records.map((r) => ({
@@ -1753,7 +1891,97 @@ function buildRecordRows(storeExtract) {
     hasVector: vecIds ? vecIds.has(r.record_id) : null,
     lowSignal: classifyLowSignal(r.content),
     duplicateGroup: groupIndexById.has(r.record_id) ? groupIndexById.get(r.record_id) : -1,
+    // null = never a candidate in-window (no dot); an object = measured behaviour.
+    usage: usageById && usageById[r.record_id] ? usageById[r.record_id] : null,
   }));
+}
+
+/* ------------------------------------------------------------------ *
+ * L2 -> L1 backbone (DERIVED, not stored)
+ *
+ * `scene_name` on a record is the literal "auto-capture" ~96% of the time and
+ * matches no scene file — the stored link is dead (see the note at duplicate-
+ * groups). So which atoms belong under which scene is DERIVED here by keyword
+ * overlap between the atom's content and the scene's name+summary, and the UI
+ * labels it "approx — derived, not stored". A cheaper, honest signal than
+ * embeddings, and unlike them it works on every store, not just the 4 that carry
+ * vectors. An atom under no scene is left UNLINKED, never forced under a weak
+ * match: a wrong parent is a worse lie than an orphan.
+ * ------------------------------------------------------------------ */
+
+const TREE = Object.freeze({ MIN_OVERLAP: 2 });
+
+// Words too common to carry topic: they would link everything to everything, the
+// same degeneracy raw co-count has. Kept small and generic on purpose.
+const TREE_STOPWORDS = new Set([
+  "the", "and", "for", "with", "that", "this", "from", "into", "not", "but", "you",
+  "your", "user", "when", "what", "which", "then", "than", "over", "under", "onto",
+  "are", "was", "were", "has", "have", "had", "its", "it's", "use", "used", "using",
+  "via", "per", "all", "any", "one", "two", "run", "runs", "get", "set", "new",
+]);
+
+function keywordSet(text) {
+  const out = new Set();
+  for (const tok of String(text == null ? "" : text).toLowerCase().split(/[^a-z0-9]+/)) {
+    if (tok.length >= 3 && !TREE_STOPWORDS.has(tok)) out.add(tok);
+  }
+  return out;
+}
+
+/**
+ * One store's L2->L1 tree: scenes with the atoms keyword-overlap assigns to them,
+ * plus the atoms that matched no scene. Reuses buildRecordRows, so every atom
+ * already carries its usage overlay, low-signal class and vector status.
+ *
+ * @param {import("./contract.js").StoreExtract} storeExtract
+ * @param {Object} [snapshot]  carries recallUsage for the overlay
+ */
+function buildStoreTree(storeExtract, snapshot) {
+  const rd = (storeExtract && storeExtract.records) || null;
+  if (!rd || rd.status !== STATUS.OK || !Array.isArray(rd.records)) {
+    return {
+      status: (rd && rd.status) || STATUS.UNMEASURED,
+      reason: (rd && rd.reason) || "records not read",
+      scenes: [], unlinked: [], derivation: null, minOverlap: TREE.MIN_OVERLAP,
+      totalAtoms: null, linkedAtoms: null,
+    };
+  }
+  const rows = buildRecordRows(storeExtract, snapshot);
+  const sc = (storeExtract && storeExtract.scenes) || null;
+  const scenes = sc && sc.status === STATUS.OK && Array.isArray(sc.scenes) ? sc.scenes : [];
+  // A scene's keywords come from its slug name (rich: "tmem-doctor-memory-health")
+  // AND its one-line summary. Body text is not loaded by extract, by design.
+  const sceneKW = scenes.map((s) => keywordSet(`${String(s.name).replace(/-/g, " ")} ${s.summary || ""}`));
+  const buckets = scenes.map((s) => ({ name: s.name, summary: s.summary, heat: s.heat, updated: s.updated, atoms: [] }));
+  const unlinked = [];
+
+  for (const row of rows) {
+    const akw = keywordSet(row.content);
+    let best = -1;
+    let bestScore = 0;
+    for (let i = 0; i < sceneKW.length; i++) {
+      let score = 0;
+      for (const w of sceneKW[i]) if (akw.has(w)) score += 1;
+      if (score > bestScore) { bestScore = score; best = i; }
+    }
+    if (best >= 0 && bestScore >= TREE.MIN_OVERLAP) buckets[best].atoms.push({ ...row, match: bestScore });
+    else unlinked.push(row);
+  }
+
+  // Heaviest-used atoms first inside a scene, so the tree opens on what matters.
+  const byUse = (a, b) => ((b.usage ? b.usage.recalls : -1) - (a.usage ? a.usage.recalls : -1)) || (b.chars - a.chars);
+  for (const b of buckets) b.atoms.sort(byUse);
+  unlinked.sort(byUse);
+  // Fullest scenes first; a scene the overlay never populated sinks to the bottom.
+  buckets.sort((a, b) => b.atoms.length - a.atoms.length || (b.heat || 0) - (a.heat || 0));
+
+  const linkedAtoms = rows.length - unlinked.length;
+  return {
+    status: STATUS.OK, reason: null,
+    scenes: buckets, unlinked,
+    derivation: "keyword-overlap", minOverlap: TREE.MIN_OVERLAP,
+    totalAtoms: rows.length, linkedAtoms,
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -1850,6 +2078,11 @@ module.exports = {
   summariseStore,
   summariseScenes,
   summarisePersona,
+  buildRecallUsage,
+  recallBucket,
+  RECALL_HEAT,
+  buildStoreTree,
+  keywordSet,
   buildGaps,
   computeSnapshotId,
   // pure primitives

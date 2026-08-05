@@ -1231,3 +1231,121 @@ test("buildRecordRows: hasVector is null — never false — when the reading wa
   assert.deepEqual(T.buildRecordRows(storeExtract("s", { recordsStatus: STATUS.ERROR })), []);
   assert.deepEqual(T.buildRecordRows(null), []);
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// Recall usage overlay
+// ───────────────────────────────────────────────────────────────────────────
+
+const NOW = Date.parse("2026-08-05T00:00:00Z");
+const daysAgo = (d) => new Date(NOW - d * 86400000).toISOString();
+
+test("buildRecallUsage: not-ok input yields unmeasured with a null (never zero) payload", () => {
+  const out = T.buildRecallUsage(C.unmeasured("recall_log.jsonl not present"), NOW);
+  assert.equal(out.status, STATUS.UNMEASURED);
+  assert.equal(out.byId, null);
+  assert.equal(out.recalls, null);   // a zero here would read as "measured: nothing used"
+});
+
+test("buildRecallUsage: buckets by recency+frequency; dropped-only is dead, unseen is absent", () => {
+  const log = C.ok({ entries: [
+    // 'hot' — used 3x, most recent within the window
+    { at: daysAgo(1), injectedIds: ["hot"], droppedIds: [] },
+    { at: daysAgo(1), injectedIds: ["hot"], droppedIds: [] },
+    { at: daysAgo(2), injectedIds: ["hot", "warm"], droppedIds: [] },
+    // 'stale' — used often but long ago → warm, not hot (recency gates hot)
+    { at: daysAgo(30), injectedIds: ["stale"], droppedIds: [] },
+    { at: daysAgo(30), injectedIds: ["stale"], droppedIds: [] },
+    { at: daysAgo(31), injectedIds: ["stale"], droppedIds: ["dead"] }, // 'dead' only ever dropped
+  ] });
+  const u = T.buildRecallUsage(log, NOW);
+  assert.equal(u.status, STATUS.OK);
+  assert.equal(u.byId.hot.bucket, "hot");
+  assert.equal(u.byId.hot.recalls, 3);
+  assert.equal(u.byId.warm.bucket, "warm");
+  assert.equal(u.byId.stale.bucket, "warm", "frequent but old is warm — recency gates hot");
+  assert.equal(u.byId.dead.bucket, "dead");
+  assert.equal(u.byId.dead.recalls, 0);
+  assert.equal(u.byId.dead.drops, 1);
+  assert.equal(u.byId.unseen, undefined, "a memory never in the log gets no entry, not a dead one");
+  assert.equal(u.recalledIds, 3);           // hot, warm, stale
+  assert.equal(u.candidateIds, 4);          // + dead
+});
+
+test("buildRecallUsage: co-recall uses lift, which divides out the always-on persona blob", () => {
+  // 'p' rides every recall (the always-on persona line); x,y share a real topic.
+  const log = C.ok({ entries: [
+    { at: daysAgo(1), injectedIds: ["p", "x", "y"], droppedIds: [] },
+    { at: daysAgo(1), injectedIds: ["p", "x", "y"], droppedIds: [] },
+    { at: daysAgo(1), injectedIds: ["p", "x", "y"], droppedIds: [] },
+    { at: daysAgo(1), injectedIds: ["p"], droppedIds: [] },
+    { at: daysAgo(1), injectedIds: ["p"], droppedIds: [] },
+    { at: daysAgo(1), injectedIds: ["p"], droppedIds: [] },
+  ] });
+  const u = T.buildRecallUsage(log, NOW);
+  // x's real bond is y (lift 2.0), and NOT the blob p (lift 1.0, at chance → dropped).
+  assert.deepEqual(u.byId.x.related.map((r) => r.id), ["y"]);
+  assert.equal(u.byId.x.related[0].lift, 2);
+  assert.deepEqual(u.byId.p.related, [], "the always-on line co-occurs with everything at chance, so it links to nothing");
+});
+
+test("buildRecordRows: folds the usage overlay from the snapshot, null when a record is unseen", () => {
+  const store = storeExtract("s", { records: [rec("used"), rec("never")] });
+  const snapshot = { recallUsage: C.ok({
+    byId: { used: { recalls: 4, drops: 1, bucket: "warm", lastRecalledAt: daysAgo(1), related: [] } },
+  }) };
+  const rows = T.buildRecordRows(store, snapshot);
+  assert.equal(rows[0].usage.recalls, 4);
+  assert.equal(rows[0].usage.bucket, "warm");
+  assert.equal(rows[1].usage, null, "a record with no log history carries no usage, not a fabricated zero");
+
+  // No snapshot (or an unmeasured overlay) leaves every row's usage null, never throwing.
+  assert.equal(T.buildRecordRows(store)[0].usage, null);
+  assert.equal(T.buildRecordRows(store, { recallUsage: C.unmeasured("x") })[0].usage, null);
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// L2->L1 backbone (derived by keyword overlap)
+// ───────────────────────────────────────────────────────────────────────────
+
+test("keywordSet: drops stopwords and short tokens, keeps topic words", () => {
+  assert.deepEqual([...T.keywordSet("The vector-index sync ran")].sort(), ["index", "ran", "sync", "vector"]);
+});
+
+test("buildStoreTree: an atom goes under the scene it shares >=2 keywords with, else unlinked", () => {
+  const store = storeExtract("proj", {
+    records: [
+      rec("a1", { content: "vector index sync for sqlite embeddings" }), // 2+ overlap with vector-index-sync
+      rec("a2", { content: "the persona projection budget tiers" }),      // overlaps persona-projection
+      rec("a3", { content: "totally unrelated grocery shopping list" }),  // matches nothing → unlinked
+    ],
+    scenes: [
+      scene("vector-index-sync", { summary: "embeddings sync", heat: 5 }),
+      scene("persona-projection", { summary: "budget tiers", heat: 4 }),
+    ],
+  });
+  const tree = T.buildStoreTree(store, { recallUsage: C.unmeasured("no log") });
+  assert.equal(tree.status, STATUS.OK);
+  assert.equal(tree.derivation, "keyword-overlap");
+  assert.equal(tree.totalAtoms, 3);
+  assert.equal(tree.unlinked.length, 1);
+  assert.equal(tree.unlinked[0].id, "a3", "a weak match is left an orphan, never forced under a wrong parent");
+  const byName = Object.fromEntries(tree.scenes.map((s) => [s.name, s.atoms.map((a) => a.id)]));
+  assert.deepEqual(byName["vector-index-sync"], ["a1"]);
+  assert.deepEqual(byName["persona-projection"], ["a2"]);
+  assert.equal(tree.linkedAtoms, 2);
+});
+
+test("buildStoreTree: no scenes -> every atom unlinked, never invented into a tree", () => {
+  const store = storeExtract("proj", { records: [rec("a1"), rec("a2")], scenes: null });
+  const tree = T.buildStoreTree(store);
+  assert.equal(tree.scenes.length, 0);
+  assert.equal(tree.unlinked.length, 2);
+  assert.equal(tree.linkedAtoms, 0);
+});
+
+test("buildStoreTree: unreadable records -> a status, not an empty tree pretending to be measured", () => {
+  const tree = T.buildStoreTree(storeExtract("proj", { recordsStatus: STATUS.ERROR }));
+  assert.equal(tree.status, STATUS.ERROR);
+  assert.equal(tree.totalAtoms, null);
+  assert.deepEqual(tree.scenes, []);
+});

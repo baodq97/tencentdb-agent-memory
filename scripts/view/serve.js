@@ -178,6 +178,7 @@ const PIPELINE_API = Object.freeze({
   extract: ["extractRoot", "extract", "extractAll", "readRoot", "collect"],
   transform: ["transformRoot", "transform", "buildSnapshot", "toSnapshot", "summarise", "summarize"],
   rows: ["buildRecordRows", "recordRows", "toRecordRows", "buildRows", "rowsForStore"],
+  tree: ["buildStoreTree", "storeTree", "treeForStore"],
   listStores: ["listStores", "discoverStores", "storeRefs"],
   probe: ["probeSqliteVec", "probeVectorExtension"],
 });
@@ -221,6 +222,7 @@ function pipeline() {
     extract: pick(ex.mod, PIPELINE_API.extract),
     transform: pick(tr.mod, PIPELINE_API.transform),
     rows: pick(tr.mod, PIPELINE_API.rows),
+    tree: pick(tr.mod, PIPELINE_API.tree),
     listStores: pick(ex.mod, PIPELINE_API.listStores),
     probeSqliteVec: pick(ex.mod, PIPELINE_API.probe),
   };
@@ -486,9 +488,43 @@ function checkForDrift() {
   });
 }
 
+/* ------------------------------------------------------------------ *
+ * recall-feed tailer
+ *
+ * A second, cheaper watcher than checkForDrift: it never rebuilds the snapshot,
+ * it only reads bytes appended to recall_log.jsonl since the last tick and pushes
+ * them out as `recall` events. Started at EOF so it streams what happens AFTER a
+ * reader connects, not a replay of history (the feed route serves that).
+ * ------------------------------------------------------------------ */
+
+let recallOffset = null;
+
+function checkRecallFeed() {
+  const ex = pipeline().extractMod;
+  if (!ex || typeof ex.readRecallSince !== "function") return;
+  if (recallOffset === null) {
+    // First tick: adopt EOF (a stat, no read) so we don't replay the log on startup.
+    recallOffset = ex.readRecallSize(effectiveRootDir);
+    return;
+  }
+  let out;
+  try { out = ex.readRecallSince(effectiveRootDir, recallOffset); } catch { return; }
+  recallOffset = out.newOffset;
+  if (!out.entries.length || clients.size === 0) return;
+  let root;
+  try { ({ root } = currentSnapshot()); } catch { return; }
+  const idx = idIndex(root, lastKnownSnapshotId);
+  for (const e of out.entries) {
+    if (!ex.isSessionRecall(e)) continue;   // the visualiser's own probes are not session activity
+    broadcast("recall", feedEntry(e, idx));
+  }
+}
+
 function startWatcher() {
   if (PINNED) return null;
-  const t = setInterval(checkForDrift, WATCH_INTERVAL_MS);
+  // One tick drives both watchers: drift (snapshot rebuild) then the cheap recall
+  // tailer. Same period, deterministic order, one timer.
+  const t = setInterval(() => { checkForDrift(); checkRecallFeed(); }, WATCH_INTERVAL_MS);
   t.unref();
   return t;
 }
@@ -561,24 +597,30 @@ function routeSnapshot(res, setCookie) {
   );
 }
 
-/** GET /api/store/:slug/records */
-function routeStoreRecords(res, url, slug, setCookie) {
+/**
+ * Store lookup + the 404 / STORE_UNREADABLE guard shared by every per-store route.
+ * Returns {root, snapshot, meta, storeExtract}, or sends the error and returns null.
+ */
+function resolveStoreOr404(res, slug, setCookie) {
   const { root, snapshot } = currentSnapshot();
   const meta = envelopeMeta(snapshot);
-
   const storeExtract = (root.stores || []).find((s) => s.ref && s.ref.slug === slug);
   if (!storeExtract) {
     sendJson(res, 404, C.apiError(C.API_ERROR.NOT_FOUND, `no store with slug ${JSON.stringify(slug)}`, meta), setCookie);
-    return;
+    return null;
   }
   if (storeExtract.records && storeExtract.records.status === C.STATUS.ERROR) {
-    sendJson(
-      res, 200,
-      C.apiError(C.API_ERROR.STORE_UNREADABLE, storeExtract.records.reason || "index.db unreadable", meta),
-      setCookie,
-    );
-    return;
+    sendJson(res, 200, C.apiError(C.API_ERROR.STORE_UNREADABLE, storeExtract.records.reason || "index.db unreadable", meta), setCookie);
+    return null;
   }
+  return { root, snapshot, meta, storeExtract };
+}
+
+/** GET /api/store/:slug/records */
+function routeStoreRecords(res, url, slug, setCookie) {
+  const ctx = resolveStoreOr404(res, slug, setCookie);
+  if (!ctx) return;
+  const { snapshot, meta, storeExtract } = ctx;
 
   const build = pipeline().rows;
   if (!build) {
@@ -649,6 +691,91 @@ function routeStoreRecords(res, url, slug, setCookie) {
     truncated: storeExtract.records.truncated === true,
   };
   sendJson(res, 200, C.apiOk(page, meta), setCookie);
+}
+
+/** GET /api/store/:slug/tree — the DERIVED L2->L1 backbone for one store. */
+function routeStoreTree(res, slug, setCookie) {
+  const ctx = resolveStoreOr404(res, slug, setCookie);
+  if (!ctx) return;
+  const { snapshot, meta, storeExtract } = ctx;
+  const build = pipeline().tree;
+  if (!build) {
+    sendJson(res, 500, C.apiError(C.API_ERROR.INTERNAL, missingPipelineMessage("tree"), meta), setCookie);
+    return;
+  }
+  const tree = build(storeExtract, snapshot) || null;
+  sendJson(res, 200, C.apiOk({ slug, ...tree }, meta), setCookie);
+}
+
+/* ------------------------------------------------------------------ *
+ * Live recall feed
+ *
+ * recall_log.jsonl is the only record of what running sessions actually pull from
+ * memory. This tails it and streams each new hook/cli recall over SSE, so the
+ * `live` screen shows sessions interacting in real time. `view`-source lines are
+ * the visualiser's OWN probes and are dropped — a feed of "what sessions do" must
+ * not show itself doing it.
+ * ------------------------------------------------------------------ */
+
+let _idIndex = { snapshotId: null, map: null };
+
+/** id -> {content, type, slug}, built once per snapshot from the already-extracted records. */
+function idIndex(root, snapshotId) {
+  if (_idIndex.snapshotId === snapshotId && _idIndex.map) return _idIndex.map;
+  const map = new Map();
+  for (const s of (root && root.stores) || []) {
+    const rd = s.records;
+    if (!rd || rd.status !== C.STATUS.OK || !Array.isArray(rd.records)) continue;
+    for (const r of rd.records) map.set(r.record_id, { content: r.content, type: r.type, slug: s.ref.slug });
+  }
+  _idIndex = { snapshotId, map };
+  return map;
+}
+
+const FEED_MEMORY_CAP = 8;
+
+/** id -> {id, type, slug, content}; content null when the id is in a store this snapshot didn't read. */
+function resolveMemory(id, idx) {
+  const hit = idx.get(id);
+  return hit ? { id, type: hit.type, slug: hit.slug, content: hit.content } : { id, type: null, slug: null, content: null };
+}
+
+/**
+ * Shape one recall_log line for the feed: counts, the injected memories, AND the
+ * ones dropped for the char budget — resolved to content. Dropped is the half a
+ * static store can't show: memories that ranked high enough to be considered and
+ * were then cut for space, which is the signal for tuning the budget.
+ */
+function feedEntry(raw, idx) {
+  const inj = Array.isArray(raw.injectedIds) ? raw.injectedIds : [];
+  const drp = Array.isArray(raw.droppedIds) ? raw.droppedIds : [];
+  return {
+    at: raw.at || null,
+    source: raw.source || "hook",
+    query: typeof raw.query === "string" ? raw.query : "",
+    chars: typeof raw.chars === "number" ? raw.chars : null,
+    injected: inj.length,
+    dropped: drp.length,
+    memories: inj.slice(0, FEED_MEMORY_CAP).map((id) => resolveMemory(id, idx)),
+    droppedMemories: drp.slice(0, FEED_MEMORY_CAP).map((id) => resolveMemory(id, idx)),
+  };
+}
+
+/** GET /api/recall-feed?limit=N — the recent tail, for the feed's first paint. */
+function routeRecallFeed(res, url, setCookie) {
+  const { root, snapshot } = currentSnapshot();
+  const meta = envelopeMeta(snapshot);
+  const ex = pipeline().extractMod;
+  if (!ex || typeof ex.readRecallTail !== "function") {
+    sendJson(res, 500, C.apiError(C.API_ERROR.INTERNAL, missingPipelineMessage("extract"), meta), setCookie);
+    return;
+  }
+  const limit = clampInt(url.searchParams.get("limit"), 40, 1, 200);
+  const { entries } = ex.readRecallTail(effectiveRootDir, limit);
+  const idx = idIndex(root, snapshot && snapshot.snapshotId);
+  // Newest first; the visualiser's own probes never count as session activity.
+  const feed = entries.filter(ex.isSessionRecall).reverse().map((e) => feedEntry(e, idx));
+  sendJson(res, 200, C.apiOk({ feed, total: feed.length }, meta), setCookie);
 }
 
 /** GET /api/persona */
@@ -748,8 +875,10 @@ async function routeRecall(res, url, setCookie) {
   const t0 = process.hrtime.bigint();
   let injected = "";
   try {
-    const { recallAsync } = require("../memory_recall.js");
-    injected = await recallAsync(q, projectHash, maxTokens, topK);
+    const { recallAsync, RECALL_SOURCE } = require("../memory_recall.js");
+    // Reader-driven probe, not the agent's turn — logged as "view" so it never
+    // inflates a memory's measured hit rate (the usage overlay filters it out).
+    injected = await recallAsync(q, projectHash, maxTokens, topK, RECALL_SOURCE.VIEW);
   } catch (err) {
     sendJson(res, 500, C.apiError(C.API_ERROR.INTERNAL, `recallAsync failed: ${err.message}`, meta), setCookie);
     return;
@@ -980,6 +1109,7 @@ function routeShell(res, setCookie) {
  * ------------------------------------------------------------------ */
 
 const STORE_RECORDS_RE = /^\/api\/store\/([^/]+)\/records$/;
+const STORE_TREE_RE = /^\/api\/store\/([^/]+)\/tree$/;
 
 const server = http.createServer(async (req, res) => {
   touch();
@@ -1022,9 +1152,12 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === C.ROUTES.PERSONA) return routePersona(res, setCookie);
     if (url.pathname === C.ROUTES.EXPORT) return routeExport(res, url, setCookie);
     if (url.pathname === C.ROUTES.RECALL) return routeRecall(res, url, setCookie);
+    if (url.pathname === "/api/recall-feed") return routeRecallFeed(res, url, setCookie);
 
     const m = STORE_RECORDS_RE.exec(url.pathname);
     if (m) return routeStoreRecords(res, url, decodeURIComponent(m[1]), setCookie);
+    const mt = STORE_TREE_RE.exec(url.pathname);
+    if (mt) return routeStoreTree(res, decodeURIComponent(mt[1]), setCookie);
 
     if (isApi) {
       return sendJson(res, 404, C.apiError(C.API_ERROR.NOT_FOUND, `no route ${url.pathname}`), setCookie);

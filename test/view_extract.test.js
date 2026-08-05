@@ -533,6 +533,88 @@ test("root documents: absent -> unmeasured, corrupt -> error, valid -> ok", () =
   assert.equal(ok.captureState.lastConsolidationTurn, 20);
 });
 
+// ── recall_log: the behavioural overlay's only input ────────────────────────
+
+test("recall_log: absent -> unmeasured with null payload, never an empty measurement", () => {
+  const out = E.readRecallLogDoc(makeRoot("rl-absent"));
+  assert.equal(out.status, STATUS.UNMEASURED);
+  assert.match(out.reason, /recall_log\.jsonl not present/);
+  assert.equal(out.entries, null);   // null, not [] — nothing was read
+  assert.equal(out.lines, null);
+});
+
+test("recall_log: reads both generations, skips malformed, and EXCLUDES source:view", () => {
+  const root = makeRoot("rl-ok");
+  // The rotated generation .1 is the older half of the window; both must count.
+  fs.writeFileSync(path.join(root, "recall_log.jsonl.1"),
+    JSON.stringify({ at: "2026-08-01T00:00:00Z", source: "hook", injectedIds: ["a"], droppedIds: [] }) + "\n");
+  fs.writeFileSync(path.join(root, "recall_log.jsonl"), [
+    JSON.stringify({ at: "2026-08-02T00:00:00Z", source: "hook", injectedIds: ["a", "b"], droppedIds: ["c"] }),
+    JSON.stringify({ at: "2026-08-03T00:00:00Z", source: "view", injectedIds: ["b"], droppedIds: [] }), // a UI probe
+    "{ truncated tail from a crash",                                                                     // malformed
+    "",                                                                                                  // blank
+  ].join("\n") + "\n");
+
+  const out = E.readRecallLogDoc(root);
+  assert.equal(out.status, STATUS.OK);
+  assert.equal(out.lines, 2, "one hook line per generation; the view line and the junk line are not entries");
+  assert.equal(out.excludedView, 1);
+  assert.equal(out.malformed, 1);
+  // 'b' appears twice across the kept lines (once per generation-ish), 'view' never contributes.
+  const injected = out.entries.flatMap((e) => e.injectedIds);
+  assert.deepEqual(injected.sort(), ["a", "a", "b"]);
+});
+
+test("recall_log: reading it mutates nothing on disk", () => {
+  const root = makeRoot("rl-ro");
+  const file = path.join(root, "recall_log.jsonl");
+  fs.writeFileSync(file, JSON.stringify({ at: "2026-08-02T00:00:00Z", source: "hook", injectedIds: ["a"], droppedIds: [] }) + "\n");
+  const before = fs.statSync(file);
+  E.readRecallLogDoc(root);
+  const after = fs.statSync(file);
+  assert.equal(after.size, before.size);
+  assert.equal(after.mtimeMs, before.mtimeMs);
+});
+
+test("recall_log tail: reads appended bytes from an offset, and resets on rotation", () => {
+  const root = makeRoot("rl-tail");
+  const file = path.join(root, "recall_log.jsonl");
+  const line = (q) => JSON.stringify({ at: "2026-08-02T00:00:00Z", source: "hook", query: q, injectedIds: [], droppedIds: [] }) + "\n";
+
+  fs.writeFileSync(file, line("one") + line("two"));
+  const first = E.readRecallSince(root, 0);
+  assert.equal(first.entries.length, 2);
+  assert.deepEqual(first.entries.map((e) => e.query), ["one", "two"]);
+
+  // Nothing new since the last offset.
+  assert.deepEqual(E.readRecallSince(root, first.newOffset).entries, []);
+
+  // Append: only the new line comes back, from the offset.
+  fs.appendFileSync(file, line("three"));
+  const next = E.readRecallSince(root, first.newOffset);
+  assert.deepEqual(next.entries.map((e) => e.query), ["three"]);
+
+  // Rotation: file shrinks below the offset -> re-read from the top, flagged.
+  fs.writeFileSync(file, line("fresh"));
+  const rot = E.readRecallSince(root, next.newOffset);
+  assert.equal(rot.rotated, true);
+  assert.deepEqual(rot.entries.map((e) => e.query), ["fresh"]);
+
+  // Missing file is not a throw.
+  assert.deepEqual(E.readRecallSince(makeRoot("rl-none"), 0).entries, []);
+});
+
+test("recall_log tail: readRecallTail returns the last N, keeping query and source", () => {
+  const root = makeRoot("rl-tailn");
+  const file = path.join(root, "recall_log.jsonl");
+  let body = "";
+  for (let i = 0; i < 5; i++) body += JSON.stringify({ at: "2026-08-02T00:00:00Z", source: i === 4 ? "cli" : "hook", query: `q${i}`, injectedIds: [`m${i}`], droppedIds: [] }) + "\n";
+  fs.writeFileSync(file, body);
+  const { entries } = E.readRecallTail(root, 2);
+  assert.deepEqual(entries.map((e) => e.query), ["q3", "q4"]);
+  assert.equal(entries[1].source, "cli", "source survives — the feed needs it to drop its own probes");
+});
+
 // ── Coverage: unmeasured stores leave the denominator ───────────────────────
 
 test("makeCoverage: storeless stores are excluded from the denominator, not counted as 0%", () => {
