@@ -39,6 +39,31 @@ For global atoms (persona/instruction types):
 tmem atoms global
 ```
 
+### 3b. Verify & dedup atoms before consolidating (close the loop)
+
+Do not consolidate atoms blindly — the measured store was ~40% junk/duplicate and
+16% of mined "fixes" were themselves errors. First remove exact duplicates with the
+hard script:
+
+```bash
+tmem dedup --atoms --dry-run     # then --apply if the plan looks right
+```
+
+Then, for the remaining atoms, decide per atom against the existing pool (search
+candidates with `tmem search "<key phrase>"`):
+
+- **store** — genuinely new information → keep.
+- **skip** — an existing atom already says it (no increment, or vaguer) → drop.
+- **update** — same fact, this atom is more specific/newer/corrects the old → fold
+  the correction in, keep the union of timestamps, do NOT inflate priority.
+- **merge** — same fact/evolution across several atoms → combine into one complete,
+  non-redundant atom.
+
+Drop a mined error→fix atom whose fix ITSELF errored later in the transcript
+(flailing) — a wrong fix enshrined as a rule is worse than none. Cross-type merges
+are allowed (an episodic + a persona describing the same fact → one atom of the
+better type).
+
 ### 4. Generate L2 scene blocks
 
 Group project-scoped atoms by topic into narrative scenes.
