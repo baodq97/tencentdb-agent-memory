@@ -1,9 +1,36 @@
 {
-  "name": "tencentdb-agent-memory",
+  "name": "tmem",
   "version": "0.7.0",
-  "private": false,
+  "description": "tmem — local long-term memory CLI for AI coding agents: L0→L3 memory tiers, hybrid FTS+vector recall, two-clock persona, health doctor, and a read-only visualiser.",
   "bin": {
     "tmem": "./scripts/tmem.js"
+  },
+  "files": [
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "memory",
+    "agent",
+    "ai",
+    "llm",
+    "claude",
+    "cli",
+    "recall",
+    "rag"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/baodq97/tencentdb-agent-memory.git"
+  },
+  "homepage": "https://github.com/baodq97/tencentdb-agent-memory#readme",
+  "bugs": {
+    "url": "https://github.com/baodq97/tencentdb-agent-memory/issues"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "dependencies": {
     "node-llama-cpp": "^3.16.2",
