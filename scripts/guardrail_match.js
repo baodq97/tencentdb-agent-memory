@@ -21,11 +21,10 @@
 
 const { significantTokens } = require("./grounding.js");
 
-// Command words that are noise for matching — every command has them, so they
-// carry no signal about WHICH guardrail applies.
-const COMMAND_STOPWORDS = new Set([
-  "sudo", "run", "the", "and", "then", "with", "for", "cd", "echo",
-]);
+// Command noise words significantTokens does NOT already strip (the/and/with/for
+// are in grounding.STOPWORDS, so listing them here would be dead entries). These
+// are shell-specific fillers that carry no signal about WHICH guardrail applies.
+const COMMAND_STOPWORDS = new Set(["sudo", "run", "then", "cd", "echo"]);
 
 /** Significant action tokens of a shell command / tool input. */
 function commandSignature(command) {

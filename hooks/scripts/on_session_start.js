@@ -22,6 +22,9 @@
 const path = require("node:path");
 const { emit } = require(path.join(__dirname, "_common.js"));
 
+// Plugin scripts dir — constant per process; computed once instead of in each job.
+const scriptsDir = path.join(process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, "..", ".."), "scripts");
+
 // 1) Shim self-heal — most important; runs regardless of detection below.
 try {
   const { ensureLauncherInstalled } = require(path.join(__dirname, "..", "..", "scripts", "tmem.js"));
@@ -31,7 +34,6 @@ try {
 // 2) Fragmentation hint for the current project.
 function fragmentHint() {
   try {
-    const scriptsDir = path.join(process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, "..", ".."), "scripts");
     const { projectHashForCwd } = require(path.join(scriptsDir, "memory_reader.js"));
     const { listProjectHashes } = require(path.join(scriptsDir, "memory_writer.js"));
     const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -52,7 +54,6 @@ function fragmentHint() {
 function renderTier0Block(text, tag, intro) {
   try {
     if (!text || !String(text).trim()) return "";
-    const scriptsDir = path.join(process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, "..", ".."), "scripts");
     // CHARS_PER_TOKEN comes from the projection module rather than a local copy:
     // it is the unit the tier-0 budget is defined in, and a second declaration
     // here is exactly the drift this file's own comment used to warn about.
@@ -86,7 +87,6 @@ function renderTier0Block(text, tag, intro) {
 
 function personaCore() {
   try {
-    const scriptsDir = path.join(process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, "..", ".."), "scripts");
     const { globalDir, readPersona } = require(path.join(scriptsDir, "memory_writer.js"));
     return renderTier0Block(
       readPersona(globalDir()),
@@ -98,7 +98,6 @@ function personaCore() {
 
 function projectDoctrine() {
   try {
-    const scriptsDir = path.join(process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, "..", ".."), "scripts");
     const { projectDir, readPersona } = require(path.join(scriptsDir, "memory_writer.js"));
     const { projectHashForCwd } = require(path.join(scriptsDir, "memory_reader.js"));
     const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();

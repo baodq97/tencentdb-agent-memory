@@ -20,6 +20,16 @@ function getDirs() {
   return { gDir: globalDir(), pDir: projectDir(pHash), pHash };
 }
 
+// Resolve a `--scope global|project` flag to its store dir. One definition shared
+// by the persona read + write commands so they can't drift on what a scope means.
+function resolveScope(args, usage) {
+  const i = args.indexOf("--scope");
+  const scope = i >= 0 ? (args[i + 1] || "") : "global";
+  if (scope !== "global" && scope !== "project") { console.error(usage); process.exit(1); }
+  const { gDir, pDir } = getDirs();
+  return { scope, dir: scope === "project" ? pDir : gDir };
+}
+
 function storeRecordCount(dir) {
   const db = path.join(dir, "index.db");
   if (!fs.existsSync(db)) return 0;
@@ -463,16 +473,10 @@ function printPersonaSectionList(sections, dutyCounts, prefix) {
 
 function cmdPersona(args) {
   const { readPersona } = req("memory_writer.js");
-  const { gDir, pDir } = getDirs();
   const argv = args || [];
   // --scope project reads THIS repo's Operating Doctrine; default is the global persona.
-  const scopeIdx = argv.indexOf("--scope");
-  const scope = scopeIdx >= 0 ? (argv[scopeIdx + 1] || "") : "global";
-  if (scope !== "global" && scope !== "project") {
-    console.error("usage: tmem persona [--scope global|project] [--sections | --section <name>]");
-    process.exit(1);
-  }
-  const p = readPersona(scope === "project" ? pDir : gDir);
+  const { dir } = resolveScope(argv, "usage: tmem persona [--scope global|project] [--sections | --section <name>]");
+  const p = readPersona(dir);
 
   const wantList = argv.includes("--sections");
   const secIdx = argv.indexOf("--section");
@@ -918,14 +922,7 @@ function cmdWritePersona(args = []) {
   // --scope global (default) → the cross-project persona; --scope project → this
   // repo's Operating Doctrine (the hybrid model: common traits global, per-project
   // deltas in the project store). Family/caps by scope are layered on in WS2b.
-  const scopeIdx = args.indexOf("--scope");
-  const scope = scopeIdx >= 0 ? (args[scopeIdx + 1] || "") : "global";
-  if (scope !== "global" && scope !== "project") {
-    console.error("usage: tmem write-persona [--scope global|project] [--force]");
-    process.exit(1);
-  }
-  const { gDir, pDir } = getDirs();
-  const targetDir = scope === "project" ? pDir : gDir;
+  const { scope, dir: targetDir } = resolveScope(args, "usage: tmem write-persona [--scope global|project] [--force]");
   let content = "";
   try { content = fs.readFileSync(0, "utf-8"); } catch {}
   if (!content.trim()) { console.error("Pipe persona content to stdin. E.g.: echo '# Persona...' | tmem write-persona"); process.exit(1); }

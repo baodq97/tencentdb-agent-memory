@@ -348,24 +348,16 @@ function autoCapture({ userText, assistantText, sessionId, cwd, sourceMessageIds
     sessionId: sessionId || "",
   };
 
+  // Route through the ONE canonical L1 writer: it appends the durable JSONL
+  // record (carrying source_message_ids + the L0 pointer), indexes into FTS, AND
+  // logs the write to the changelog — the hand-rolled upsert used to skip the
+  // changelog, so auto-captured atoms were invisible to `tmem changelog`.
   try {
-    const { MemoryStore } = require(path.join(__dirname, "memory_store.js"));
-    const dbPath = path.join(projectBase, "index.db");
-    fs.mkdirSync(projectBase, { recursive: true });
-    const store = new MemoryStore(dbPath);
-    store.upsert(record);
-    store.close();
+    const { writeL1Record } = require(path.join(__dirname, "memory_writer.js"));
+    writeL1Record(projectBase, record);
   } catch {
     return { captured: false, turnCount: 0, consolidationDue: false };
   }
-
-  const recordsDir = path.join(projectBase, "records");
-  try {
-    fs.mkdirSync(recordsDir, { recursive: true });
-    const d = new Date();
-    const shard = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
-    fs.appendFileSync(path.join(recordsDir, `${shard}.jsonl`), JSON.stringify(record) + "\n", "utf-8");
-  } catch {}
 
   const state = loadCaptureState();
   state.turn_count = (state.turn_count || 0) + 1;
