@@ -250,6 +250,77 @@ function renderSceneNav(orderedScenes, maxChars) {
   };
 }
 
+/**
+ * Rank DISTILLED scene-body facts against the query and render them into a
+ * `<recalled-facts>` block. This is the pivot: per-turn recall surfaces the
+ * facts consolidation already distilled into scenes (Key Facts / Decisions
+ * bullets), instead of raw episodic turns that only echo the conversation.
+ *
+ * Pure: the caller (memory_recall.readSceneFacts) owns the fs read and hands in
+ * already-parsed facts, mirroring how rankScenes takes normalised rows. Reuses
+ * the same buildIdf/relevanceScore scorer as scenes and persona so a fact ranks
+ * by discriminating tokens, not raw overlap.
+ *
+ * @param {Array<{sceneName: string, heat?: number|string, text: string}>} facts
+ * @param {string} query
+ * @param {{limit?: number, maxChars?: number}} [opts]
+ * @returns {{facts: Array, block: string, usedChars: number}}
+ */
+function rankSceneFacts(facts, query, opts = {}) {
+  const limit = Math.max(1, opts.limit ?? 5);
+  const maxChars = Math.max(0, opts.maxChars ?? 700);
+  const list = (Array.isArray(facts) ? facts : []).filter((f) => f && String(f.text || "").trim());
+  if (!list.length || maxChars === 0) return { facts: [], block: "", usedChars: 0 };
+
+  const qTokens = new Set(significantTokens(query || ""));
+  const docs = list.map((f, i) => ({ f, i, text: String(f.text) }));
+
+  // No query signal → fall back to heat then document order (fresh scenes first),
+  // so the block is still useful on an empty/stopword-only prompt.
+  let ordered;
+  if (qTokens.size) {
+    const { idf, tokens } = buildIdf(docs);
+    let scored = docs.map((d) => ({ d, score: relevanceScore(d.text, qTokens, idf, tokens.get(d)) }));
+    // idf zero-weights any token present in > COMMON_DF_RATIO of the corpus, which
+    // on a SMALL fact pool can zero every query token and score everything 0. Fall
+    // back to plain significant-token overlap so ranking still discriminates — the
+    // idf path stays primary on the large real corpus where it works.
+    if (scored.every((x) => x.score === 0)) {
+      scored = docs.map((d) => {
+        const dt = tokens.get(d) || new Set(significantTokens(d.text));
+        let hit = 0;
+        for (const t of qTokens) if (dt.has(t)) hit++;
+        return { d, score: hit / qTokens.size };
+      });
+    }
+    ordered = scored
+      .sort((x, y) => y.score - x.score || heatOf(y.d.f) - heatOf(x.d.f) || x.d.i - y.d.i)
+      .filter((x) => x.score > 0) // an unmatched fact is an echo risk — drop it, don't pad
+      .map((x) => x.d);
+  } else {
+    ordered = docs.slice().sort((a, b) => heatOf(b.f) - heatOf(a.f) || a.i - b.i);
+  }
+
+  const chosen = [];
+  const seen = new Set();
+  let used = 0;
+  for (const d of ordered) {
+    const text = String(d.f.text).trim();
+    const key = text.slice(0, 50).toLowerCase();
+    if (seen.has(key)) continue; // same fact carried by two scenes → keep one
+    if (used + text.length + 3 > maxChars) continue; // skip, don't break: let a shorter fact behind fit
+    seen.add(key);
+    used += text.length + 3;
+    chosen.push({ sceneName: d.f.sceneName || "", heat: d.f.heat, text });
+    if (chosen.length >= limit) break;
+  }
+
+  if (!chosen.length) return { facts: [], block: "", usedChars: 0 };
+  const body = chosen.map((f) => `- ${f.text}${f.sceneName ? ` (${f.sceneName})` : ""}`).join("\n");
+  const block = `<recalled-facts>\nDistilled facts from past sessions, ranked for this turn (full scene: \`tmem scene <name>\`):\n${body}\n</recalled-facts>`;
+  return { facts: chosen, block, usedChars: block.length };
+}
+
 module.exports = {
-  CHARS_PER_TOKEN, NAV, heatEmoji, truncate, navLine, sceneText, byHeatDesc, rankScenes, renderSceneNav,
+  CHARS_PER_TOKEN, NAV, heatEmoji, truncate, navLine, sceneText, byHeatDesc, rankScenes, renderSceneNav, rankSceneFacts,
 };

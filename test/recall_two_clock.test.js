@@ -88,13 +88,32 @@ test("a meta prompt returns zero persona-type L1 atoms in the per-turn block", (
   });
 });
 
-// ── 2. a fact prompt still recalls its non-persona L1 atom ────────────────────
-test("a fact prompt still surfaces its episodic L1 atom", () => {
+// ── 2. a fact prompt recalls its DISTILLED scene fact (the pivot) ─────────────
+// Raw episodic atoms are echoes and no longer surface per-turn; the fact a prompt
+// asks for is recalled from the scene body consolidation distilled it into.
+test("a fact prompt surfaces its distilled scene fact, not a raw episodic echo", () => {
   withFakeHome((home) => {
     seedGlobal(home);
+    // The fact lives in a scene body (what consolidation produces), not as a raw
+    // episodic atom. Recall must surface it via the <recalled-facts> block.
+    const gScenes = path.join(home, ".memory-tencentdb", "global", "scene_blocks");
+    fs.mkdirSync(gScenes, { recursive: true });
+    fs.writeFileSync(path.join(gScenes, "serve-config.md"), [
+      "-----META-START-----",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "summary: serve.js configuration",
+      "heat: 4",
+      "-----META-END-----",
+      "",
+      "## Key Facts",
+      "- serve.js binds to port 3000 in development.",
+    ].join("\n"));
+
     const out = recall("what port does serve.js bind", "");
-    assert.match(out, /port 3000/, `the fact must still recall, got:\n${out}`);
-    assert.match(out, /\[episodic\]/, "and be rendered as its real (non-persona) type");
+    assert.match(out, /port 3000/, `the distilled fact must recall, got:\n${out}`);
+    assert.match(out, /recalled-facts/, "and be delivered via the <recalled-facts> block");
+    assert.doesNotMatch(out, /\[episodic\]/, "raw episodic atoms must not surface per-turn");
   });
 });
 

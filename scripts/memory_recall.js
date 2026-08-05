@@ -19,7 +19,7 @@ const { getSceneMaxTokens } = require("./memory_auto_capture.js");
 // Pure renderer + ranker, shared with view/transform.js so the block the agent
 // receives and the block the visualiser measures can never be two different
 // algorithms.
-const { renderSceneNav, rankScenes, byHeatDesc } = require("./scene_nav.js");
+const { renderSceneNav, rankScenes, byHeatDesc, rankSceneFacts } = require("./scene_nav.js");
 const {
   parsePersona,
   projectTier1,
@@ -30,6 +30,13 @@ const {
 } = require("./persona_projection.js");
 
 const DEFAULT_MAX_TOKENS = 280;
+
+// The `<recalled-facts>` block has its OWN budget (like scene-nav and tier-1
+// persona), NOT charged to the atoms' token budget: distilled scene facts are the
+// primary per-turn memory now, so they must not starve — or be starved by — the
+// residual atom pool. ~175 tok is room for ~4-5 one-line facts.
+const FACT_RECALL_MAX_CHARS = 700;
+const FACT_RECALL_LIMIT = 5;
 
 /**
  * Open an FTS MemoryStore READ-ONLY for recall, returning null (never throwing)
@@ -134,6 +141,49 @@ function buildSceneNav(projectHash, query = "", sceneMaxTokens = getSceneMaxToke
   // same arithmetic to report how many scenes the agent can actually see, and it
   // was previously a hand copy that nothing forced to stay in step.
   return renderSceneNav(ordered, sceneMaxTokens * CHARS_PER_TOKEN).text;
+}
+
+/**
+ * Read the DISTILLED facts out of a store's scene bodies: every `- ` bullet under
+ * the scene content (after the META block), tagged with its scene name and heat.
+ * These are what consolidation already distilled — the recall pivot surfaces them
+ * instead of raw episodic turns. I/O lives here; ranking is the pure scene_nav
+ * core. Fail-open: an unreadable scene contributes nothing.
+ *
+ * @param {string} baseDir a store dir (global or a project store)
+ * @returns {Array<{sceneName: string, heat: number, text: string}>}
+ */
+function readSceneFacts(baseDir) {
+  const out = [];
+  let scenes = [];
+  try { scenes = listScenes(baseDir); } catch { return out; }
+  for (const s of scenes) {
+    try {
+      const raw = fs.readFileSync(s.filepath, "utf-8");
+      const endIdx = raw.indexOf("-----META-END-----");
+      const body = endIdx >= 0 ? raw.slice(endIdx + "-----META-END-----".length) : raw;
+      const name = (s.filename || "").replace(/\.md$/, "");
+      const heat = parseInt(s.heat, 10) || 0;
+      for (const line of body.split(/\r?\n/)) {
+        const m = line.match(/^\s*-\s+(.*\S)\s*$/);
+        if (m && m[1].length >= 8) out.push({ sceneName: name, heat, text: m[1].trim() });
+      }
+    } catch { /* skip unreadable scene */ }
+  }
+  return out;
+}
+
+/**
+ * Build the `<recalled-facts>` block for a turn: distilled scene facts from the
+ * project store first, then global, ranked against the query. Project facts lead
+ * so global ones drop first under the budget, matching the scene-nav policy.
+ */
+function buildFactRecall(projectHash, query, maxChars = FACT_RECALL_MAX_CHARS) {
+  const facts = [];
+  if (projectHash) facts.push(...readSceneFacts(projectDir(projectHash)));
+  facts.push(...readSceneFacts(globalDir()));
+  if (!facts.length) return "";
+  return rankSceneFacts(facts, query, { limit: FACT_RECALL_LIMIT, maxChars }).block;
 }
 
 // ── Recall log ──
@@ -261,6 +311,20 @@ function dropPersonaAtoms(memories) {
 }
 
 /**
+ * The recall pivot: raw `episodic` atoms are lightly-processed past user turns, so
+ * recalling them by query similarity surfaces ECHOES of the conversation, not
+ * answering facts (measured: on real queries the episodic `<memories>` block was
+ * 1/10 helpful, mostly near-duplicates of the current turn). The distilled facts
+ * consolidation already produced live in scene bodies and are recalled via
+ * `<recalled-facts>`. So per-turn recall drops persona (session clock) AND raw
+ * episodic (echoes), keeping only distilled standing atoms — `instruction` and
+ * any future `semantic` type. Defensive on shape: an atom with no `type` is kept.
+ */
+function keepDistilledAtoms(memories) {
+  return memories.filter((m) => !m || (m.type !== "persona" && m.type !== "episodic"));
+}
+
+/**
  * Render the ranked memories into `<memories>`, recording what fitted and what
  * did not. Shared by recall() and recallAsync() so the two paths cannot start
  * reporting different things about the same budget.
@@ -347,6 +411,11 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
   const sceneNav = buildSceneNav(projectHash, query);
   if (sceneNav) parts.push(sceneNav);
 
+  // Distilled scene facts (own budget) — the primary per-turn memory. Surfaces
+  // what consolidation distilled into scenes instead of raw episodic echoes.
+  const factBlock = buildFactRecall(projectHash, query);
+  if (factBlock) parts.push(factBlock);
+
   let memories = [];
   const gDir = globalDir();
   const gDb = path.join(gDir, "index.db");
@@ -370,9 +439,10 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
     }
   }
 
-  // Persona is a session clock (SessionStart), not a per-turn one — drop its
-  // atoms before ranking so the delta is what remains. See dropPersonaAtoms.
-  memories = dedupeAndRank(dropPersonaAtoms(memories), topK);
+  // Drop persona (session clock) AND raw episodic (echoes); the distilled facts
+  // above are the per-turn memory. What remains here is distilled standing atoms
+  // (instruction/semantic). See keepDistilledAtoms.
+  memories = dedupeAndRank(keepDistilledAtoms(memories), topK);
 
   return finishRecall(parts, renderMemories(memories, maxChars), { source, query });
 }
@@ -507,6 +577,11 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   const sceneNav = buildSceneNav(projectHash, query);
   if (sceneNav) parts.push(sceneNav);
 
+  // Distilled scene facts (own budget) — the primary per-turn memory. Surfaces
+  // what consolidation distilled into scenes instead of raw episodic echoes.
+  const factBlock = buildFactRecall(projectHash, query);
+  if (factBlock) parts.push(factBlock);
+
   const dirs = [globalDir()];
   if (projectHash) dirs.push(projectDir(projectHash));
 
@@ -553,10 +628,11 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
     }
   } catch {}
 
-  // Persona is a session clock (SessionStart), not a per-turn one — drop its
-  // atoms from BOTH retrieval arms before the merge/rank. See dropPersonaAtoms.
-  ftsResults = dropPersonaAtoms(ftsResults);
-  vecResults = dropPersonaAtoms(vecResults);
+  // Drop persona (session clock) AND raw episodic (echoes) from BOTH retrieval
+  // arms before the merge/rank; distilled facts (above) are the per-turn memory.
+  // See keepDistilledAtoms.
+  ftsResults = keepDistilledAtoms(ftsResults);
+  vecResults = keepDistilledAtoms(vecResults);
 
   // Surface (never silently swallow) the FTS-only degradation. When the embed
   // daemon didn't return a vector but a vector store exists, this recall ran
@@ -631,5 +707,5 @@ if (require.main === module) main();
 // is the contract that matters.
 module.exports = {
   recall, recallAsync, buildSceneNav, renderMemories, MEMORY_SEARCH_HINT, projectScopeFor,
-  RECALL_SOURCE, RECALL_LOG_MAX_BYTES,
+  RECALL_SOURCE, RECALL_LOG_MAX_BYTES, readSceneFacts, buildFactRecall, keepDistilledAtoms,
 };

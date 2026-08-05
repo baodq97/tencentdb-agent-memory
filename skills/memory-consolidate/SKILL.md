@@ -96,6 +96,33 @@ SCENE_EOF
 - Heat 4-5: active this week. Heat 2-3: recent but not current. Heat 1: historical. Only heat 5 (two flames) and heat 4 (one flame) get a flame cue in the nav; 1-3 render none, so reserve 4-5 for genuinely current work rather than defaulting there.
 - Each scene should be understandable on its own
 
+**How scene-body FACTS are delivered** (the body is a per-turn recall surface now, not just an on-demand read):
+
+Each `- ` bullet under `## Key Facts` and `## Decisions` is indexed and, every
+turn, ranked against the user's prompt and injected — the top few — into a
+`<recalled-facts>` block (own budget, ~700 chars, project scenes first). This is
+the PRIMARY per-turn memory: raw L1 episodic atoms are no longer recalled (they
+were measured to echo the current turn, 1/10 helpful), so a fact reaches a future
+agent ONLY if it is a scene-body bullet here. Measured: distilling facts into this
+block lifted real-query helpfulness from 1/10 to 5/10.
+
+So write each bullet as a **self-contained answering fact that carries the
+outcome**, not a topic label:
+
+- **Stand alone.** A bullet is recalled without its scene around it. "Fixed the
+  launcher bug" is useless out of context; "tmem.js resolved the plugin-cache
+  cli.js before its own sibling, so `npx @baodq97/tmem` ran stale code — fixed by
+  making the sibling authoritative (v0.7.3)" answers the question by itself.
+- **Carry the result / number, not just the subject.** The two recall misses that
+  remained were bullets that said a topic was *discussed* but not what was
+  *decided or measured*. "Reviewed embedding quality" → instead: "EmbeddingGemma-300M
+  is the model; multilingual EN+VI confirmed adequate, no swap recommended." Put
+  the verdict, the figure, the path, the version IN the bullet.
+- **One fact per bullet, distinguishing token first** — the ranker scores by query
+  overlap, so lead with the noun a future prompt would search for.
+- A bullet that is just an echo of a user turn ("ok, ship it") is not a fact —
+  drop it. Only durable, reusable facts earn a bullet.
+
 **How the summary is delivered** (write for the reader, it cannot summarise you):
 
 The `--summary` is not part of the scene body. It becomes one line in the per-turn scene-navigation block — `- Scene Name (heat=5 🔥🔥) <summary>` — and that block has a hard **800-char** budget. The renderer truncates every summary at **80 characters** and appends `...`. Whatever you write past character 80 is displayed nowhere, in any surface: not in the nav, not on the way to the body. It is not "extra detail", it is discarded text.
@@ -111,7 +138,7 @@ Check your own output before writing it — no tool needed:
 - An 80-char summary is **one wrapped line at 80 columns**. If it wraps to a second line, it is over.
 - Or count words: **≤ 12**. If you have to re-read it to know, it is too long.
 
-**A summary is a signpost, not an abstract.** Its only job is to let the reader decide whether to run `tmem scene <name>`. It should name the subject and the distinguishing detail — enough to tell this scene apart from its neighbours — and nothing else. The full narrative belongs in the scene body, which is loaded on demand and has no budget. Do not restate the body in miniature; do not open with "This scene covers…". Lead with the distinguishing noun, since the tail is what gets cut.
+**A summary is a signpost, not an abstract.** Its only job is to let the reader decide whether to run `tmem scene <name>`. It should name the subject and the distinguishing detail — enough to tell this scene apart from its neighbours — and nothing else. The full narrative lives in the scene body, readable in whole via `tmem scene <name>`; its individual bullets are ALSO recalled per turn (see the next section), so the body is no longer a budget-free dumping ground. Do not restate the body in miniature; do not open with "This scene covers…". Lead with the distinguishing noun, since the tail is what gets cut.
 
 **This applies to summaries you are only carrying through, not just to new ones.** When you reuse an existing scene name (step 4), you rewrite its summary too — pass the old one through the same 80-char test and shorten it. Scenes you never re-touch keep their over-long summaries forever, so shortening on re-consolidation is the only path by which an already-bloated store improves.
 
