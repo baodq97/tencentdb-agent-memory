@@ -502,9 +502,12 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   }
 
   let vecResults = [];
+  let embedReason = null;
   try {
-    const { embedViaDaemon } = require("./embed_client.js");
-    const queryVec = await embedViaDaemon(query);
+    const { embedViaDaemonStatus } = require("./embed_client.js");
+    const status = await embedViaDaemonStatus(query);
+    const queryVec = status.vector;
+    embedReason = status.reason;
     {
       if (queryVec) {
         for (const dir of dirs) {
@@ -535,6 +538,22 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   // atoms from BOTH retrieval arms before the merge/rank. See dropPersonaAtoms.
   ftsResults = dropPersonaAtoms(ftsResults);
   vecResults = dropPersonaAtoms(vecResults);
+
+  // Surface (never silently swallow) the FTS-only degradation. When the embed
+  // daemon didn't return a vector but a vector store exists, this recall ran
+  // keyword-only — say so on stderr for deliberate CLI lookups so the gap isn't
+  // invisible. Kept off the hook path to avoid per-turn noise while warming.
+  if (source === RECALL_SOURCE.CLI && embedReason && embedReason !== "ready") {
+    const hasVectorStore = dirs.some((dir) => fs.existsSync(path.join(dir, "vectors.db")));
+    if (hasVectorStore) {
+      try {
+        process.stderr.write(
+          `[tmem] embedding daemon ${embedReason} — recall ran FTS-only (keyword search). ` +
+          `Run \`tmem daemon status\` / \`tmem daemon start\` to restore vector recall.\n`
+        );
+      } catch {}
+    }
+  }
 
   let memories;
   if (vecResults.length > 0 && ftsResults.length > 0) {
