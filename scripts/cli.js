@@ -524,14 +524,20 @@ function cmdPersona(args) {
 // vectors). With --full: re-embed every record (former `reindex`).
 async function cmdSync(args) {
   const full = (args || []).includes("--full");
+  const all = (args || []).includes("--all");
   const { MemoryStore } = req("memory_store.js");
   const { VectorStore } = req("vector_store.js");
   const { getEmbeddingService } = req("embedding_service.js");
-  const { gDir, pDir } = getDirs();
+
+  // Target stores. Default: current project + global (matches recall's view).
+  // --all: global + every project store. Shared with prune/dedup so the "which
+  // stores does a whole-root op touch" rule lives in ONE place (maintenanceTargets).
+  const targets = maintenanceTargets(all);
 
   // Decide which records to embed, per dir.
   const todo = []; // [{ dir, ...record }]
-  for (const [label, dir] of [["Global", gDir], ["Project", pDir]]) {
+  let degradedStores = 0; // stores skipped because sqlite-vec would not load
+  for (const [label, dir] of targets) {
     const dbPath = path.join(dir, "index.db");
     if (!fs.existsSync(dbPath)) continue;
     const ftsStore = new MemoryStore(dbPath);
@@ -540,7 +546,11 @@ async function cmdSync(args) {
     if (!records.length) continue;
 
     const vecStore = new VectorStore(path.join(dir, "vectors.db"));
-    if (vecStore.degraded) { vecStore.close(); continue; }
+    // Degraded is NOT "in sync": the vector engine failed to load, so nothing
+    // could be embedded. Counting it silently as done reported "all in sync" on a
+    // store with zero vectors — the exact false-positive this tool exists to
+    // catch. Surface it instead so the missing-vector gap stays visible.
+    if (vecStore.degraded) { vecStore.close(); degradedStores++; continue; }
     const vecCount = vecStore.count();
     vecStore.close();
 
@@ -558,7 +568,15 @@ async function cmdSync(args) {
     todo.push(...sorted.slice(0, delta).map(r => ({ dir, ...r })));
   }
 
-  if (!todo.length) { console.log(full ? "No records to embed." : "All vectors in sync."); return; }
+  if (degradedStores > 0) {
+    console.error(`⚠ ${degradedStores} store(s) skipped: sqlite-vec did not load, so vectors cannot be embedded here. Run where the vector engine is available (installed plugin / daemon host).`);
+  }
+  if (!todo.length) {
+    console.log(degradedStores > 0
+      ? "No vectors embedded (vector engine unavailable — see warning above)."
+      : (full ? "No records to embed." : "All vectors in sync."));
+    return;
+  }
 
   const svc = getEmbeddingService();
   console.log(`${full ? "Reindexing" : "Syncing"} ${todo.length} vectors...`);
@@ -585,6 +603,184 @@ async function cmdSync(args) {
 
   svc.close();
   console.log(`Embedded ${done}/${todo.length} vectors.`);
+}
+
+// ── prune / dedup shared plumbing ──
+//
+// Target stores for a whole-root operation. Default: current project + global
+// (what recall sees). --all: global + every project store. This is the ONE
+// definition of "which stores does a whole-root op touch" — sync, prune and dedup
+// all read it, so the enumeration rule cannot drift between them.
+function maintenanceTargets(all) {
+  const { globalDir, projectDir, listProjectHashes } = req("memory_writer.js");
+  if (!all) {
+    const { gDir, pDir, pHash } = getDirs();
+    return [["global", gDir], [pHash || "project", pDir]];
+  }
+  const targets = [["global", globalDir()]];
+  for (const h of listProjectHashes()) {
+    if (projectDir(h) === globalDir()) continue;
+    targets.push([h, projectDir(h)]);
+  }
+  return targets;
+}
+
+/**
+ * Remove `records` from ONE already-open store, ARCHIVING first so the sweep is
+ * reversible. The caller owns `store` (it read the records off it) and closes it;
+ * taking the open handle here avoids re-opening the same index.db a second time.
+ *
+ * Order matters: write the archive, then delete from FTS (index.db), then from
+ * vectors.db. index.db is authoritative for recall (nothing rebuilds it from the
+ * records/*.jsonl log during normal use), so a record gone from index.db is gone
+ * from recall; the append-only JSONL log is left intact as history and the
+ * archive under `<dir>/.pruned/` is the restore point. Returns #removed.
+ */
+function applyRemoval(store, dir, records, { reason, apply }) {
+  if (!records.length) return 0;
+  if (!apply) return records.length; // dry-run: count only, touch nothing
+
+  const { VectorStore } = req("vector_store.js");
+
+  // Archive (full record JSON) before anything is deleted.
+  const archiveDir = path.join(dir, ".pruned");
+  fs.mkdirSync(archiveDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const archivePath = path.join(archiveDir, `${reason}-${stamp}.jsonl`);
+  fs.appendFileSync(archivePath, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf-8");
+
+  const vecPath = path.join(dir, "vectors.db");
+  const vec = fs.existsSync(vecPath) ? new VectorStore(vecPath) : null;
+  let removed = 0;
+  for (const r of records) {
+    try {
+      store.delete(r.record_id);
+      if (vec && !vec.degraded) { try { vec.deleteVec(r.record_id); } catch {} }
+      removed++;
+    } catch {}
+  }
+  if (vec) vec.close();
+  return removed;
+}
+
+/**
+ * Walk the target stores once, let `select(records)` choose what to remove per
+ * store, archive+delete it, and return per-store results plus totals. Shared by
+ * prune and dedup so the open-once/read/apply/close/accumulate plumbing lives in
+ * ONE place; each command supplies only its selector and its own log wording.
+ * `select` returns `{ targets, meta }` — `meta` is opaque per-store detail the
+ * command aggregates (e.g. dedup's group count).
+ */
+function sweepStores(all, apply, { reason, select }) {
+  const { MemoryStore } = req("memory_store.js");
+  const perStore = [];
+  let totalTargets = 0, totalRemoved = 0;
+  for (const [label, dir] of maintenanceTargets(all)) {
+    const dbPath = path.join(dir, "index.db");
+    if (!fs.existsSync(dbPath)) continue;
+    const store = new MemoryStore(dbPath);
+    const records = store.allRecords("", 100000);
+    const { targets, meta } = select(records);
+    const removed = targets.length ? applyRemoval(store, dir, targets, { reason, apply }) : 0;
+    store.close();
+    if (!targets.length) continue;
+    totalTargets += targets.length;
+    totalRemoved += removed;
+    perStore.push({ label, total: records.length, targets: targets.length, removed, meta });
+  }
+  return { perStore, totalTargets, totalRemoved };
+}
+
+// ── prune (low-signal) ──
+//
+// Remove ONLY records the system itself treats as safe to destroy — the
+// NOISE_GATE_CLASSES (taskNotification, skillEcho, empty), via low_signal's
+// `noiseClasses()`. This is deliberately NARROWER than classifyLowSignal(): the
+// full classifier also flags `pasteDump` (any record ≥ a length threshold) and
+// `slashOrTag`, which catch legitimate long content — meeting transcripts, notes
+// that quote a command. Those are REPORTED by the health snapshot but must never
+// be auto-deleted (see the "reporting junk ≠ destroying it" note in low_signal.js).
+// Dry-run by default; --apply archives then removes.
+async function cmdPrune(args) {
+  const a = args || [];
+  if (!a.includes("--low-signal")) {
+    console.error("Usage: tmem prune --low-signal [--all] [--apply]");
+    process.exit(1);
+  }
+  const all = a.includes("--all");
+  const apply = a.includes("--apply");
+  const { noiseClasses } = req("low_signal.js");
+
+  const perClass = {};
+  const { perStore, totalTargets, totalRemoved } = sweepStores(all, apply, {
+    reason: "low-signal",
+    select: (records) => {
+      const targets = [];
+      for (const r of records) {
+        const classes = noiseClasses(r.content);
+        if (classes.length) {
+          targets.push(r);
+          for (const c of classes) perClass[c] = (perClass[c] || 0) + 1;
+        }
+      }
+      return { targets };
+    },
+  });
+
+  for (const s of perStore) {
+    console.log(`${s.label}: ${apply ? `removed ${s.removed}` : `${s.targets} would be removed`} (of ${s.total})`);
+  }
+  const cls = Object.entries(perClass).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${k}=${v}`).join(", ");
+  if (cls) console.log(`Classes: ${cls}`);
+  if (apply) console.log(`\nPruned ${totalRemoved} low-signal records (archived under each store's .pruned/).`);
+  else console.log(`\n${totalTargets} low-signal records would be pruned. Re-run with --apply to remove (archived, reversible).`);
+}
+
+// ── dedup (atoms) ──
+//
+// Remove exact-duplicate atoms, keeping the NEWEST of each group. Uses the SAME
+// exactKey the health snapshot's duplicate count uses, so the number pruned
+// matches the number reported. Dry-run by default; --apply archives then removes.
+async function cmdDedup(args) {
+  const a = args || [];
+  if (!a.includes("--atoms")) {
+    console.error("Usage: tmem dedup --atoms [--all] [--apply]");
+    process.exit(1);
+  }
+  const all = a.includes("--all");
+  const apply = a.includes("--apply");
+  const { exactKey } = require(path.join(SCRIPTS_DIR, "view", "transform.js"));
+
+  const { perStore, totalTargets, totalRemoved } = sweepStores(all, apply, {
+    reason: "dedup",
+    select: (records) => {
+      // Group by exact content key; keep the newest, target the rest.
+      const byKey = new Map();
+      for (const r of records) {
+        const k = exactKey(r.content);
+        if (!k) continue;
+        let bucket = byKey.get(k);
+        if (!bucket) { bucket = []; byKey.set(k, bucket); }
+        bucket.push(r);
+      }
+      const targets = [];
+      let groups = 0;
+      for (const bucket of byKey.values()) {
+        if (bucket.length < 2) continue;
+        groups++;
+        bucket.sort((x, y) => (y.updated_time || "").localeCompare(x.updated_time || ""));
+        targets.push(...bucket.slice(1)); // keep [0] (newest), drop rest
+      }
+      return { targets, meta: { groups } };
+    },
+  });
+
+  const totalGroups = perStore.reduce((n, s) => n + (s.meta.groups || 0), 0);
+  for (const s of perStore) {
+    console.log(`${s.label}: ${apply ? `removed ${s.removed}` : `${s.targets} would be removed`} across ${s.meta.groups} group(s)`);
+  }
+  if (apply) console.log(`\nDe-duplicated ${totalRemoved} atoms in ${totalGroups} group(s) (archived under each store's .pruned/).`);
+  else console.log(`\n${totalTargets} duplicate atoms in ${totalGroups} group(s) would be removed. Re-run with --apply (archived, reversible).`);
 }
 
 // ── atoms ──
@@ -1263,25 +1459,127 @@ function pruneSnapshots(dir, keep, protect) {
  * dropping it: a flag whose output cannot be fed to `jq` would defeat itself. The
  * file is still written, so a piped run and a plain run leave the same artifact.
  */
+// Build the SAME snapshot the visualiser serves: extract every store, transform
+// to the health model. ONE definition of the extract→transform pipeline, shared
+// by `doctor` and `view --snapshot`. Throws on a load/parse failure; callers map
+// that to their own error style. Returns `{ root, snapshot }`.
+function loadSnapshot(rootDir) {
+  const { extractAll } = require(path.join(SCRIPTS_DIR, "view", "extract.js"));
+  const { transformRoot } = require(path.join(SCRIPTS_DIR, "view", "transform.js"));
+  if (typeof extractAll !== "function") throw new Error("scripts/view/extract.js does not export extractAll()");
+  if (typeof transformRoot !== "function") throw new Error("scripts/view/transform.js does not export transformRoot()");
+  const root = extractAll({ rootDir });
+  return { root, snapshot: transformRoot(root) };
+}
+
+// gap.kind → the impure function that repairs it, scoped by the plan's scope.
+// This is the executor half; doctor.js FIX_BY_KIND is the pure DISPLAY half
+// (command string + tier). applyDoctorFixes prints `finding.fix.command` (from
+// doctor.js) and runs the matching entry here, so a kind is routed in ONE table
+// rather than an if/else chain. doctor.js must stay pure, so the executors live
+// here. Both vector kinds share cmdSync; applyDoctorFixes dedupes by command so
+// it embeds once.
+const DOCTOR_FIX_RUNNERS = {
+  vectors_missing:      (scope) => cmdSync(scope === "all" ? ["--all"] : []),
+  vectors_unmeasurable: (scope) => cmdSync(scope === "all" ? ["--all"] : []),
+  duplicate_records:    () => cmdDedup(["--atoms", "--apply"]),
+  low_signal_records:   () => cmdPrune(["--low-signal", "--apply"]),
+};
+
+// ── doctor ──
+//
+// Builds the SAME snapshot the visualiser serves (loadSnapshot), then delegates
+// to doctor.js for the gap→fix mapping and rendering. No health metric is
+// computed here — this command is a front-end over buildGaps()/totals.
+async function cmdDoctor(rest) {
+  const args = rest || [];
+  const wantJson = args.includes("--json");
+  const scope = args.includes("--all") ? "all" : "current";
+  const wantFix = args.includes("--fix");
+  const wantApply = args.includes("--apply");
+
+  let buildPlan, renderPlanText, snapshot;
+  try {
+    ({ buildPlan, renderPlanText } = req("doctor.js"));
+    ({ snapshot } = loadSnapshot(path.join(os.homedir(), ".memory-tencentdb")));
+  } catch (e) {
+    console.error(`tmem doctor: ${e.message}`);
+    process.exit(1);
+  }
+
+  let currentSlug = "";
+  try { currentSlug = getDirs().pHash || ""; } catch {}
+
+  const plan = buildPlan(snapshot, { scope, currentSlug });
+
+  if (wantJson) {
+    console.log(JSON.stringify(plan, null, 2));
+    return;
+  }
+
+  console.log(renderPlanText(plan));
+
+  if (wantFix) {
+    console.log("");
+    await applyDoctorFixes(plan, { apply: wantApply });
+  }
+}
+
+/**
+ * Run the fixes a plan calls for. `--fix` alone runs ONLY tier=auto (idempotent,
+ * additive). tier=confirm additionally needs `--apply` AND is destructive-with-
+ * archive, so each is announced and run only then. tier=manual is never executed
+ * — it is printed for the human/consolidator to act on. The displayed command is
+ * `finding.fix.command` (doctor.js) and the executed one is DOCTOR_FIX_RUNNERS —
+ * routed by the same kind, so what is shown cannot diverge from what is run.
+ */
+async function applyDoctorFixes(plan, { apply = false } = {}) {
+  const withCount = (tier) => plan.findings.filter((f) => f.count > 0 && f.fix.tier === tier);
+  const auto = withCount("auto");
+  const confirm = withCount("confirm");
+  const manual = withCount("manual");
+
+  // auto: run each distinct command once (both vector kinds share one embed pass).
+  const ranAuto = new Set();
+  for (const f of auto) {
+    const run = DOCTOR_FIX_RUNNERS[f.kind];
+    if (!run || ranAuto.has(f.fix.command)) continue;
+    ranAuto.add(f.fix.command);
+    console.log(`→ auto: ${f.fix.command}…`);
+    await run(plan.scope);
+  }
+  if (!ranAuto.size && !(apply && confirm.length)) {
+    console.log("Nothing to auto-fix." + (confirm.length ? ` ${confirm.length} confirm-tier fix(es) need \`--fix --apply\`.` : ""));
+  }
+
+  if (confirm.length) {
+    if (!apply) {
+      console.log(`\n${confirm.length} confirm-tier fix(es) skipped — re-run with \`--fix --apply\` to run them (each archives before removing):`);
+      for (const f of confirm) console.log(`    ${f.fix.command}`);
+    } else {
+      for (const f of confirm) {
+        const run = DOCTOR_FIX_RUNNERS[f.kind];
+        if (!run) continue;
+        console.log(`→ confirm: ${f.fix.command}…`);
+        await run(plan.scope);
+      }
+    }
+  }
+
+  if (manual.length) {
+    console.log(`\n${manual.length} manual fix(es) — need your decision:`);
+    for (const f of manual) console.log(`    ${f.kind}: ${f.fix.command}`);
+  }
+}
+
 function cmdViewSnapshot(opts) {
   const os_ = require("node:os");
   const rootDir = opts.root ? path.resolve(opts.root) : path.join(os_.homedir(), ".memory-tencentdb");
 
-  let extractAll, transformRoot;
-  try {
-    ({ extractAll } = require(path.join(SCRIPTS_DIR, "view", "extract.js")));
-    ({ transformRoot } = require(path.join(SCRIPTS_DIR, "view", "transform.js")));
-  } catch (e) {
-    viewFail(`could not load the view pipeline — ${e.message}`);
-  }
-  if (typeof extractAll !== "function") viewFail("scripts/view/extract.js does not export extractAll()");
-  if (typeof transformRoot !== "function") viewFail("scripts/view/transform.js does not export transformRoot()");
-
   const t0 = process.hrtime.bigint();
   let root, snapshot;
   try {
-    root = extractAll({ rootDir });
-    snapshot = transformRoot(root);
+    ({ root, snapshot } = loadSnapshot(rootDir));
   } catch (e) {
     viewFail(`snapshot failed — ${e.message}`);
   }
@@ -1506,12 +1804,15 @@ Commands:
     --dry-run                Preview dedup without removing
   changelog [--last N]       Show recent memory changes
   persona [--sections | --section <name>]  Show full persona; list sections (name, bullets, duty split); or print one section on demand (tier 2)
-  sync [--full]              Embed missing vectors (delta); --full rebuilds the index
+  sync [--full] [--all]      Embed missing vectors (delta); --full re-embeds all; --all = every store, not just current+global
+  prune --low-signal [--all] [--apply]  Remove low-signal noise records (dry-run unless --apply; archived under .pruned/)
+  dedup --atoms [--all] [--apply]       Remove exact-duplicate atoms, keep newest (dry-run unless --apply; archived)
   mark-done                  Mark consolidation complete + release lock
   unlock                     Release stale consolidation lock
   config [consolidate-every [N] | scene-max-tokens [N] | persona-max-tokens [N] | noise-gate [on|off] | recall [on|off]]  Show config, or get/set a setting (noise-gate = refuse low-signal turns at capture; recall = per-project context injection)
   daemon <start|status|stop>  Manage the resident embed daemon (warm vector recall)
   view [--query <q>] [--snapshot [--stdout]] [--static] [--port N] [--root <dir>]  Open the memory visualiser (live server); --snapshot exports the payload instead (tmem view --help)
+  doctor [--all] [--json] [--fix] [--apply]  Health verdict + ranked fix plan (same metrics as the visualiser); --json for an agent, --fix runs the auto-fixable set
   contrib <add|ingest|build|persona|playbook|compare|capabilities>  Contributor intelligence`);
     return;
   }
@@ -1539,6 +1840,9 @@ Commands:
     case "config": return cmdConfig(rest);
     case "daemon": return cmdDaemon(rest[0]);
     case "view": return cmdView(rest);
+    case "doctor": return cmdDoctor(rest);
+    case "prune": return cmdPrune(rest);
+    case "dedup": return cmdDedup(rest);
     case "contrib": return cmdContrib(rest);
     default:
       console.error(`Unknown command: ${cmd}. Run 'tmem --help' for usage.`);
