@@ -36,15 +36,36 @@ test("prefers CLAUDE_PLUGIN_ROOT (the version Claude Code loaded)", () => {
   }
 });
 
-test("falls back to the NEWEST installed version when no plugin root", () => {
+test("lone PATH shim (no sibling cli.js) falls back to the NEWEST installed version", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-res-"));
   try {
     const cache = path.join(tmp, "cache");
     mkVersionDir(cache, "0.2.3");
     mkVersionDir(cache, "0.4.2");
     const newest = mkVersionDir(cache, "0.10.0");
-    const got = resolveCliPath({ pluginRoot: undefined, cacheDir: cache });
+    // siblingDir models ~/.local/bin — the shim is a lone file, no cli.js next to it.
+    const shimDir = path.join(tmp, "bin");
+    fs.mkdirSync(shimDir, { recursive: true });
+    const got = resolveCliPath({ pluginRoot: undefined, cacheDir: cache, siblingDir: shimDir });
     assert.strictEqual(got, newest);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("npm-standalone sibling cli.js wins over an installed plugin cache", () => {
+  // Regression: `npx @baodq97/tmem` on a machine that also has the plugin installed
+  // MUST run its own sibling cli.js, not the (older/different) plugin-cache copy.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-res-"));
+  try {
+    const cache = path.join(tmp, "cache");
+    mkVersionDir(cache, "0.7.0"); // plugin cache present and newer-looking
+    const pkgDir = path.join(tmp, "node_modules", "@baodq97", "tmem", "scripts");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    const sibling = path.join(pkgDir, "cli.js");
+    fs.writeFileSync(sibling, "// npm cli\n");
+    const got = resolveCliPath({ pluginRoot: undefined, cacheDir: cache, siblingDir: pkgDir });
+    assert.strictEqual(got, sibling);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -60,7 +81,9 @@ test("ignores non-version cache entries (.DS_Store, 'latest', partial installs)"
     fs.writeFileSync(path.join(cache, "latest", "scripts", "cli.js"), "// junk\n");
     fs.writeFileSync(path.join(cache, ".DS_Store"), "x");
     fs.mkdirSync(path.join(cache, "0.5.0"), { recursive: true }); // partial: no scripts/cli.js
-    const got = resolveCliPath({ pluginRoot: undefined, cacheDir: cache });
+    const shimDir = path.join(tmp, "bin"); // lone shim: no sibling cli.js → cache scan
+    fs.mkdirSync(shimDir, { recursive: true });
+    const got = resolveCliPath({ pluginRoot: undefined, cacheDir: cache, siblingDir: shimDir });
     assert.strictEqual(got, path.join(cache, "0.4.2", "scripts", "cli.js"));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -84,6 +107,18 @@ test("launcher propagates the child cli exit code", () => {
 });
 
 test("falls back to the sibling cli.js when no plugin root and no cache", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-res-"));
+  try {
+    const got = resolveCliPath({ pluginRoot: path.join(tmp, "nope"), cacheDir: path.join(tmp, "empty") });
+    assert.strictEqual(got, path.join(__dirname, "..", "scripts", "cli.js"));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("default siblingDir is the launcher's own directory", () => {
+  // No overrides but a bogus pluginRoot + empty cache → the real sibling next to
+  // scripts/tmem.js must resolve (proves siblingDir defaults to __dirname).
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-res-"));
   try {
     const got = resolveCliPath({ pluginRoot: path.join(tmp, "nope"), cacheDir: path.join(tmp, "empty") });

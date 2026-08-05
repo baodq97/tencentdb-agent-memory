@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-08-05
+
+### Fixed
+- **npm-standalone launcher shadowing** — `tmem.js` resolved the newest plugin-cache
+  `cli.js` *before* its own sibling, so `npx @baodq97/tmem` on a machine that also
+  had the plugin installed ran the stale plugin code instead of the npm package's
+  own `cli.js` (e.g. `tmem version` → `Unknown command`). The sibling `cli.js` is
+  now authoritative; the plugin-cache scan is the fallback only for the lone PATH
+  shim (which has no sibling). Hooks still resolve via `$CLAUDE_PLUGIN_ROOT` first,
+  and the installed shim still self-corrects to the newest plugin.
+
 ## [0.7.2] — 2026-08-05
 
 ### Added

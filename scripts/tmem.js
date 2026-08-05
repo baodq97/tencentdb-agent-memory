@@ -6,11 +6,15 @@
  * Resolution order:
  *   1. $CLAUDE_PLUGIN_ROOT/scripts/cli.js  — the version Claude Code actually
  *      loaded (set for hooks/skills); this is the agent/Claude-Code self-resolve path.
- *   2. newest version under the plugin cache — for a human typing `tmem` in a
- *      plain terminal where no plugin env is present.
- *   3. sibling cli.js next to this launcher — last-resort fallback.
+ *   2. sibling cli.js next to this launcher — authoritative when present. This is
+ *      the npm-standalone (`@baodq97/tmem`) and dev-repo case: run the code you
+ *      shipped with, never a foreign plugin-cache copy that happens to be installed.
+ *   3. newest version under the plugin cache — for the installed PATH shim, a lone
+ *      `~/.local/bin/tmem` file with NO sibling cli.js, which must self-correct to
+ *      the newest installed plugin.
  *
- * Version-independent on purpose: even a stale copy of this launcher self-corrects.
+ * Version-independent on purpose: even a stale copy of the shim self-corrects, while
+ * a package that carries its own cli.js runs that one.
  */
 "use strict";
 
@@ -41,7 +45,7 @@ function defaultCacheDir() {
 
 /**
  * Resolve the absolute path to the cli.js that should handle this invocation.
- * @param {{pluginRoot?: string, cacheDir?: string}} [opts] overrides for testing
+ * @param {{pluginRoot?: string, cacheDir?: string, siblingDir?: string}} [opts] overrides for testing
  * @returns {string|null}
  */
 function resolveCliPath(opts = {}) {
@@ -50,6 +54,12 @@ function resolveCliPath(opts = {}) {
     const p = path.join(pluginRoot, "scripts", "cli.js");
     if (fs.existsSync(p)) return p;
   }
+
+  // A sibling cli.js means this launcher was shipped WITH its cli (npm package or
+  // dev repo) — that copy is authoritative. Only the lone PATH shim, which has no
+  // sibling, falls through to the plugin-cache scan below.
+  const sibling = path.join(opts.siblingDir ?? __dirname, "cli.js");
+  if (fs.existsSync(sibling)) return sibling;
 
   const cacheDir = opts.cacheDir ?? defaultCacheDir();
   try {
@@ -63,9 +73,6 @@ function resolveCliPath(opts = {}) {
       return path.join(cacheDir, versions[versions.length - 1], "scripts", "cli.js");
     }
   } catch { /* cache absent → fall through */ }
-
-  const sibling = path.join(__dirname, "cli.js");
-  if (fs.existsSync(sibling)) return sibling;
 
   return null;
 }
