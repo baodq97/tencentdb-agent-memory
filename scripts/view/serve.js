@@ -178,6 +178,7 @@ const PIPELINE_API = Object.freeze({
   extract: ["extractRoot", "extract", "extractAll", "readRoot", "collect"],
   transform: ["transformRoot", "transform", "buildSnapshot", "toSnapshot", "summarise", "summarize"],
   rows: ["buildRecordRows", "recordRows", "toRecordRows", "buildRows", "rowsForStore"],
+  tree: ["buildStoreTree", "storeTree", "treeForStore"],
   listStores: ["listStores", "discoverStores", "storeRefs"],
   probe: ["probeSqliteVec", "probeVectorExtension"],
 });
@@ -221,6 +222,7 @@ function pipeline() {
     extract: pick(ex.mod, PIPELINE_API.extract),
     transform: pick(tr.mod, PIPELINE_API.transform),
     rows: pick(tr.mod, PIPELINE_API.rows),
+    tree: pick(tr.mod, PIPELINE_API.tree),
     listStores: pick(ex.mod, PIPELINE_API.listStores),
     probeSqliteVec: pick(ex.mod, PIPELINE_API.probe),
   };
@@ -651,6 +653,29 @@ function routeStoreRecords(res, url, slug, setCookie) {
   sendJson(res, 200, C.apiOk(page, meta), setCookie);
 }
 
+/** GET /api/store/:slug/tree — the DERIVED L2->L1 backbone for one store. */
+function routeStoreTree(res, slug, setCookie) {
+  const { root, snapshot } = currentSnapshot();
+  const meta = envelopeMeta(snapshot);
+
+  const storeExtract = (root.stores || []).find((s) => s.ref && s.ref.slug === slug);
+  if (!storeExtract) {
+    sendJson(res, 404, C.apiError(C.API_ERROR.NOT_FOUND, `no store with slug ${JSON.stringify(slug)}`, meta), setCookie);
+    return;
+  }
+  if (storeExtract.records && storeExtract.records.status === C.STATUS.ERROR) {
+    sendJson(res, 200, C.apiError(C.API_ERROR.STORE_UNREADABLE, storeExtract.records.reason || "index.db unreadable", meta), setCookie);
+    return;
+  }
+  const build = pipeline().tree;
+  if (!build) {
+    sendJson(res, 500, C.apiError(C.API_ERROR.INTERNAL, missingPipelineMessage("tree"), meta), setCookie);
+    return;
+  }
+  const tree = build(storeExtract, snapshot) || null;
+  sendJson(res, 200, C.apiOk({ slug, ...tree }, meta), setCookie);
+}
+
 /** GET /api/persona */
 function routePersona(res, setCookie) {
   const { root, snapshot } = currentSnapshot();
@@ -982,6 +1007,7 @@ function routeShell(res, setCookie) {
  * ------------------------------------------------------------------ */
 
 const STORE_RECORDS_RE = /^\/api\/store\/([^/]+)\/records$/;
+const STORE_TREE_RE = /^\/api\/store\/([^/]+)\/tree$/;
 
 const server = http.createServer(async (req, res) => {
   touch();
@@ -1027,6 +1053,8 @@ const server = http.createServer(async (req, res) => {
 
     const m = STORE_RECORDS_RE.exec(url.pathname);
     if (m) return routeStoreRecords(res, url, decodeURIComponent(m[1]), setCookie);
+    const mt = STORE_TREE_RE.exec(url.pathname);
+    if (mt) return routeStoreTree(res, decodeURIComponent(mt[1]), setCookie);
 
     if (isApi) {
       return sendJson(res, 404, C.apiError(C.API_ERROR.NOT_FOUND, `no route ${url.pathname}`), setCookie);

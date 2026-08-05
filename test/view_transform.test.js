@@ -1302,3 +1302,50 @@ test("buildRecordRows: folds the usage overlay from the snapshot, null when a re
   assert.equal(T.buildRecordRows(store)[0].usage, null);
   assert.equal(T.buildRecordRows(store, { recallUsage: C.unmeasured("x") })[0].usage, null);
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// L2->L1 backbone (derived by keyword overlap)
+// ───────────────────────────────────────────────────────────────────────────
+
+test("keywordSet: drops stopwords and short tokens, keeps topic words", () => {
+  assert.deepEqual([...T.keywordSet("The vector-index sync ran")].sort(), ["index", "ran", "sync", "vector"]);
+});
+
+test("buildStoreTree: an atom goes under the scene it shares >=2 keywords with, else unlinked", () => {
+  const store = storeExtract("proj", {
+    records: [
+      rec("a1", { content: "vector index sync for sqlite embeddings" }), // 2+ overlap with vector-index-sync
+      rec("a2", { content: "the persona projection budget tiers" }),      // overlaps persona-projection
+      rec("a3", { content: "totally unrelated grocery shopping list" }),  // matches nothing → unlinked
+    ],
+    scenes: [
+      scene("vector-index-sync", { summary: "embeddings sync", heat: 5 }),
+      scene("persona-projection", { summary: "budget tiers", heat: 4 }),
+    ],
+  });
+  const tree = T.buildStoreTree(store, { recallUsage: C.unmeasured("no log") });
+  assert.equal(tree.status, STATUS.OK);
+  assert.equal(tree.derivation, "keyword-overlap");
+  assert.equal(tree.totalAtoms, 3);
+  assert.equal(tree.unlinked.length, 1);
+  assert.equal(tree.unlinked[0].id, "a3", "a weak match is left an orphan, never forced under a wrong parent");
+  const byName = Object.fromEntries(tree.scenes.map((s) => [s.name, s.atoms.map((a) => a.id)]));
+  assert.deepEqual(byName["vector-index-sync"], ["a1"]);
+  assert.deepEqual(byName["persona-projection"], ["a2"]);
+  assert.equal(tree.linkedAtoms, 2);
+});
+
+test("buildStoreTree: no scenes -> every atom unlinked, never invented into a tree", () => {
+  const store = storeExtract("proj", { records: [rec("a1"), rec("a2")], scenes: null });
+  const tree = T.buildStoreTree(store);
+  assert.equal(tree.scenes.length, 0);
+  assert.equal(tree.unlinked.length, 2);
+  assert.equal(tree.linkedAtoms, 0);
+});
+
+test("buildStoreTree: unreadable records -> a status, not an empty tree pretending to be measured", () => {
+  const tree = T.buildStoreTree(storeExtract("proj", { recordsStatus: STATUS.ERROR }));
+  assert.equal(tree.status, STATUS.ERROR);
+  assert.equal(tree.totalAtoms, null);
+  assert.deepEqual(tree.scenes, []);
+});

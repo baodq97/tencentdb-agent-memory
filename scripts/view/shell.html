@@ -389,6 +389,58 @@ label { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; }
 .tag[data-t="dead"] .mk { background: var(--c-warning); }
 .tag.strong { color: var(--c-foreground); font-weight: 600; }
 
+/* Memory tree */
+.treewrap { display: flex; gap: 20px; margin-top: 18px; align-items: flex-start; }
+.tree { flex: 1 1 auto; min-width: 0; }
+.troot { margin-bottom: 22px; }
+.troot > h2 { font-size: 15px; margin: 0 0 2px; display: flex; align-items: baseline; gap: 10px; }
+.troot > h2 .tsub { font-weight: 400; color: var(--c-muted); font-size: 14px; }
+.tbranch { border-left: 2px solid var(--c-grid); margin-left: 5px; padding-left: 14px; }
+.tnode {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: none; border: 0; padding: 6px 8px; border-radius: var(--radius);
+  color: var(--c-foreground); font: inherit; cursor: pointer;
+}
+.tnode:hover { background: var(--c-wash); }
+.tnode .caret { width: 10px; color: var(--c-muted); transition: transform .12s; flex: none; }
+.tnode[aria-expanded="true"] .caret { transform: rotate(90deg); }
+.tnode .tname { font-weight: 600; }
+.tnode .tmeta { color: var(--c-muted); font-size: 13px; margin-left: auto; white-space: nowrap; }
+.tflame { color: var(--c-series2); }
+.atom {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  background: none; border: 0; border-radius: var(--radius); padding: 5px 8px;
+  color: var(--c-secondary); font: inherit; cursor: pointer; line-height: 1.35;
+}
+.atom:hover { background: var(--c-wash); }
+.atom.sel { background: var(--c-wash); box-shadow: inset 2px 0 0 var(--c-primary); color: var(--c-foreground); }
+.atom .atxt { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.atom .acount { color: var(--c-muted); font-size: 13px; flex: none; }
+.udot { width: 9px; height: 9px; border-radius: 999px; flex: none; background: var(--c-dim1); }
+.udot[data-b="hot"]  { background: var(--c-series2); }
+.udot[data-b="warm"] { background: var(--c-good); }
+.udot[data-b="dead"] { background: var(--c-warning); }
+.pbullet { display: flex; align-items: baseline; gap: 9px; padding: 4px 8px; color: var(--c-secondary); }
+.pbullet .udot { align-self: center; }
+.dnote { color: var(--c-muted); font-size: 13px; margin-top: 14px; max-width: 60ch; }
+.dnote b { color: var(--c-secondary); }
+.tindent { padding-left: 8px; }
+
+.inspector {
+  flex: 0 0 360px; position: sticky; top: 16px; align-self: flex-start;
+  border: 1px solid var(--c-border); border-radius: var(--radius);
+  background: var(--c-surface); padding: 16px 18px; max-height: calc(100vh - 40px); overflow: auto;
+}
+.inspector.empty { color: var(--c-muted); }
+.inspector h3 { margin: 0 0 4px; font-size: 14px; }
+.inspector .ibody { color: var(--c-foreground); white-space: pre-wrap; word-break: break-word; margin: 8px 0 14px; }
+.inspector .irow { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 1px solid var(--c-grid); font-size: 14px; }
+.inspector .irow span:first-child { color: var(--c-muted); }
+.inspector .irel { margin-top: 12px; }
+.inspector .irel .atom { padding: 4px 6px; font-size: 13px; }
+.inspector .iclose { float: right; }
+@media (max-width: 900px) { .treewrap { flex-direction: column; } .inspector { position: static; flex-basis: auto; width: 100%; } }
+
 .acts { display: flex; gap: 10px; margin-top: 16px; align-items: center; flex-wrap: wrap; }
 .search { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; align-items: center; }
 .search input[type="search"] { flex: 1 1 380px; min-width: 0; }
@@ -2541,6 +2593,7 @@ const ROUTES = {
   RECALL:   "/api/recall",
   EVENTS:   "/api/events",
   RECORDS:  (slug) => "/api/store/" + encodeURIComponent(slug) + "/records",
+  TREE:     (slug) => "/api/store/" + encodeURIComponent(slug) + "/tree",
 };
 
 /**
@@ -2630,6 +2683,7 @@ function clamped(text, key, expanded) {
 const VIEWS = [
   { id: "health",    label: "Health" },
   { id: "memories",  label: "Your memories" },
+  { id: "tree",      label: "Memory tree" },
   { id: "about-you", label: "What it knows about you" },
   { id: "trace",     label: "Try a prompt" },
 ];
@@ -2664,6 +2718,11 @@ const state = {
   memQ: "",
   memSlug: "",
   traceSlug: "",
+  tree: null,           // StoreTree for the memory-tree screen
+  treeSlug: "",
+  treeLoading: false,
+  treeError: null,
+  selectedAtom: null,   // the atom docked in the inspector panel
   hideClutter: false,
   expanded: new Set(),
   noted: new Map(),     // see postEvent() — judgements posted to /api/events this session
@@ -3646,6 +3705,150 @@ function screenMemories() {
 /* ══════════════════════════════════════════════════════════════════════
    Screen: What it knows about you
    ══════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════
+   Screen: Memory tree (L3 → L2 → L1)
+   ══════════════════════════════════════════════════════════════════════ */
+function clip(text, max) {
+  const s = String(text == null ? "" : text).replace(/\s+/g, " ").trim();
+  return s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s;
+}
+
+/** ✅ reaches every session · 🟡 when relevant · ⚪ on demand · ⚠️ never */
+const TIER_MARK = { sessionStart: "✅", promptSummary: "🟡", onDemand: "⚪", never: "⚠️" };
+
+function findAtom(id) {
+  const t = state.tree;
+  if (!t) return null;
+  for (const s of t.scenes || []) { const a = (s.atoms || []).find((x) => x.id === id); if (a) return a; }
+  return (t.unlinked || []).find((x) => x.id === id) || null;
+}
+
+function treeAtomRow(a) {
+  const u = a.usage;
+  const b = u && USAGE_LABEL[u.bucket] ? u.bucket : "none";
+  const sel = state.selectedAtom && state.selectedAtom.id === a.id ? " sel" : "";
+  const count = u ? `<span class="acount">${n(u.recalls)}×</span>` : "";
+  return `<button class="atom${sel}" type="button" data-atom="${esc(a.id)}">` +
+    `<span class="udot" data-b="${b}"></span><span class="atxt">${esc(clip(a.content, 110))}</span>${count}</button>`;
+}
+
+function sceneBranch(s) {
+  const key = "sc:" + s.name;
+  const open = state.expanded.has(key);
+  const flame = s.heat >= 4 ? ` <span class="tflame">${s.heat >= 8 ? "🔥🔥" : "🔥"}</span>` : "";
+  const head = `<button class="tnode" type="button" data-treescene="${esc(key)}" aria-expanded="${open}">
+    <span class="caret">▶</span><span class="tname">${esc(s.name)}</span>${flame}
+    <span class="tmeta">${n(s.atoms.length)} ${plural(s.atoms.length, "memory", "memories")}</span></button>`;
+  if (!open) return head;
+  const body = s.atoms.length
+    ? s.atoms.map(treeAtomRow).join("")
+    : `<p class="dim tindent">No memory overlaps this scene's keywords.</p>`;
+  return head + `<div class="tbranch">${body}</div>`;
+}
+
+function personaBranch(persona) {
+  const bullets = persona.bullets || [];
+  if (!bullets.length) return `<p class="dim tindent">No persona yet — consolidation writes it once enough turns accumulate.</p>`;
+  const bySection = new Map();
+  for (const b of bullets) { if (!bySection.has(b.section)) bySection.set(b.section, []); bySection.get(b.section).push(b); }
+  return [...bySection.entries()].map(([section, list]) => {
+    const key = "ps:" + section;
+    const open = state.expanded.has(key);
+    const reach = list.filter((b) => b.tier === "sessionStart" || b.tier === "promptSummary").length;
+    const head = `<button class="tnode" type="button" data-treescene="${esc(key)}" aria-expanded="${open}">
+      <span class="caret">▶</span><span class="tname">${esc(section)}</span>
+      <span class="tmeta">${n(reach)} of ${n(list.length)} reach it</span></button>`;
+    if (!open) return head;
+    const body = list.map((b) =>
+      `<div class="pbullet"><span title="${esc(VOCAB.tier[b.tier] || b.tier)}">${TIER_MARK[b.tier] || "·"}</span>` +
+      `<span>${esc(clip(b.text, 140))}</span></div>`).join("");
+    return head + `<div class="tbranch">${body}</div>`;
+  }).join("");
+}
+
+function treeRoot(title, sub, body) {
+  return `<div class="troot"><h2>${esc(title)} <span class="tsub">${sub}</span></h2><div class="tbranch">${body}</div></div>`;
+}
+
+function atomInspector() {
+  const a = state.selectedAtom;
+  if (!a) return `<aside class="inspector empty"><h3>Inspector</h3><p>Click a memory in the tree to see the full record and how often it actually reached the assistant.</p></aside>`;
+  const u = a.usage;
+  const rows = [];
+  rows.push(`<div class="irow"><span>type</span><span>${esc(a.type || "—")}</span></div>`);
+  rows.push(`<div class="irow"><span>saved</span><span>${esc(shortDate(a.createdAt))} · ${esc(VOCAB.writePath[a.writePath] || a.writePath)}</span></div>`);
+  rows.push(`<div class="irow"><span>meaning-search</span><span>${a.hasVector === null ? "not checked" : a.hasVector ? "findable by meaning" : "exact words only"}</span></div>`);
+  if (u) {
+    rows.push(`<div class="irow"><span>reached the assistant</span><span>${n(u.recalls)}× · last ${esc(shortDate(u.lastRecalledAt))}</span></div>`);
+    rows.push(`<div class="irow"><span>dropped for space</span><span>${n(u.drops)}×</span></div>`);
+  } else {
+    rows.push(`<div class="irow"><span>recall history</span><span>never a candidate in-window</span></div>`);
+  }
+  const related = u && u.related && u.related.length
+    ? `<div class="irel"><h3>Recalled alongside <span class="tsub">by lift, not raw count</span></h3>${
+        u.related.map((r) => { const ra = findAtom(r.id); return ra
+          ? `<button class="atom" type="button" data-atom="${esc(r.id)}"><span class="udot" data-b="${ra.usage && USAGE_LABEL[ra.usage.bucket] ? ra.usage.bucket : "none"}"></span><span class="atxt">${esc(clip(ra.content, 70))}</span><span class="acount">×${r.lift.toFixed(1)}</span></button>`
+          : `<div class="pbullet"><span class="udot" data-b="none"></span><span>${esc(r.id)} <span class="dim">(in another store)</span> ×${r.lift.toFixed(1)}</span></div>`; }).join("")}</div>`
+    : "";
+  return `<aside class="inspector">
+    <button class="btn iclose" type="button" data-closeatom="1">Close</button>
+    <h3>Memory</h3>
+    <div class="ibody">${esc(a.content)}</div>
+    ${rows.join("")}
+    ${related}
+    <p class="dnote" style="margin-top:14px">Its place in the tree is <b>derived</b> from keyword overlap, not a stored link.</p>
+  </aside>`;
+}
+
+function treeSkeleton() {
+  return `<div class="tree"><div class="troot"><h2>Persona (L3)</h2><div class="tbranch">${
+    "<div class=\"sk\" style=\"width:60%\"></div>".repeat(3)}</div></div>
+    <div class="troot"><h2>Scenes (L2)</h2><div class="tbranch">${
+      "<div class=\"sk\" style=\"width:70%\"></div>".repeat(5)}</div></div></div>`;
+}
+
+function screenMemoryTree() {
+  if (state.loading) return screenHealthLoading();
+  if (state.fatal) return screenFatal(state.fatal);
+  const snap = state.snapshot;
+  const slug = state.treeSlug || defaultSlug(snap);
+  const store = (snap.stores || []).find((s) => s.slug === slug);
+  const storeName = store ? store.label : slug;
+
+  const head = `<h1 class="page-title">Memory tree</h1>
+    <p class="lede">Your memory as one structure: the persona it always carries (L3), the scenes it has summarised (L2),
+      and the individual memories under them (L1). Expand a branch to see what is inside; click a memory to inspect it.</p>
+    <form class="search" id="treeform">${storeSelect(snap, slug, "treeslug")}</form>`;
+
+  if (state.treeError) return head + errorBlock(state.treeError, `The tree for ${esc(storeName)}`);
+  if (state.treeLoading || !state.tree) return head + `<div class="treewrap">${treeSkeleton()}</div>`;
+
+  const t = state.tree;
+  const persona = state.persona || snap.persona || {};
+  const pcount = (persona.bullets || []).length;
+
+  const l3 = treeRoot("Persona (L3)", `${n(pcount)} standing ${plural(pcount, "rule")} — grouped by section`, personaBranch(persona));
+
+  const scenes = t.scenes || [];
+  const scenesBody = scenes.length
+    ? scenes.map(sceneBranch).join("")
+    : `<p class="dim tindent">No scenes for this store yet — consolidation writes these once enough turns accumulate.</p>`;
+  const l2 = treeRoot("Scenes (L2)",
+    `${n(scenes.length)} ${plural(scenes.length, "scene")} · ${n(t.linkedAtoms || 0)} of ${n(t.totalAtoms || 0)} memories sit under one`,
+    scenesBody);
+
+  const un = t.unlinked || [];
+  const l1 = treeRoot("Unlinked memories (L1)",
+    `${n(un.length)} ${plural(un.length, "memory", "memories")} no scene's keywords claim`,
+    un.length ? un.slice(0, 200).map(treeAtomRow).join("") + (un.length > 200 ? `<p class="dim tindent">…and ${n(un.length - 200)} more.</p>` : "") : `<p class="dim tindent">Every memory found a scene.</p>`);
+
+  const note = `<p class="dnote">Scene→memory links are <b>derived by keyword overlap</b> (approx), not stored —
+    the original <code>scene_name</code> link was dead. A memory that matches no scene is left unlinked rather than
+    forced under a weak parent.</p>`;
+
+  return head + `<div class="treewrap"><div class="tree">${l3}${l2}${l1}${note}</div>${atomInspector()}</div>` + footnote();
+}
+
 function screenAboutYou() {
   if (state.loading) return screenHealthLoading();
   const persona = state.persona || (state.snapshot && state.snapshot.persona);
@@ -3932,6 +4135,7 @@ function render() {
   let html;
   try {
     html = CFG.view === "memories" ? screenMemories()
+      : CFG.view === "tree" ? screenMemoryTree()
       : CFG.view === "about-you" ? screenAboutYou()
       : CFG.view === "trace" ? screenTrace()
       : CFG.view === "problem" ? screenProblem()
@@ -3973,7 +4177,20 @@ window.addEventListener("popstate", () => {
 function afterNavigate() {
   if (state.loading || state.fatal) return;
   if (CFG.view === "memories" && !state.records && !state.recordsLoading && !state.recordsError) loadRecords();
+  if (CFG.view === "tree" && !state.tree && !state.treeLoading && !state.treeError) loadTree();
   if (CFG.view === "trace" && state.examples === null && !state.recall && !CFG.demo) loadExamples();
+}
+
+async function loadTree() {
+  const slug = state.treeSlug || defaultSlug(state.snapshot);
+  state.treeLoading = true; state.treeError = null; render();
+  try {
+    state.tree = CFG.demo ? (loadFixture().tree || null) : await api(ROUTES.TREE(slug), {});
+  } catch (e) {
+    state.treeError = e;
+  }
+  state.treeLoading = false;
+  if (CFG.view === "tree") render();
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -4225,6 +4442,16 @@ document.addEventListener("click", async (ev) => {
   const col = t.closest("[data-collapse]");
   if (col) { state.expanded.delete(col.getAttribute("data-collapse")); render(); return; }
 
+  const tn = t.closest("[data-treescene]");
+  if (tn) {
+    const key = tn.getAttribute("data-treescene");
+    if (state.expanded.has(key)) state.expanded.delete(key); else state.expanded.add(key);
+    render(); return;
+  }
+  const at = t.closest("[data-atom]");
+  if (at) { state.selectedAtom = findAtom(at.getAttribute("data-atom")); render(); return; }
+  if (t.closest("[data-closeatom]")) { state.selectedAtom = null; render(); return; }
+
   if (t.id === "theme-toggle") {
     applyTheme({ auto: "light", light: "dark", dark: "auto" }[CFG.theme] || "auto");
   }
@@ -4252,6 +4479,7 @@ document.addEventListener("change", (ev) => {
   const t = ev.target;
   if (t.id === "hideclutter") { state.hideClutter = t.checked; render(); return; }
   if (t.id === "memslug") { state.memSlug = t.value; state.records = null; loadRecords(); return; }
+  if (t.id === "treeslug") { state.treeSlug = t.value; state.tree = null; state.selectedAtom = null; loadTree(); return; }
   if (t.id === "traceslug") { state.traceSlug = t.value; }
 });
 
