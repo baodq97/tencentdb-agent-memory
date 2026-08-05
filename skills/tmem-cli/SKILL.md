@@ -113,3 +113,14 @@ picked up by `tmem`; run the repo copy directly instead:
 node ./scripts/cli.js <command>            # repo working copy (dev)
 node ${CLAUDE_PLUGIN_ROOT}/scripts/cli.js <command>   # explicit installed path / PATH fallback
 ```
+
+The CLI is **also published to npm** as `@baodq97/tmem` (CLI-only, no plugin
+assets). To run it standalone — no plugin, no checkout — use `npx @baodq97/tmem
+<command>` or `npm i -g @baodq97/tmem`; either provides the `tmem` command
+(requires Node ≥ 24). The launcher self-resolves in this order: `$CLAUDE_PLUGIN_ROOT`
+→ newest plugin cache → the `cli.js` sitting next to it (the npm-global case).
+
+- `tmem version` — print the resolved version + the actual `cli.js` path + node
+  version (use this to diagnose which copy is running; alias `--version`, `-v`).
+- `tmem update` — check npm for a newer `@baodq97/tmem`; `--apply` runs the global
+  install. Fail-open: offline just prints a soft note.

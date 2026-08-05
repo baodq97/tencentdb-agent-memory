@@ -5,6 +5,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-08-05
+
+### Added
+- **`tmem version`** (aliases `--version`, `-v`) — prints the resolved CLI version,
+  the actual `cli.js` path, and the node version, so version drift is diagnosable
+  in one call instead of guessed.
+- **`tmem update`** — checks the npm registry for a newer `@baodq97/tmem`; prints
+  the install command, or runs the global install with `--apply`. Fail-open:
+  offline prints a soft note, never an error. Logic is a pure `version_check.js`
+  (`cmpVersion`/`updateStatus`), unit-tested without a network call.
+- **The CLI is published to npm as `@baodq97/tmem`** (CLI-only — `scripts/` +
+  README + LICENSE, no plugin assets), installable via `npx @baodq97/tmem` or
+  `npm i -g @baodq97/tmem`. README + the `tmem-cli` skill document it. The launcher
+  already resolves a sibling `cli.js`, so a plain npm-global install runs
+  standalone (verified byte-identical to the repo script for `--help`, `search`,
+  `persona`). Requires Node ≥ 24.
+
+### Fixed
+- **`.claude-plugin/marketplace.json` version drift** — it still read `0.4.3`
+  while the plugin had advanced to `0.7.x`; realigned to the current release.
+
 ## [0.7.0] — 2026-08-05
 
 Measured memory-quality release. Recall stops re-injecting the persona blob every

@@ -1880,12 +1880,54 @@ function warnIfVersionDrift() {
   } catch { /* best-effort */ }
 }
 
+function readOwnVersion() {
+  try { return require(path.join(__dirname, "..", "package.json")).version || "unknown"; } catch { return "unknown"; }
+}
+
+// `tmem version` — which CLI is actually resolved + running, so version drift is
+// diagnosable in one call instead of guessed. The launcher may resolve to the
+// plugin cache, an npm global, or a repo checkout; __filename says which.
+function printVersion() {
+  console.log(`tmem ${readOwnVersion()}`);
+  console.log(`  cli:  ${__filename}`);
+  console.log(`  node: ${process.version}`);
+}
+
+// `tmem update` — ask the npm registry whether a newer @baodq97/tmem exists.
+// Fail-open: offline or a registry hiccup prints a soft note, never an error.
+// `--apply` runs the global install; otherwise it only prints the command.
+async function cmdUpdate(args) {
+  const { NPM_PKG, updateStatus } = req("version_check.js");
+  const current = readOwnVersion();
+  let latest = null;
+  try {
+    const r = await fetch(`https://registry.npmjs.org/${NPM_PKG}/latest`, { signal: AbortSignal.timeout(5000) });
+    if (r.ok) latest = (await r.json()).version;
+  } catch { /* offline / registry down → fail-open */ }
+
+  const st = updateStatus(current, latest);
+  if (!st.latest) { console.log(`tmem ${current} — could not reach the npm registry to check for updates.`); return; }
+  if (!st.updateAvailable) { console.log(`tmem ${current} is up to date (npm latest: ${st.latest}).`); return; }
+
+  console.log(`Update available: ${current} → ${st.latest}`);
+  if (!args.includes("--apply")) {
+    console.log(`Run: npm i -g ${NPM_PKG}@latest   (or: tmem update --apply)`);
+    return;
+  }
+  console.log(`Installing ${NPM_PKG}@latest ...`);
+  const { spawnSync } = require("node:child_process");
+  const res = spawnSync("npm", ["i", "-g", `${NPM_PKG}@latest`], { stdio: "inherit" });
+  process.exit(res.status || 0);
+}
+
 async function main() {
   warnIfVersionDrift();
   const args = process.argv.slice(2);
   const cmd = args[0];
   const rest = args.slice(1);
   const restStr = rest.join(" ").trim();
+
+  if (cmd === "version" || cmd === "--version" || cmd === "-v") { printVersion(); return; }
 
   if (!cmd || cmd === "--help" || cmd === "-h") {
     console.log(`tmem — tencentdb-agent-memory CLI
@@ -1919,7 +1961,9 @@ Commands:
   daemon <start|status|stop>  Manage the resident embed daemon (warm vector recall)
   view [--query <q>] [--snapshot [--stdout]] [--static] [--port N] [--root <dir>]  Open the memory visualiser (live server); --snapshot exports the payload instead (tmem view --help)
   doctor [--all] [--json] [--fix] [--apply]  Health verdict + ranked fix plan (same metrics as the visualiser); --json for an agent, --fix runs the auto-fixable set
-  contrib <add|ingest|build|persona|playbook|compare|capabilities>  Contributor intelligence`);
+  contrib <add|ingest|build|persona|playbook|compare|capabilities>  Contributor intelligence
+  version                    Print the resolved CLI version, path, and node version (alias: --version, -v)
+  update [--apply]           Check npm for a newer @baodq97/tmem; --apply runs the global install`);
     return;
   }
 
@@ -1950,6 +1994,7 @@ Commands:
     case "prune": return cmdPrune(rest);
     case "dedup": return cmdDedup(rest);
     case "contrib": return cmdContrib(rest);
+    case "update": return cmdUpdate(rest);
     default:
       console.error(`Unknown command: ${cmd}. Run 'tmem --help' for usage.`);
       process.exit(1);

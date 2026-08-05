@@ -14,6 +14,22 @@ claude plugin marketplace add https://github.com/baodq97/tencentdb-agent-memory
 claude plugin install tencentdb-agent-memory
 ```
 
+### Standalone CLI (npm)
+
+The `tmem` CLI is also published on npm, CLI-only (no plugin assets), for use
+outside Claude Code:
+
+```bash
+npx @baodq97/tmem <command>     # run once, no install
+npm i -g @baodq97/tmem          # or install globally → `tmem`
+tmem version                    # resolved version + path + node
+tmem update                     # check npm for a newer release (--apply to install)
+```
+
+Requires Node ≥ 24 (`node:sqlite` `DatabaseSync` is flag-free from 24). The
+embedding model (~314 MB, EmbeddingGemma-300M GGUF) downloads on first embed use
+into `~/.memory-tencentdb/models/`, not at install.
+
 ## Quick start
 
 ```bash
