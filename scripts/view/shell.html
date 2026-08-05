@@ -450,6 +450,11 @@ label { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; }
 .feedhead .fq { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .feedhead .fsrc { color: var(--c-series2); font-weight: 600; font-size: 12px; }
 .mtype { color: var(--c-muted); font-size: 12px; }
+.fqfull { padding: 4px 8px 10px; color: var(--c-foreground); font-weight: 500; white-space: pre-wrap; word-break: break-word; }
+.fseg { margin-top: 6px; }
+.fseglabel { padding: 2px 8px; color: var(--c-muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.pbullet.fdrop span:last-child { color: var(--c-muted); text-decoration: line-through; text-decoration-color: var(--c-dim1); }
+.pbullet span:last-child { word-break: break-word; }
 
 .acts { display: flex; gap: 10px; margin-top: 16px; align-items: center; flex-wrap: wrap; }
 .search { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; align-items: center; }
@@ -3881,13 +3886,21 @@ function feedRow(e) {
     <span class="caret">▶</span><span class="when">${esc(when)}</span>
     <span class="fq">${esc(q)}${src}</span>${counts}</button>`;
   if (!open) return `<div class="feedrow">${head}</div>`;
-  const mems = e.memories.length
-    ? e.memories.map((m) => `<div class="pbullet"><span class="udot" data-b="none"></span><span>${
-        m.content != null
-          ? `<span class="mtype">[${esc(m.type || "?")}]</span> ${esc(clip(m.content, 120))}`
-          : `<span class="dim">${esc(m.id)} — in a store this view didn't read</span>`}</span></div>`).join("")
+
+  const memLine = (m, dropped) => `<div class="pbullet${dropped ? " fdrop" : ""}"><span class="udot" data-b="none"></span><span>${
+    m.content != null
+      ? `<span class="mtype">[${esc(m.type || "?")}]</span> ${esc(m.content)}`
+      : `<span class="dim">${esc(m.id)} — in a store this view didn't read</span>`}</span></div>`;
+  const seg = (label, list, count, dropped) => !count ? "" :
+    `<div class="fseg"><div class="fseglabel">${label} (${n(count)})</div>${list.map((m) => memLine(m, dropped)).join("")}${
+      count > list.length ? `<p class="dim tindent">…and ${n(count - list.length)} more</p>` : ""}</div>`;
+
+  const promptFull = `<div class="fqfull">${e.query ? esc(e.query) : '<span class="dim">(empty prompt)</span>'}</div>`;
+  const inj = e.injected
+    ? seg("Injected — reached the assistant", e.memories, e.injected, false)
     : `<p class="dim tindent">Nothing was injected for this prompt.</p>`;
-  return `<div class="feedrow">${head}<div class="tbranch">${mems}</div></div>`;
+  const drop = seg("Dropped for space", e.droppedMemories || [], e.dropped, true);
+  return `<div class="feedrow">${head}<div class="tbranch">${promptFull}${inj}${drop}</div></div>`;
 }
 
 function screenLive() {
@@ -4384,6 +4397,9 @@ function openChannel() {
       runTrace(lastQ, state.traceSlug || defaultSlug(state.snapshot));
       return;
     }
+    // Live streams its own rows off the `recall` channel; a "Reload" badge on a
+    // self-updating feed is a contradiction. Consume the drift silently.
+    if (CFG.view === "live") { state.snapshotId = msg.snapshotId; return; }
     showChangedBadge();
   });
   // Live activity: every recall a running session logs, streamed as it happens.

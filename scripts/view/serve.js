@@ -738,7 +738,18 @@ function idIndex(root, snapshotId) {
 
 const FEED_MEMORY_CAP = 8;
 
-/** Shape one recall_log line for the feed: counts + the injected memories, resolved to content. */
+/** id -> {id, type, slug, content}; content null when the id is in a store this snapshot didn't read. */
+function resolveMemory(id, idx) {
+  const hit = idx.get(id);
+  return hit ? { id, type: hit.type, slug: hit.slug, content: hit.content } : { id, type: null, slug: null, content: null };
+}
+
+/**
+ * Shape one recall_log line for the feed: counts, the injected memories, AND the
+ * ones dropped for the char budget — resolved to content. Dropped is the half a
+ * static store can't show: memories that ranked high enough to be considered and
+ * were then cut for space, which is the signal for tuning the budget.
+ */
 function feedEntry(raw, idx) {
   const inj = Array.isArray(raw.injectedIds) ? raw.injectedIds : [];
   const drp = Array.isArray(raw.droppedIds) ? raw.droppedIds : [];
@@ -749,12 +760,8 @@ function feedEntry(raw, idx) {
     chars: typeof raw.chars === "number" ? raw.chars : null,
     injected: inj.length,
     dropped: drp.length,
-    memories: inj.slice(0, FEED_MEMORY_CAP).map((id) => {
-      const hit = idx.get(id);
-      return hit
-        ? { id, type: hit.type, slug: hit.slug, content: hit.content }
-        : { id, type: null, slug: null, content: null };  // in a store this snapshot didn't read
-    }),
+    memories: inj.slice(0, FEED_MEMORY_CAP).map((id) => resolveMemory(id, idx)),
+    droppedMemories: drp.slice(0, FEED_MEMORY_CAP).map((id) => resolveMemory(id, idx)),
   };
 }
 
