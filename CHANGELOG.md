@@ -51,8 +51,13 @@ turn; consolidation stops re-reading the whole atom pool every run.
 ### Changed
 - `redact.js` cloud-id detection dropped weak keywords (`directory`/`client`/`az`)
   to cut false positives; kept `azure`/`subscription`/`tenant`/`workos`/`aad`.
-- The memory visualiser (`tmem view`) gained always-visible legends on the tree
-  and about-you screens.
+- The memory visualiser (`tmem view`) now surfaces the hybrid persona's
+  per-project half: the tree shows two L3 roots (global persona-core vs this-repo
+  project-doctrine), about-you shows the doctrine as a second document, health
+  shows an "Activate new features" nudges card (via the canonical
+  `doctor.buildUpgradeNudges`), and the injection tiers carry two-clock labels
+  (session-static once vs per-turn delta). Plus always-visible legends on the
+  tree and about-you screens. Contract `SCHEMA_VERSION` 3 → 5.
 
 ## [0.5.2] — 2026-08-03
 
