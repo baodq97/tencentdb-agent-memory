@@ -899,8 +899,19 @@ function cmdWriteScene(args) {
 
 // ── write-persona ──
 function cmdWritePersona(args = []) {
-  const { writePersona, globalDir } = req("memory_writer.js");
+  const { writePersona } = req("memory_writer.js");
   const force = args.includes("--force");
+  // --scope global (default) → the cross-project persona; --scope project → this
+  // repo's Operating Doctrine (the hybrid model: common traits global, per-project
+  // deltas in the project store). Family/caps by scope are layered on in WS2b.
+  const scopeIdx = args.indexOf("--scope");
+  const scope = scopeIdx >= 0 ? (args[scopeIdx + 1] || "") : "global";
+  if (scope !== "global" && scope !== "project") {
+    console.error("usage: tmem write-persona [--scope global|project] [--force]");
+    process.exit(1);
+  }
+  const { gDir, pDir } = getDirs();
+  const targetDir = scope === "project" ? pDir : gDir;
   let content = "";
   try { content = fs.readFileSync(0, "utf-8"); } catch {}
   if (!content.trim()) { console.error("Pipe persona content to stdin. E.g.: echo '# Persona...' | tmem write-persona"); process.exit(1); }
@@ -925,8 +936,9 @@ function cmdWritePersona(args = []) {
     process.exit(1);
   }
 
-  writePersona(globalDir(), content.trim());
-  console.log(force && !budget.ok ? "Persona updated (budget gate forced)." : "Persona updated.");
+  writePersona(targetDir, content.trim());
+  const forced = force && !budget.ok ? " (budget gate forced)" : "";
+  console.log(`Persona updated (${scope})${forced}.`);
 }
 
 // ── mark-done ──

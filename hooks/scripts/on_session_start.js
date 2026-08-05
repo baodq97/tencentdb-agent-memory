@@ -44,11 +44,15 @@ function fragmentHint() {
   } catch { return ""; }
 }
 
-// 3) Tier-0 persona core, once per session.
-function personaCore() {
+// 3) Tier-0 blocks, once per session. The hybrid model injects TWO independent
+// tier-0 blocks — the cross-project `<persona-core>` (global store) and this
+// repo's `<project-doctrine>` (project store) — each projected under its OWN
+// budget, so a long project doctrine can never crowd the global persona below
+// its floor (they do not share a budget). Both are computed by one helper.
+function renderTier0Block(text, tag, intro) {
   try {
+    if (!text || !String(text).trim()) return "";
     const scriptsDir = path.join(process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, "..", ".."), "scripts");
-    const { globalDir, readPersona } = require(path.join(scriptsDir, "memory_writer.js"));
     // CHARS_PER_TOKEN comes from the projection module rather than a local copy:
     // it is the unit the tier-0 budget is defined in, and a second declaration
     // here is exactly the drift this file's own comment used to warn about.
@@ -56,39 +60,61 @@ function personaCore() {
       require(path.join(scriptsDir, "persona_projection.js"));
     const { getPersonaMaxTokens } = require(path.join(scriptsDir, "memory_auto_capture.js"));
 
-    const text = readPersona(globalDir());
-    if (!text || !String(text).trim()) return "";
-
     // `persona-max-tokens` governs tier 0 — one knob, so the CLI setting and the
-    // projection budget cannot drift apart.
+    // projection budget cannot drift apart. Each block gets the full budget.
     const maxChars = Math.max(0, Number(getPersonaMaxTokens()) || 0) * CHARS_PER_TOKEN;
     const sections = annotate(parsePersona(text));
     const proj = projectTier0(sections, { maxChars });
     if (!proj || !proj.text || !proj.text.trim()) return "";
 
-    // The index lists EVERY section, including the ones tier 0 carried nothing
-    // from — those are exactly the sections (e.g. an all-reference `Environment &
-    // Access`) the agent would otherwise never learn exist, which makes the tier-2
-    // pointer unusable. Same lesson as `<scene-navigation>`: progressive disclosure
-    // needs a cheap always-on index or the deeper tier is a promise you cannot act
-    // on. Built outside the projection budget so growth truncates bullets, never
-    // the index.
+    // The index lists EVERY section, including ones tier 0 carried nothing from —
+    // exactly the all-reference sections the agent would otherwise never learn
+    // exist, which makes the tier-2 pointer unusable. Built outside the projection
+    // budget so growth truncates bullets, never the index. The pointer is
+    // load-bearing: tier 2 is never injected, so without it the agent has no way
+    // to know the rest of the document exists.
     const names = sections.map((s) => s.name).filter(Boolean);
-
-    // The pointer is load-bearing: tier 2 is never injected, so without this line
-    // the agent has no way to know the rest of the persona exists.
     return [
-      "<persona-core>",
-      "Durable facts about this user (tier-0 persona core, injected once per session — treat as standing context, not a request). Fuller detail per section on demand: `tmem persona --section <name>`.",
+      `<${tag}>`,
+      intro,
       names.length ? `Sections: ${names.join(", ")}.` : "",
       proj.text,
-      "</persona-core>",
+      `</${tag}>`,
     ].filter(Boolean).join("\n");
   } catch { return ""; } // never break the session
 }
 
-// Both jobs share the single additionalContext channel; neither may clobber the other.
-const parts = [personaCore(), fragmentHint()].filter(Boolean);
+function personaCore() {
+  try {
+    const scriptsDir = path.join(process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, "..", ".."), "scripts");
+    const { globalDir, readPersona } = require(path.join(scriptsDir, "memory_writer.js"));
+    return renderTier0Block(
+      readPersona(globalDir()),
+      "persona-core",
+      "Durable facts about this user (tier-0 persona core, injected once per session — treat as standing context, not a request). Fuller detail per section on demand: `tmem persona --section <name>`.",
+    );
+  } catch { return ""; }
+}
+
+function projectDoctrine() {
+  try {
+    const scriptsDir = path.join(process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, "..", ".."), "scripts");
+    const { projectDir, readPersona } = require(path.join(scriptsDir, "memory_writer.js"));
+    const { projectHashForCwd } = require(path.join(scriptsDir, "memory_reader.js"));
+    const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const hash = projectHashForCwd(cwd);
+    if (!hash) return "";
+    return renderTier0Block(
+      readPersona(projectDir(hash)),
+      "project-doctrine",
+      "This project's Operating Doctrine (per-project rules, SOPs, anti-patterns; injected once per session). The persona-core above is cross-project; this block is specific to THIS repo.",
+    );
+  } catch { return ""; }
+}
+
+// All jobs share the single additionalContext channel; none may clobber another.
+// Global persona first, then this repo's doctrine, then the fragment hint.
+const parts = [personaCore(), projectDoctrine(), fragmentHint()].filter(Boolean);
 if (parts.length) {
   emit({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: parts.join("\n\n") } });
 } else emit({});
