@@ -210,6 +210,42 @@ function renderPlanText(plan) {
   return out.join("\n");
 }
 
+// ── Upgrade nudges (pure) ──
+//
+// After a plugin upgrade, the new memory features (compressed/scrubbed global
+// persona, per-project doctrine + PreToolUse guardrails) are LATENT: existing data
+// isn't migrated, it activates on the next consolidation. There is no schema
+// migration (schema is unchanged, all additive), so instead of a migration script
+// we nudge the user to re-consolidate when a store still shows the old shape.
+//
+// Pure: takes plain data (no store access), returns hint strings. cli.js gathers
+// the persona texts + atom count and prints these under `tmem doctor`.
+function buildUpgradeNudges({ globalPersona, projectPersona, projectAtomCount } = {}, opts = {}) {
+  const out = [];
+  const gp = String(globalPersona || "");
+  if (gp.trim()) {
+    let budget = null;
+    try { budget = require("./persona_projection.js").checkPersonaBudget(gp, opts.maxChars ? { maxChars: opts.maxChars } : {}); } catch {}
+    if (budget && !budget.ok) {
+      const drop = budget.violations.find((v) => v.kind === "tier0_overflow");
+      out.push(
+        drop
+          ? `Global persona over budget — ${drop.droppedCount} of ${drop.alwaysCount} standing rules are silently dropped at session start. Re-consolidate to compress: /memory-consolidate`
+          : `Global persona has over-long bullets (>160 chars) that waste the tier-0 budget. Re-consolidate to split them: /memory-consolidate`,
+      );
+    }
+    let sensitive = false;
+    try { sensitive = require("./redact.js").isSensitive(gp); } catch {}
+    if (sensitive) {
+      out.push("Global persona contains sensitive/infra values (secrets / redirect URIs / cloud ids) that leak into every project. Re-consolidate to scrub them, or move them to --scope project: /memory-consolidate");
+    }
+  }
+  if ((projectAtomCount || 0) > 0 && !String(projectPersona || "").trim()) {
+    out.push(`This project has ${projectAtomCount} memories but no Operating Doctrine yet — the <project-doctrine> block and PreToolUse guardrails stay empty until you consolidate: /memory-consolidate`);
+  }
+  return out;
+}
+
 module.exports = {
   FIX_BY_KIND,
   gapInScope,
@@ -218,4 +254,5 @@ module.exports = {
   verdictFrom,
   buildPlan,
   renderPlanText,
+  buildUpgradeNudges,
 };

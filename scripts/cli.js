@@ -1584,6 +1584,26 @@ async function cmdDoctor(rest) {
 
   console.log(renderPlanText(plan));
 
+  // Upgrade nudges: activate the new memory features on existing stores (no schema
+  // migration exists because none is needed — all changes are additive; the value
+  // is just latent until re-consolidation). Human-only; --json keeps the machine plan.
+  try {
+    const { buildUpgradeNudges } = req("doctor.js");
+    const { readPersona } = req("memory_writer.js");
+    const { CHARS_PER_TOKEN } = req("persona_projection.js");
+    const { getPersonaMaxTokens } = req("memory_auto_capture.js");
+    const { gDir, pDir } = getDirs();
+    const maxChars = Math.max(0, Number(getPersonaMaxTokens()) || 0) * CHARS_PER_TOKEN;
+    const nudges = buildUpgradeNudges(
+      { globalPersona: readPersona(gDir), projectPersona: readPersona(pDir), projectAtomCount: storeRecordCount(pDir) },
+      { maxChars },
+    );
+    if (nudges.length) {
+      console.log("\nActivate new memory features (re-consolidate to apply):");
+      for (const n of nudges) console.log(`  • ${n}`);
+    }
+  } catch {}
+
   if (wantFix) {
     console.log("");
     await applyDoctorFixes(plan, { apply: wantApply });
