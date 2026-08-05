@@ -51,6 +51,8 @@ If `tmem projects` shows many near-duplicate slugs that are subdirs/worktrees of
 | Command | When to use |
 |---------|-------------|
 | `tmem status` | Overview: record counts, vector counts, persona, scenes, capture state |
+| `tmem doctor [--all] [--json]` | Health verdict + ranked fix plan (same metrics as the visualiser); `--all` = every store, `--json` = machine-readable plan for an agent |
+| `tmem doctor --fix [--apply]` | Apply the auto-fixable set (idempotent, e.g. embed vectors); `--apply` also runs confirm-tier prune/dedup (archived); manual fixes are surfaced only |
 | `tmem recall "<query>"` | Full hybrid recall + scene-navigation — same as what the hook injects each turn |
 | `tmem search "<query>"` | Find memories by keyword (FTS5) in global + current project |
 | `tmem search "<query>" --all` | Cross-project: search EVERY project store, grouped + labelled by store |
@@ -71,7 +73,9 @@ If `tmem projects` shows many near-duplicate slugs that are subdirs/worktrees of
 | `echo CONTENT \| tmem write-persona` | Write persona (used by memory-consolidate) |
 | `tmem scenes dedup [--dry-run]` | Find/remove duplicate scenes by keyword overlap |
 | `tmem migrate-fragments [--apply]` | Collapse legacy cwd-keyed fragment stores into their project root. Dry-run by default; `--apply` merges records (id-deduped) + scenes (newer wins) and ARCHIVES each fragment under `<base>/.migrated/`. Run `tmem sync` afterwards to embed moved records. |
-| `tmem sync [--full]` | Embed missing vectors (delta); `--full` rebuilds the whole index from FTS5 |
+| `tmem sync [--full] [--all]` | Embed missing vectors (delta); `--full` re-embeds all; `--all` covers every store, not just current+global |
+| `tmem prune --low-signal [--all] [--apply]` | Remove noise records (taskNotification/skillEcho/empty only — the safe gate classes). Dry-run unless `--apply`; archives under each store's `.pruned/` |
+| `tmem dedup --atoms [--all] [--apply]` | Remove exact-duplicate atoms, keep the newest of each group. Dry-run unless `--apply`; archives under `.pruned/` |
 | `tmem config` | Show effective config + stored values + env overrides |
 | `tmem config consolidate-every [N]` | Get/set consolidation threshold (default 20) |
 | `tmem config scene-max-tokens [N]` | Get/set scene-navigation token budget (default 200; `0` disables) |
