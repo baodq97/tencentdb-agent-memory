@@ -748,8 +748,10 @@ async function routeRecall(res, url, setCookie) {
   const t0 = process.hrtime.bigint();
   let injected = "";
   try {
-    const { recallAsync } = require("../memory_recall.js");
-    injected = await recallAsync(q, projectHash, maxTokens, topK);
+    const { recallAsync, RECALL_SOURCE } = require("../memory_recall.js");
+    // Reader-driven probe, not the agent's turn — logged as "view" so it never
+    // inflates a memory's measured hit rate (the usage overlay filters it out).
+    injected = await recallAsync(q, projectHash, maxTokens, topK, RECALL_SOURCE.VIEW);
   } catch (err) {
     sendJson(res, 500, C.apiError(C.API_ERROR.INTERNAL, `recallAsync failed: ${err.message}`, meta), setCookie);
     return;

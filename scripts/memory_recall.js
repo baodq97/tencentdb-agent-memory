@@ -148,8 +148,13 @@ function buildSceneNav(projectHash, query = "", sceneMaxTokens = getSceneMaxToke
  * argument. It defaults to HOOK because the hook is the caller that fires
  * unattended on every prompt; the two deliberate entry points (`cli.js:cmdRecall`
  * and this file's own `main()`) pass CLI explicitly.
+ *
+ * VIEW is the visualiser's `/api/recall` probe: a real recall, but reader-driven
+ * curiosity, not the agent's own turn. It is logged so the line is honest, and
+ * excluded from usage stats (extract/transform filter it) so tracing a prompt in
+ * the UI never inflates a memory's measured hit rate.
  */
-const RECALL_SOURCE = Object.freeze({ HOOK: "hook", CLI: "cli" });
+const RECALL_SOURCE = Object.freeze({ HOOK: "hook", CLI: "cli", VIEW: "view" });
 
 /**
  * Append-only READ log, one line per recall, at the memory root beside

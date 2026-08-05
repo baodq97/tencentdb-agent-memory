@@ -4039,7 +4039,21 @@ function openChannel() {
     let msg; try { msg = JSON.parse(ev.data); } catch (_) { return; }
     if (!msg || msg.type !== "snapshot" || !msg.snapshotId) return;
     if (!state.snapshotId) { state.snapshotId = msg.snapshotId; return; }
-    if (msg.snapshotId !== state.snapshotId) showChangedBadge();
+    if (msg.snapshotId === state.snapshotId) return;
+
+    // Trace is the one screen that MAY re-render under the reader: it answers
+    // "what reaches the assistant for THIS prompt", so a stale answer is worse
+    // than a moving one. Re-run the last query against the new store and advance
+    // the baseline so this drift counts as consumed. Every other screen keeps the
+    // deliberate offer-refresh contract (showChangedBadge, never re-render silently).
+    const lastQ = (state.recall && state.recall.q) || CFG.q;
+    if (CFG.view === "trace" && lastQ && !state.recallLoading) {
+      state.snapshotId = msg.snapshotId;
+      chan("live", "updated live — store changed");
+      runTrace(lastQ, state.traceSlug || defaultSlug(state.snapshot));
+      return;
+    }
+    showChangedBadge();
   };
 }
 
