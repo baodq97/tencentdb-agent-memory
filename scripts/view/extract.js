@@ -759,6 +759,61 @@ function readCaptureStateDoc(rootDir) {
   });
 }
 
+const NO_RECALL_LOG = { entries: null, lines: null, malformed: null, excludedView: null, files: null };
+
+/**
+ * `recall_log.jsonl` (+ its one rotated generation `.jsonl.1`) — the ONLY record
+ * of which memories recall ever actually injected. Root-level, not per-store: a
+ * single recall reads the global AND the project store and logs one merged line,
+ * so `injectedIds` are matched to records by id, globally.
+ *
+ * Reading, not measuring: transform folds these entries into the per-record usage
+ * overlay (hot/warm/dead + co-recall lift). We hand over the raw entries — only
+ * the fields the overlay needs — and let the pure layer count them.
+ *
+ * `source: "view"` lines are EXCLUDED here: they are the visualiser's own
+ * `/api/recall` probes (reader curiosity, not the agent's turn), and counting
+ * them would let tracing a prompt inflate that memory's measured hit rate. A
+ * malformed line is skipped and tallied, never fatal — a truncated tail from a
+ * crash mid-write must not blind the whole overlay.
+ *
+ * @returns {import("./contract.js").RecallLogRead}
+ */
+function readRecallLogDoc(rootDir) {
+  const base = rootPaths(rootDir).root;
+  // Newest generation first, then the rotated one; order does not matter to the
+  // counts, but naming both is what makes the ~6-week window, not just the tail.
+  const files = ["recall_log.jsonl", "recall_log.jsonl.1"]
+    .map((name) => path.join(base, name))
+    .filter((f) => fs.existsSync(f));
+  if (files.length === 0) {
+    return unmeasured(`recall_log.jsonl not present at ${path.join(base, "recall_log.jsonl")}`, NO_RECALL_LOG);
+  }
+  const entries = [];
+  let malformed = 0;
+  let excludedView = 0;
+  try {
+    for (const f of files) {
+      const text = fs.readFileSync(f, "utf-8");
+      for (const line of text.split("\n")) {
+        if (!line.trim()) continue;
+        let row;
+        try { row = JSON.parse(line); } catch { malformed += 1; continue; }
+        if (!row || typeof row !== "object") { malformed += 1; continue; }
+        if (row.source === "view") { excludedView += 1; continue; }
+        entries.push({
+          at: typeof row.at === "string" ? row.at : null,
+          injectedIds: Array.isArray(row.injectedIds) ? row.injectedIds.map(String) : [],
+          droppedIds: Array.isArray(row.droppedIds) ? row.droppedIds.map(String) : [],
+        });
+      }
+    }
+  } catch (e) {
+    return errored(`recall_log unreadable (${base}): ${e.message}`, NO_RECALL_LOG);
+  }
+  return ok({ entries, lines: entries.length, malformed, excludedView, files });
+}
+
 /* ------------------------------------------------------------------ *
  * Composition
  * ------------------------------------------------------------------ */
@@ -809,6 +864,7 @@ function extractAll({ recordLimit = DEFAULT_RECORD_LIMIT, rootDir } = {}) {
     state: readStateDoc(rootDir),
     config: readConfigDoc(rootDir),
     captureState: readCaptureStateDoc(rootDir),
+    recallLog: readRecallLogDoc(rootDir),
     extractedAt: new Date().toISOString(),
   };
 }
@@ -904,6 +960,7 @@ module.exports = {
   readStateDoc,
   readConfigDoc,
   readCaptureStateDoc,
+  readRecallLogDoc,
   extractStore,
   extractAll,
 };

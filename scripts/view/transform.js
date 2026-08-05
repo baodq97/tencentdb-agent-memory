@@ -1644,6 +1644,7 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
   };
 
   const persona = summarisePersona(root && root.persona, { tier0MaxChars });
+  const recallUsage = buildRecallUsage(root && root.recallLog, now);
   const gaps = buildGaps({ stores, persona, state, config, captureState, heat });
 
   const gapsBySeverity = zeroMap(Object.values(SEVERITY));
@@ -1708,6 +1709,11 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     totals,
     stores: sorted,
     persona,
+    // The behavioural overlay: which memories recall actually injected, folded per
+    // record_id. Deliberately NOT part of computeSnapshotId — the log grows on
+    // every recall and is not in the watcher's fingerprint, so it must never churn
+    // the snapshot identity. It rides along as an additive, optional field.
+    recallUsage,
     gaps,
     health: { state, config, captureState },
     timing: { extractMs, transformMs },
@@ -1732,12 +1738,143 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
  * @param {import("./contract.js").StoreExtract} storeExtract
  * @returns {import("./contract.js").RecordRow[]}
  */
-function buildRecordRows(storeExtract) {
+/* ------------------------------------------------------------------ *
+ * Recall usage overlay
+ *
+ * The recall_log is the ONLY behavioural signal this system has: which memories
+ * recall actually injected, and which it dropped for the char budget. Folded onto
+ * records it turns a static store into a living map — a memory reads as hot (used,
+ * recently), warm (used), or dead (a repeated candidate the budget keeps
+ * discarding). "Never a candidate" is left as `null` (no dot), NOT dead: an atom
+ * the index never surfaced is a different failure from one recall chose to drop.
+ *
+ * Co-recall links use LIFT (co ÷ chance), never raw co-count. Raw co-count is
+ * dominated by the always-on persona line that rides every recall, producing one
+ * degenerate blob; lift divides that out and surfaces the real topical bonds.
+ * ------------------------------------------------------------------ */
+
+const RECALL_HEAT = Object.freeze({
+  HOT_MIN_RECALLS: 3,    // used at least this often …
+  HOT_RECENCY_DAYS: 3,   // … and within this window → hot
+  RELATED_MIN_CO: 2,     // a single co-recall is noise, not a bond
+  RELATED_TOP_N: 3,      // keep the strongest few links per atom
+});
+
+/** recalls===0 means dropped-only (a candidate that never fit); it is dead, not unseen. */
+function recallBucket(recalls, ageInDays) {
+  if (recalls === 0) return "dead";
+  if (recalls >= RECALL_HEAT.HOT_MIN_RECALLS && ageInDays !== null && ageInDays <= RECALL_HEAT.HOT_RECENCY_DAYS) {
+    return "hot";
+  }
+  return "warm";
+}
+
+/**
+ * Fold the recall_log entries into a per-record usage map + co-recall lift links.
+ * Pure: everything comes from the entries and the injected `now`.
+ *
+ * @param {import("./contract.js").RecallLogRead} recallLog
+ * @param {number} now  epoch ms, the same clock transformRoot stamps with
+ * @returns {import("./contract.js").Source<Object>}
+ */
+function buildRecallUsage(recallLog, now) {
+  if (!recallLog || recallLog.status !== STATUS.OK || !Array.isArray(recallLog.entries)) {
+    const reason = (recallLog && recallLog.reason) || "recall log not read";
+    return C.unmeasured(reason, { byId: null, recalls: null, recalledIds: null, candidateIds: null, window: null });
+  }
+
+  const stat = new Map();  // id -> { recalls, drops, lastAtMs }
+  const co = new Map();    // "a b" -> co-count
+  let coUniverse = 0;      // entries with >=1 injected id (the chance denominator)
+  let firstAtMs = null;
+  let lastAtMs = null;
+
+  const bump = (id, field, atMs) => {
+    let s = stat.get(id);
+    if (!s) { s = { recalls: 0, drops: 0, lastAtMs: null }; stat.set(id, s); }
+    s[field] += 1;
+    if (field === "recalls" && atMs !== null) {
+      s.lastAtMs = s.lastAtMs === null ? atMs : Math.max(s.lastAtMs, atMs);
+    }
+  };
+
+  for (const e of recallLog.entries) {
+    const parsed = e.at ? Date.parse(e.at) : NaN;
+    const atMs = Number.isFinite(parsed) ? parsed : null;
+    if (atMs !== null) {
+      firstAtMs = firstAtMs === null ? atMs : Math.min(firstAtMs, atMs);
+      lastAtMs = lastAtMs === null ? atMs : Math.max(lastAtMs, atMs);
+    }
+    const inj = [...new Set(e.injectedIds)];
+    for (const id of new Set(e.droppedIds)) bump(id, "drops", atMs);
+    for (const id of inj) bump(id, "recalls", atMs);
+    if (inj.length) {
+      coUniverse += 1;
+      for (let i = 0; i < inj.length; i++) {
+        for (let j = i + 1; j < inj.length; j++) {
+          const key = inj[i] < inj[j] ? `${inj[i]} ${inj[j]}` : `${inj[j]} ${inj[i]}`;
+          co.set(key, (co.get(key) || 0) + 1);
+        }
+      }
+    }
+  }
+
+  const relatedBy = new Map();  // id -> [{ id, lift, co }]
+  if (coUniverse > 0) {
+    for (const [key, c] of co) {
+      if (c < RECALL_HEAT.RELATED_MIN_CO) continue;
+      const [a, b] = key.split(" ");
+      const ra = stat.get(a).recalls;
+      const rb = stat.get(b).recalls;
+      if (!ra || !rb) continue;
+      const lift = (c * coUniverse) / (ra * rb);
+      if (lift <= 1) continue;  // at-or-below chance is not a bond
+      for (const [x, y] of [[a, b], [b, a]]) {
+        if (!relatedBy.has(x)) relatedBy.set(x, []);
+        relatedBy.get(x).push({ id: y, lift, co: c });
+      }
+    }
+    for (const arr of relatedBy.values()) {
+      arr.sort((p, q) => q.lift - p.lift);
+      arr.length = Math.min(arr.length, RECALL_HEAT.RELATED_TOP_N);
+    }
+  }
+
+  const byId = {};
+  let recalledIds = 0;
+  for (const [id, s] of stat) {
+    if (s.recalls > 0) recalledIds += 1;
+    const ageInDays = s.lastAtMs === null ? null : (now - s.lastAtMs) / MS_PER_DAY;
+    byId[id] = {
+      recalls: s.recalls,
+      drops: s.drops,
+      lastRecalledAt: s.lastAtMs === null ? null : new Date(s.lastAtMs).toISOString(),
+      bucket: recallBucket(s.recalls, ageInDays),
+      related: relatedBy.get(id) || [],
+    };
+  }
+
+  return C.ok({
+    byId,
+    recalls: recallLog.entries.length,
+    recalledIds,
+    candidateIds: stat.size,
+    window: {
+      firstAt: firstAtMs === null ? null : new Date(firstAtMs).toISOString(),
+      lastAt: lastAtMs === null ? null : new Date(lastAtMs).toISOString(),
+    },
+  });
+}
+
+function buildRecordRows(storeExtract, snapshot) {
   const rd = (storeExtract && storeExtract.records) || null;
   if (!rd || rd.status !== STATUS.OK || !Array.isArray(rd.records)) return [];
 
   const vr = (storeExtract && storeExtract.vectors) || null;
   const vecIds = vr && vr.status === STATUS.OK && vr.recordIds ? vr.recordIds : null;
+  const usageById = snapshot && snapshot.recallUsage && snapshot.recallUsage.status === STATUS.OK
+    ? snapshot.recallUsage.byId
+    : null;
   const { groupIndexById } = duplicateGroups(rd.records, exactKey);
 
   return rd.records.map((r) => ({
@@ -1753,6 +1890,8 @@ function buildRecordRows(storeExtract) {
     hasVector: vecIds ? vecIds.has(r.record_id) : null,
     lowSignal: classifyLowSignal(r.content),
     duplicateGroup: groupIndexById.has(r.record_id) ? groupIndexById.get(r.record_id) : -1,
+    // null = never a candidate in-window (no dot); an object = measured behaviour.
+    usage: usageById && usageById[r.record_id] ? usageById[r.record_id] : null,
   }));
 }
 
@@ -1850,6 +1989,9 @@ module.exports = {
   summariseStore,
   summariseScenes,
   summarisePersona,
+  buildRecallUsage,
+  recallBucket,
+  RECALL_HEAT,
   buildGaps,
   computeSnapshotId,
   // pure primitives

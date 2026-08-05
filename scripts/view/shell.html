@@ -384,6 +384,9 @@ label { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; }
 .tag[data-t="words"] .mk   { background: var(--c-series2); }
 .tag[data-t="clutter"] .mk { background: var(--c-dim2); }
 .tag[data-t="error"] .mk   { background: var(--c-critical); }
+.tag[data-t="hot"]  .mk { background: var(--c-series2); }
+.tag[data-t="warm"] .mk { background: var(--c-good); }
+.tag[data-t="dead"] .mk { background: var(--c-warning); }
 .tag.strong { color: var(--c-foreground); font-weight: 600; }
 
 .acts { display: flex; gap: 10px; margin-top: 16px; align-items: center; flex-wrap: wrap; }
@@ -3495,8 +3498,30 @@ function storeSelect(snap, selected, id) {
     `${esc(s.label)} — ${s.status === "error" ? "could not be read" : n(s.records)}</option>`).join("") + `</select>`;
 }
 
+/**
+ * The behavioural overlay, in the user's words. `usage` is null when a memory has
+ * never appeared in the recall log in-window — no dot at all, because "never a
+ * candidate" is a different fact from "used" or "always dropped" and inventing a
+ * dot for it would be the fabrication this screen exists to avoid.
+ */
+const USAGE_LABEL = {
+  hot:  (u) => `reaches the assistant often — ${n(u.recalls)}×`,
+  warm: (u) => `reaches it sometimes — ${n(u.recalls)}×`,
+  dead: (u) => `a candidate, but dropped for space — ${n(u.drops)}×, never sent`,
+};
+function usageTag(r) {
+  const u = r.usage;
+  if (!u || !USAGE_LABEL[u.bucket]) return "";
+  const rel = u.related && u.related.length
+    ? ` · recalled alongside ${n(u.related.length)}`
+    : "";
+  return `<span class="tag strong" data-t="${u.bucket}"><span class="mk"></span>${esc(USAGE_LABEL[u.bucket](u))}${rel}</span>`;
+}
+
 function rowTags(r, page) {
   const out = [];
+  const ut = usageTag(r);
+  if (ut) out.push(ut);
   if (page.vectorStatus !== "ok" || r.hasVector === null) {
     out.push(`<span class="tag" data-t="unchecked">${statusMark("unmeasured")}not checked for meaning-search</span>`);
   } else if (r.hasVector) {
@@ -3603,12 +3628,19 @@ function screenMemories() {
       <div class="side">${rowTags(r, page)}</div>
     </div>`).join("");
 
+  const ru = state.snapshot && state.snapshot.recallUsage;
+  const recallLine = ru && ru.status === "ok" && ru.window && ru.window.firstAt
+    ? `<span>Across ${n(ru.recalls)} recalls since ${esc(shortDate(ru.window.firstAt))}, ` +
+      `<b>${n(ru.recalledIds)}</b> distinct ${plural(ru.recalledIds, "memory", "memories")} actually reached the assistant — ` +
+      `the colour on each row is that in-window behaviour, not all-time.</span>`
+    : "";
+
   return head + filters + `<div class="rows">${body}</div>` +
     footnote(`<span>Showing ${n(rows.length)} of ${n(page.total)}${
       page.total > page.rows.length ? ` — ${n(page.limit)} are read at a time` : ""}.
       ${state.hideClutter
         ? `${n(clutterCount)} clutter ${plural(clutterCount, "row is", "rows are")} hidden here but still counted in the total.`
-        : "Clutter is shown and counted — hiding it by default would make the total a lie."}</span>`);
+        : "Clutter is shown and counted — hiding it by default would make the total a lie."}</span>${recallLine}`);
 }
 
 /* ══════════════════════════════════════════════════════════════════════
