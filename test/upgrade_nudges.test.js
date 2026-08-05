@@ -31,6 +31,17 @@ test("project has atoms but no doctrine → build-doctrine nudge", () => {
   assert.ok(nudges.some((n) => /Operating Doctrine|guardrails/.test(n) && /12 memories/.test(n)));
 });
 
+test("global atoms exist but persona is empty/lost → recovery nudge", () => {
+  // P2.5 parity: memories were captured but the persona document is missing or
+  // was wiped — nudge a re-consolidation to rebuild it.
+  const nudges = buildUpgradeNudges({ globalPersona: "", globalAtomCount: 20 });
+  assert.ok(nudges.some((n) => /persona/i.test(n) && /memory-consolidate/.test(n)));
+});
+
+test("empty global persona with NO atoms → no recovery nudge (nothing to rebuild from)", () => {
+  assert.deepStrictEqual(buildUpgradeNudges({ globalPersona: "", globalAtomCount: 0 }), []);
+});
+
 test("clean global + project already has doctrine → no nudges", () => {
   const clean = "# User Persona\n\n## Standing Instructions\n- Always answer concisely.\n";
   const nudges = buildUpgradeNudges({

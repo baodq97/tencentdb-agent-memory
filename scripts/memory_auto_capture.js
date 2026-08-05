@@ -94,6 +94,29 @@ function saveConfig(cfg) {
   fs.renameSync(tmp, p);
 }
 
+// ── warmup doubling (upstream pipeline-manager parity) ──
+//
+// A fresh store should consolidate almost immediately so a new project isn't
+// blind; then the cadence backs off by doubling (1→2→4→8→…) until it reaches
+// the steady `everyN`, after which it graduates (`warmup_threshold: 0` ⇒ use
+// everyN directly). This accelerates the L1/consolidation TRIGGER only — persona
+// synthesis still rides the cascade's L3 step, so a persona is never built from
+// a handful of atoms. Both pure: state in, number/mutation out.
+function warmupThreshold(state, everyN) {
+  const wt = state && state.warmup_threshold;
+  if (wt === 0) return everyN;                               // graduated
+  if (!Number.isInteger(wt) || wt < 1) return Math.min(1, everyN); // fresh
+  return Math.min(wt, everyN);
+}
+
+function advanceWarmup(state, everyN) {
+  if (!state || state.warmup_threshold === 0) return;        // already graduated
+  const wt = Number.isInteger(state.warmup_threshold) && state.warmup_threshold >= 1
+    ? state.warmup_threshold : 1;
+  const next = wt * 2;
+  state.warmup_threshold = next >= everyN ? 0 : next;
+}
+
 /** Effective consolidation threshold: env override > persisted config > default. */
 function getConsolidateEvery() {
   const env = parseInt(process.env.MEMORY_CONSOLIDATE_EVERY || "", 10);
@@ -367,7 +390,7 @@ function autoCapture({ userText, assistantText, sessionId, cwd, sourceMessageIds
   state.sessions[sessionId].turns = (state.sessions[sessionId].turns || 0) + 1;
   state.sessions[sessionId].last_capture = new Date().toISOString();
 
-  const threshold = getConsolidateEvery();
+  const threshold = warmupThreshold(state, getConsolidateEvery());
   const sinceLastConsolidation = state.turn_count - (state.last_consolidation_turn || 0);
   const consolidationDue = sinceLastConsolidation >= threshold;
 
@@ -414,6 +437,7 @@ function markConsolidated() {
   state.last_consolidation_turn = state.turn_count || 0;
   state.consolidation_due = false;
   state.last_consolidation_time = new Date().toISOString();
+  advanceWarmup(state, getConsolidateEvery()); // back the warmup cadence off one step
   saveCaptureState(state);
 }
 
@@ -457,4 +481,4 @@ Commands:
 
 if (require.main === module) main();
 
-module.exports = { autoCapture, checkConsolidationDue, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, parseBoolish, loadConfig };
+module.exports = { autoCapture, checkConsolidationDue, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, warmupThreshold, advanceWarmup, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, parseBoolish, loadConfig };

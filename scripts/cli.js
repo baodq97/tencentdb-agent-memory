@@ -1616,7 +1616,7 @@ async function cmdDoctor(rest) {
     const { gDir, pDir } = getDirs();
     const maxChars = Math.max(0, Number(getPersonaMaxTokens()) || 0) * CHARS_PER_TOKEN;
     const nudges = buildUpgradeNudges(
-      { globalPersona: readPersona(gDir), projectPersona: readPersona(pDir), projectAtomCount: storeRecordCount(pDir) },
+      { globalPersona: readPersona(gDir), projectPersona: readPersona(pDir), projectAtomCount: storeRecordCount(pDir), globalAtomCount: storeRecordCount(gDir) },
       { maxChars },
     );
     if (nudges.length) {

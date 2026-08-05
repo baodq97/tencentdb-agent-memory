@@ -220,9 +220,14 @@ function renderPlanText(plan) {
 //
 // Pure: takes plain data (no store access), returns hint strings. cli.js gathers
 // the persona texts + atom count and prints these under `tmem doctor`.
-function buildUpgradeNudges({ globalPersona, projectPersona, projectAtomCount } = {}, opts = {}) {
+function buildUpgradeNudges({ globalPersona, projectPersona, projectAtomCount, globalAtomCount } = {}, opts = {}) {
   const out = [];
   const gp = String(globalPersona || "");
+  // Recovery (upstream P2.5 parity): memories exist but the persona document is
+  // missing or was wiped — nudge a re-consolidation to rebuild it from atoms.
+  if (!gp.trim() && (globalAtomCount || 0) > 0) {
+    out.push(`You have ${globalAtomCount} global memories but no persona document — the tier-0 <persona-core> block is empty until you rebuild it: /memory-consolidate`);
+  }
   if (gp.trim()) {
     let budget = null;
     try { budget = require("./persona_projection.js").checkPersonaBudget(gp, opts.maxChars ? { maxChars: opts.maxChars } : {}); } catch {}

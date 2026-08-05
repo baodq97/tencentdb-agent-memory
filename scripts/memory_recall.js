@@ -270,20 +270,39 @@ function dropPersonaAtoms(memories) {
  * line could be the ONLY memory injected out of five candidates). Rank order is
  * preserved for everything that does fit.
  */
+// Compact staleness signal: the date (YYYY-MM-DD) of a memory's newest stored
+// timestamp, so the model can weigh recency. "" when no timestamp is stored,
+// which keeps the line byte-identical for timestamp-less callers (and tests).
+function shortDate(m) {
+  const ts = (m && (m.timestamp_end || m.updated_time || m.created_time)) || "";
+  const s = String(ts);
+  return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : "";
+}
+
+// One-line "search deeper" affordance: recall is a passive push, but the agent
+// has the CLI, so name the escalation explicitly (upstream ships a MEMORY_TOOLS
+// guide for the same reason). Fixed line, appended once when the block is
+// non-empty — never counts as a memory bullet (must not start with "- ").
+const MEMORY_SEARCH_HINT =
+  'More on demand: `tmem search "<terms>"` (keywords) · `tmem scene <name>` (full scene).';
+
 function renderMemories(memories, maxChars) {
   const lines = [];
   const injectedIds = [];
   const droppedIds = [];
   let used = 0;
   for (const m of memories) {
-    const line = `- [${m.type || "?"}] ${m.content}`;
+    const when = shortDate(m);
+    const line = `- [${m.type || "?"}]${when ? ` (${when})` : ""} ${m.content}`;
     if (used + line.length + 2 > maxChars) { droppedIds.push(memoryId(m)); continue; }
     lines.push(line);
     injectedIds.push(memoryId(m));
     used += line.length + 1;
   }
   return {
-    text: lines.length ? "<memories>\n" + lines.join("\n") + "\n</memories>" : "",
+    text: lines.length
+      ? "<memories>\n" + lines.join("\n") + "\n" + MEMORY_SEARCH_HINT + "\n</memories>"
+      : "",
     injectedIds,
     droppedIds,
   };
@@ -611,6 +630,6 @@ if (require.main === module) main();
 // caller outside this file, and the tests assert against the log ON DISK, which
 // is the contract that matters.
 module.exports = {
-  recall, recallAsync, buildSceneNav, renderMemories, projectScopeFor,
+  recall, recallAsync, buildSceneNav, renderMemories, MEMORY_SEARCH_HINT, projectScopeFor,
   RECALL_SOURCE, RECALL_LOG_MAX_BYTES,
 };
