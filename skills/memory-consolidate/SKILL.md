@@ -97,9 +97,28 @@ after (58 chars):
 
 The dropped clauses are not lost — they are Key Facts and Decisions in the scene body, where they belong.
 
-### 5. Generate L3 persona
+### 5. Generate L3 — TWO documents by scope (the hybrid model)
 
-Read existing persona:
+L3 is split by scope, and **scope selects the family**:
+
+- **Global persona (`--scope global`, chat family)** — who the *user* is across ALL
+  projects: identity, durable preferences, communication register, standing rules.
+- **Project doctrine (`--scope project`, code/team family)** — how work is done in
+  *this repo*: SOPs, decision logic, boundaries, anti-patterns, agent rules. NOT the
+  user's personality, NOT project trivia (version numbers, one-off task status).
+
+Write global from persona/instruction-type atoms; write project doctrine from this
+repo's scenes + work atoms. A rule that holds across projects belongs in global; a
+rule that only makes sense inside this repo belongs in project doctrine. When unsure,
+prefer project (a wrong global rule pollutes every repo).
+
+Both writes pass the **budget gate** (`tmem write-persona` rejects a document whose
+`always` rules would overflow the tier-0 budget, or whose bullets break the 160-char
+rule). Compress until it accepts; do not `--force` unless a human told you to.
+
+#### 5a. Global persona (chat family)
+
+Read existing global persona:
 
 ```bash
 tmem persona
@@ -110,7 +129,7 @@ Merge new insights from persona-type and instruction-type atoms. Don't replace �
 **Priority cap (don't amplify on merge):** merging combines evidence; it must NOT inflate importance beyond the strongest source. When you fold several atoms into one persona point or standing instruction, the merged item's weight (priority/prominence) MUST be `≤ max(priority)` of the contributing atoms — never higher just because it was repeated or merged. A single scene-local instruction must not be promoted into a dominant global rule unless the source atoms' own priority already justifies it. Likewise, scene `--heat` reflects recency, not merge count: repetition across sessions is not evidence of higher priority.
 
 ```bash
-cat <<'PERSONA_EOF' | tmem write-persona
+cat <<'PERSONA_EOF' | tmem write-persona --scope global
 # User Persona
 
 ## Identity
@@ -177,6 +196,53 @@ The persona is ONE global document, but tier-1 bullets are injected into every r
 So write the tag on the label, at the end, before the colon: `- **Eval runs** (orchard-api): always run the suite twice and report both numbers.` One to three words, the project's name as you would say it. Body prose is not searched, and a parenthetical anywhere else is read as an aside, not a tag.
 
 **No tag means the rule is universal, and that default is deliberate.** The reader keeps everything it cannot confidently place — an untagged bullet, an unparseable tag, a project it cannot identify all resolve to "apply it". Dropping a real standing rule is far worse than occasionally injecting a foreign one, so the tag is the only thing that can ever narrow a bullet's reach. If a rule truly is project-specific, it is on you to say so; if it is general, say nothing.
+
+#### 5b. Project doctrine (code/team family)
+
+Read the existing doctrine (may be empty on first run):
+
+```bash
+tmem persona --scope project    # falls back to nothing if none yet
+```
+
+Distil this repo's scenes + work atoms into a REUSABLE Operating Doctrine — the
+rules a future agent needs to work here well. Not a project summary, not a scene
+index, not task status. Each rule must be understandable outside its original
+session (name the action, the condition, the reason).
+
+**Filter every rule before writing (drop if any answer is no):** is it reusable
+across tasks in this repo? complete out of context? something an agent can act on?
+stable, not one-off status? as short as it can be?
+
+**Keep OUT of doctrine:** the user's personality/preferences (those are global
+persona), version numbers, one-off task states, PR/issue names — unless they encode
+a reusable rule.
+
+```bash
+cat <<'DOCTRINE_EOF' | tmem write-persona --scope project
+# Team Operating Doctrine
+
+## Core Principles
+- <principle>: <when it applies / why it matters>
+
+## Reusable SOPs
+- <name>: when <trigger>, first <step>, then <step>, verify <check>.
+
+## Decision Logic
+- When <situation>, prefer <A> over <B>, because <reason>.
+
+## Boundaries & Anti-patterns
+- Don't <mistake>; do <fix> instead, because <reason>.
+
+## Agent Rules
+- The agent should <behaviour>, to avoid <risk>.
+DOCTRINE_EOF
+```
+
+The 160-char bullet rule and the budget gate apply here exactly as for the global
+persona — the project block is injected once per session by SessionStart, same
+tier-0 economics. Evolve, don't append: fold new evidence into existing rules and
+shorten as you go; if nothing reusable is new this round, leave the doctrine unchanged.
 
 ### 6. Mark complete
 

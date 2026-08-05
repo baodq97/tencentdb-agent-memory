@@ -463,16 +463,30 @@ function printPersonaSectionList(sections, dutyCounts, prefix) {
 
 function cmdPersona(args) {
   const { readPersona } = req("memory_writer.js");
-  const { gDir } = getDirs();
-  const p = readPersona(gDir);
-
+  const { gDir, pDir } = getDirs();
   const argv = args || [];
+  // --scope project reads THIS repo's Operating Doctrine; default is the global persona.
+  const scopeIdx = argv.indexOf("--scope");
+  const scope = scopeIdx >= 0 ? (argv[scopeIdx + 1] || "") : "global";
+  if (scope !== "global" && scope !== "project") {
+    console.error("usage: tmem persona [--scope global|project] [--sections | --section <name>]");
+    process.exit(1);
+  }
+  const p = readPersona(scope === "project" ? pDir : gDir);
+
   const wantList = argv.includes("--sections");
   const secIdx = argv.indexOf("--section");
   const wantSection = secIdx !== -1;
-  // Section names contain spaces; take every remaining token so both
-  // `--section "Working Style"` and `--section Working Style` work.
-  const sectionName = wantSection ? argv.slice(secIdx + 1).filter(a => !a.startsWith("--")).join(" ") : "";
+  // Section names contain spaces; take every token after --section UP TO the next
+  // flag, so `--section Working Style` works and a trailing `--scope project`
+  // doesn't bleed its value into the section name.
+  const sectionName = wantSection
+    ? (() => {
+        const tail = [];
+        for (const a of argv.slice(secIdx + 1)) { if (a.startsWith("--")) break; tail.push(a); }
+        return tail.join(" ");
+      })()
+    : "";
 
   if (!wantList && !wantSection) { console.log(p || "(no persona yet)"); return; }
 
@@ -1832,12 +1846,12 @@ Commands:
   read-session <path>        Format session for extraction
   write-l1 [--session id]    Write L1 atoms from stdin JSON
   write-scene --name --summary --heat  Write scene block (content from stdin)
-  write-persona              Write persona from stdin
+  write-persona [--scope global|project] [--force]  Write persona (global) or this repo's doctrine (project) from stdin; gate rejects budget overflow unless --force
   scene <name>               Print one full scene block (project-first, then global)
   scenes [list|dedup]        List or deduplicate scene blocks
     --dry-run                Preview dedup without removing
   changelog [--last N]       Show recent memory changes
-  persona [--sections | --section <name>]  Show full persona; list sections (name, bullets, duty split); or print one section on demand (tier 2)
+  persona [--scope global|project] [--sections | --section <name>]  Show the global persona or this repo's project doctrine; list sections; or print one section on demand (tier 2)
   sync [--full] [--all]      Embed missing vectors (delta); --full re-embeds all; --all = every store, not just current+global
   prune --low-signal [--all] [--apply]  Remove low-signal noise records (dry-run unless --apply; archived under .pruned/)
   dedup --atoms [--all] [--apply]       Remove exact-duplicate atoms, keep newest (dry-run unless --apply; archived)

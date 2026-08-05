@@ -55,3 +55,19 @@ test("invalid scope is rejected (exit non-zero)", () => {
   const { home, proj } = tmpEnv();
   assert.throws(() => run(["--scope", "team"], home, proj, CLEAN));
 });
+
+test("persona --scope project reads back the project doctrine, not global", () => {
+  const { home, proj } = tmpEnv();
+  const DOCTRINE = "# Team Operating Doctrine\n\n## Agent Rules\n- Always run tests before pushing here.\n";
+  run(["--scope", "project"], home, proj, DOCTRINE);
+  const readProj = execFileSync("node", [CLI, "persona", "--scope", "project"], {
+    encoding: "utf-8",
+    env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: proj },
+  });
+  assert.match(readProj, /Operating Doctrine/);
+  const readGlobal = execFileSync("node", [CLI, "persona"], {
+    encoding: "utf-8",
+    env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: proj },
+  });
+  assert.doesNotMatch(readGlobal, /Operating Doctrine/, "global persona must not show the project doctrine");
+});
