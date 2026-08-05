@@ -425,6 +425,16 @@ label { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; }
 .dnote { color: var(--c-muted); font-size: 13px; margin-top: 14px; max-width: 60ch; }
 .dnote b { color: var(--c-secondary); }
 .tindent { padding-left: 8px; }
+.tlegend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  margin: 6px 0 14px; padding: 8px 12px; border: 1px solid var(--c-border);
+  border-radius: var(--radius); background: var(--c-surface);
+  color: var(--c-muted); font-size: 13px; }
+.tlegend .lg { display: inline-flex; align-items: center; gap: 6px; }
+.tlegend .lgsep { width: 1px; align-self: stretch; background: var(--c-border); }
+.dutykey { margin: 4px 0 18px; padding: 8px 12px; border: 1px solid var(--c-border);
+  border-radius: var(--radius); background: var(--c-surface);
+  color: var(--c-muted); font-size: 13px; max-width: 78ch; }
+.dutykey b { color: var(--c-secondary); font-weight: 600; }
 
 .inspector {
   flex: 0 0 360px; position: sticky; top: 16px; align-self: flex-start;
@@ -3834,6 +3844,20 @@ function treeSkeleton() {
       "<div class=\"sk\" style=\"width:70%\"></div>".repeat(5)}</div></div></div>`;
 }
 
+/**
+ * The tree renders usage as bare coloured dots and persona reach as bare emoji.
+ * A reader with no docs (and no hover on touch) must still know what each mark
+ * means, so the key is always on the page — never a tooltip only.
+ */
+function treeLegend() {
+  const dot = (b, label) => `<span class="lg"><span class="udot" data-b="${b}"></span>${label}</span>`;
+  const mark = (tier) => `<span class="lg">${TIER_MARK[tier]} ${esc(VOCAB.tier[tier])}</span>`;
+  return `<div class="tlegend" aria-label="What the marks mean">
+    ${dot("hot", "reaches often")}${dot("warm", "reaches sometimes")}${dot("dead", "dropped for space")}
+    <span class="lgsep" aria-hidden="true"></span>
+    ${mark("sessionStart")}${mark("promptSummary")}${mark("onDemand")}${mark("never")}</div>`;
+}
+
 function screenMemoryTree() {
   if (state.loading) return screenHealthLoading();
   if (state.fatal) return screenFatal(state.fatal);
@@ -3873,7 +3897,7 @@ function screenMemoryTree() {
     the original <code>scene_name</code> link was dead. A memory that matches no scene is left unlinked rather than
     forced under a weak parent.</p>`;
 
-  return head + `<div class="treewrap"><div class="tree">${l3}${l2}${l1}${note}</div>${atomInspector()}</div>` + footnote();
+  return head + treeLegend() + `<div class="treewrap"><div class="tree">${l3}${l2}${l1}${note}</div>${atomInspector()}</div>` + footnote();
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -3976,7 +4000,10 @@ function screenAboutYou() {
 
   const head = `<h1 class="verdict sm">Of the ${n(bullets.length)} things written about you,
       <span class="${byTier.get("never").length ? "bad" : "ok"}">${n(delivered)} actually ${plural(delivered, "reaches", "reach")}</span> the assistant.</h1>
-    <p class="verdict-sub">Grouped by what happens to each one, not by how it was filed: what arrives, what might, what never does.</p>`;
+    <p class="verdict-sub">Grouped by what happens to each one, not by how it was filed: what arrives, what might, what never does.</p>
+    <p class="dutykey">The dashed chip on each line — <b>${esc(VOCAB.duty.always)}</b> · <b>${esc(VOCAB.duty.conditional)}</b> · <b>${esc(VOCAB.duty.reference)}</b> —
+      is the tool's guess at how strongly that rule applies, read from how the line is written, not your label.${
+        CFG.demo ? "" : " Click one to tell your assistant it guessed wrong."}</p>`;
 
   const groups = TIER_ORDER.map((tier) => {
     const list = byTier.get(tier);
