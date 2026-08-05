@@ -5,6 +5,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 
 ## [Unreleased]
 
+## [0.7.4] — 2026-08-05
+
+### Changed
+- **Per-turn recall surfaces distilled scene-facts, not raw episodic echoes.**
+  Raw auto-captured L1 atoms are un-distilled user turns, so recalling them by
+  query similarity returned echoes of the current turn (measured 1/10 helpful on
+  real questions). Recall now injects a `<recalled-facts>` block — scene-body
+  bullets (Key Facts / Decisions) ranked against the query with the same scorer
+  scenes and persona use — and drops raw `episodic` atoms from `<memories>`
+  (keeps distilled `instruction`/`semantic`). No new LLM step, no new atom type;
+  the distillation that already happens into scenes becomes the recall source.
+  Re-measured on the same 10 real questions (independent judge): helpful 1→5,
+  irrelevant 3→1. `scene_nav.rankSceneFacts` (pure) + `memory_recall`
+  `readSceneFacts`/`buildFactRecall`/`keepDistilledAtoms`; both recall paths.
+- **memory-consolidate skill**: scene-body bullets are now a per-turn recall
+  surface, so each must be a self-contained answering fact carrying the
+  outcome/number, not a topic label. Corrects the stale "body is on-demand and
+  has no budget" guidance.
+
 ## [0.7.3] — 2026-08-05
 
 ### Fixed
