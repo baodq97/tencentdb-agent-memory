@@ -42,7 +42,12 @@ function withFakeHome(fn) {
 
 function seed(store, id, content) {
   store.upsert({
-    id, content, type: "persona", priority: 50, scene_name: "t",
+    // Non-persona type on purpose: these fixtures assert that recall SURFACES a
+    // seeded atom (read-only degradation, sibling-store independence), and the
+    // per-turn recall path now drops persona-type atoms (they are a session clock,
+    // delivered once at SessionStart). Seeding "persona" here would make the atom
+    // vanish for a reason unrelated to what each test is pinning.
+    id, content, type: "episodic", priority: 50, scene_name: "t",
     metadata: {}, timestamps: ["2026-01-01T00:00:00Z"],
     createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
     sessionKey: "t", sessionId: "t",
