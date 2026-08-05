@@ -71,12 +71,19 @@ fix the store, re-consolidate, adjust the persona. Be honest about the boundary 
 It answers *"is my memory healthy, and what do I do about it?"* — a verdict first,
 then the problems ranked, each one a sentence with its figure inside it and a command
 that fixes it. The numbers that matter are computed by the **same functions the recall
-hook uses**, so the page cannot flatter the system. Four screens, `?view=`:
+hook uses**, so the page cannot flatter the system. Five screens, `?view=`:
 
 - `health` — the verdict, the ranked problems, the totals (default)
-- `memories` — search and read what was actually saved
+- `memories` — search and read what was actually saved, each row carrying its
+  recall behaviour: hot (used, recently), warm (used), or dead (a candidate the
+  budget keeps dropping), read from `recall_log.jsonl`
+- `tree` — memory as one structure: persona (L3) → scenes (L2) → the memories
+  under them (L1), with the same usage overlay and a docked atom inspector. The
+  scene→memory links are DERIVED by keyword overlap and labelled approx, because
+  the stored `scene_name` link is dead. `?slug=` picks the store
 - `about-you` — which standing rules reach the assistant, and which never do
-- `trace` — try a prompt, see the literal block the assistant would receive
+- `trace` — try a prompt, see the literal block the assistant would receive; it
+  re-runs itself when the store changes (SSE), so it stays live without a refresh
 
 A real reading: 52 stores, 5 560 records, 219 scenes, 76 problems — of 47 always-apply
 rules only 13 reach the assistant each session and 33 never do, and 23 projects have an
