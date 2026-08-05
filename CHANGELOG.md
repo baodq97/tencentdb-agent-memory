@@ -5,6 +5,55 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-05
+
+Measured memory-quality release. Recall stops re-injecting the persona blob every
+turn; consolidation stops re-reading the whole atom pool every run.
+
+### Added
+- **Two-clock recall.** The persona is a *session* clock, injected once at
+  SessionStart as the tier-0 `<persona-core>`; the *per-turn* clock carries only
+  the query-relevant delta (episodic/instruction atoms + a small tier-1 persona
+  slice + the scene-nav index). Persona-type atoms are dropped from the per-turn
+  `<memories>`. Measured: per-turn persona redundancy 43% → 0%, atom volume
+  preserved. Tests: `test/recall_two_clock.test.js`.
+- **Hybrid persona by scope.** A cross-project global `<persona-core>` plus a
+  per-project `<project-doctrine>` (this repo's SOPs/anti-patterns), each
+  projected under its own tier-0 budget so a long doctrine can't crowd out the
+  global persona. `tmem write-persona --scope global|project`. Tests:
+  `test/write_persona_scope.test.js`, `test/session_start_hybrid.test.js`.
+- **Persona write gates.** A tier-0 budget gate (reject a persona that would
+  silently drop standing rules at session start) and a secret gate (reject
+  secrets/infra values in a *global* persona; project doctrine is exempt;
+  `--force` overrides). Tests: `test/persona_budget.test.js`.
+- **PreToolUse guardrail.** Before a Bash command runs, the project doctrine's
+  anti-patterns are matched against it and surfaced as a warn-only
+  `<memory-guardrail>` (fail-open). Tests: `test/pre_tool_guardrail.test.js`,
+  `test/guardrail_match.test.js`.
+- **Incremental consolidation read.** `tmem atoms --since <iso> | --since-last`
+  scopes the L1→L2/L3 read to the delta since the last run (cursor
+  `state.projects[<hash>].last_consolidated`, advanced by `tmem mark-done`).
+  Measured (pilot): consolidation read 141 → 1 for the next round. Tests:
+  `test/incremental_consolidation.test.js`.
+- **Warmup cadence.** A fresh store consolidates almost immediately (threshold 1)
+  then doubles (1→2→4→8→…) up to `consolidate-every`, so a new project isn't
+  blind while a mature one isn't over-consolidated. Accelerates the
+  L1/consolidation trigger only. Tests: `test/warmup_cadence.test.js`.
+- **Recall enrichments.** Each injected memory line carries a compact date
+  (staleness signal); the block carries a one-line `tmem search`/`tmem scene`
+  "search deeper" affordance. Tests: `test/recall_render_enrich.test.js`.
+- **`tmem doctor` upgrade nudges.** After upgrading, existing stores keep the old
+  shape until re-consolidation (no schema migration — all additive). `doctor`
+  now nudges the stores that would benefit: persona over budget, secrets in a
+  global persona, a project with atoms but no doctrine, or atoms but a
+  missing/empty persona (recovery). Tests: `test/upgrade_nudges.test.js`.
+
+### Changed
+- `redact.js` cloud-id detection dropped weak keywords (`directory`/`client`/`az`)
+  to cut false positives; kept `azure`/`subscription`/`tenant`/`workos`/`aad`.
+- The memory visualiser (`tmem view`) gained always-visible legends on the tree
+  and about-you screens.
+
 ## [0.5.2] — 2026-08-03
 
 ### Fixed
