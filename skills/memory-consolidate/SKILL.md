@@ -25,18 +25,25 @@ tmem scenes list
 
 Note existing scene names — you will reuse them when topics match to avoid duplicates.
 
-### 3. Load L1 atoms
+### 3. Load L1 atoms — the DELTA since last consolidation, not the whole pool
+
+Consolidation is incremental: read only atoms written since the last run, so the
+pool you reason over stays bounded no matter how large the store grows (upstream
+keys the same read on a `last_extraction_updated_time` cursor).
 
 ```bash
-tmem atoms project
+tmem atoms project --since-last     # only project atoms updated since the last consolidation
 ```
 
-If output is very large (200+ records), focus on records since last consolidation by checking `tmem changelog --last 50` for recent writes.
+On a cold start (no watermark yet) this returns the full pool, which is correct
+for the first run. `tmem mark-done` (step 6) advances the watermark, so each
+subsequent run sees only new atoms. To force a full re-read, use `tmem atoms
+project` (no flag) or `--since <iso-timestamp>` for an explicit cursor.
 
-For global atoms (persona/instruction types):
+For global atoms (persona/instruction types), same delta scoping:
 
 ```bash
-tmem atoms global
+tmem atoms global --since-last
 ```
 
 ### 3b. Verify & dedup atoms before consolidating (close the loop)

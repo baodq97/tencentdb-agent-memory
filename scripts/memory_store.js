@@ -224,6 +224,29 @@ class MemoryStore {
     ).all(limit);
   }
 
+  // Incremental read: only records updated strictly after `sinceTs` (an ISO-8601
+  // UTC string, so lexical order == chronological order). Ascending so the caller
+  // processes oldest-first, matching upstream's last_extraction_updated_time
+  // cursor. Empty `sinceTs` degrades to the whole pool (cold-start fallback).
+  recordsSince(sinceTs = "", typeFilter = "", limit = 1000) {
+    if (!sinceTs) return this.allRecords(typeFilter, limit);
+    if (typeFilter) {
+      return this.db.prepare(
+        "SELECT * FROM l1_records WHERE type=? AND updated_time > ? ORDER BY updated_time ASC LIMIT ?"
+      ).all(typeFilter, sinceTs, limit);
+    }
+    return this.db.prepare(
+      "SELECT * FROM l1_records WHERE updated_time > ? ORDER BY updated_time ASC LIMIT ?"
+    ).all(sinceTs, limit);
+  }
+
+  // Newest updated_time in the store, "" if empty. Used to advance the
+  // consolidation watermark once a run has folded everything up to now.
+  maxUpdatedTime() {
+    const r = this.db.prepare("SELECT MAX(updated_time) AS m FROM l1_records").get();
+    return (r && r.m) || "";
+  }
+
   _embedAndStore(recordId, content) {
     try {
       const { getEmbeddingService } = require("./embedding_service.js");

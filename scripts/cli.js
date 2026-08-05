@@ -804,28 +804,34 @@ async function cmdDedup(args) {
 // ── atoms ──
 function cmdAtoms(args) {
   const { MemoryStore } = req("memory_store.js");
-  const { gDir, pDir } = getDirs();
+  const { gDir, pDir, pHash } = getDirs();
   const typeFilter = "";
   const limit = 500;
-  const scope = args[0] || "all";
+  const scope = args.find((a) => ["global", "project", "all"].includes(a)) || "all";
+
+  // Incremental read (upstream last_extraction_updated_time parity): scope the
+  // load to atoms updated after a cursor so consolidation reads the DELTA, not
+  // the whole pool. `--since <ts>` is an explicit cursor; `--since-last` resolves
+  // the stored per-project watermark. Empty cursor ⇒ full pool (cold start).
+  let since = "";
+  const iSince = args.indexOf("--since");
+  if (iSince !== -1 && args[iSince + 1]) since = args[iSince + 1];
+  if (args.includes("--since-last")) {
+    const st = req("memory_writer.js").readState();
+    since = (st.projects && st.projects[pHash] && st.projects[pHash].last_consolidated) || "";
+  }
+
+  const load = (db) => {
+    if (!fs.existsSync(db)) return [];
+    const store = new MemoryStore(db);
+    const rows = store.recordsSince(since, typeFilter, limit); // "" ⇒ allRecords
+    store.close();
+    return rows;
+  };
 
   const result = {};
-  if (scope === "all" || scope === "global") {
-    const db = path.join(gDir, "index.db");
-    if (fs.existsSync(db)) {
-      const store = new MemoryStore(db);
-      result.global = store.allRecords(typeFilter, limit);
-      store.close();
-    } else { result.global = []; }
-  }
-  if (scope === "all" || scope === "project") {
-    const db = path.join(pDir, "index.db");
-    if (fs.existsSync(db)) {
-      const store = new MemoryStore(db);
-      result.project = store.allRecords(typeFilter, limit);
-      store.close();
-    } else { result.project = []; }
-  }
+  if (scope === "all" || scope === "global") result.global = load(path.join(gDir, "index.db"));
+  if (scope === "all" || scope === "project") result.project = load(path.join(pDir, "index.db"));
   console.log(JSON.stringify(result, null, 2));
 }
 
@@ -976,6 +982,21 @@ function cmdWritePersona(args = []) {
 function cmdMarkDone() {
   const { markConsolidated } = req("memory_auto_capture.js");
   markConsolidated();
+  // Advance the per-project read cursor to the newest atom folded this run, so
+  // the next `atoms --since-last` sees only what arrived after now. Best-effort:
+  // a failure here must not block releasing the lock.
+  try {
+    const { MemoryStore } = req("memory_store.js");
+    const { setConsolidatedWatermark } = req("memory_writer.js");
+    const { pDir, pHash } = getDirs();
+    const db = path.join(pDir, "index.db");
+    if (pHash && fs.existsSync(db)) {
+      const store = new MemoryStore(db);
+      const maxTs = store.maxUpdatedTime();
+      store.close();
+      if (maxTs) setConsolidatedWatermark(pHash, maxTs);
+    }
+  } catch {}
   const lockFile = path.join(os.homedir(), ".memory-tencentdb", "consolidation.lock");
   try { fs.unlinkSync(lockFile); } catch {}
   console.log("Consolidation marked complete, lock released.");
@@ -1878,7 +1899,7 @@ Commands:
   search <query> [--all|--project <slug>]  Search L1 atoms (FTS5); --all = every project store
   projects                   List all memory stores (slug, records, scenes) for cross-project work
   migrate-fragments [--apply]  Merge legacy cwd-keyed fragment stores into their project root (dry-run by default)
-  atoms [global|project|all] Dump L1 atoms as JSON
+  atoms [global|project|all] [--since <iso> | --since-last]  Dump L1 atoms as JSON (--since-last = only atoms since last consolidation)
   sessions                   List pending sessions for seeding
   read-session <path>        Format session for extraction
   write-l1 [--session id]    Write L1 atoms from stdin JSON
