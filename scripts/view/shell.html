@@ -3591,6 +3591,11 @@ const USAGE_LABEL = {
   warm: (u) => `reaches it sometimes — ${n(u.recalls)}×`,
   dead: (u) => `a candidate, but dropped for space — ${n(u.drops)}×, never sent`,
 };
+/** The usage-dot bucket for an atom, or "none" when it has no measured behaviour. */
+function bucketOf(atom) {
+  const u = atom && atom.usage;
+  return u && USAGE_LABEL[u.bucket] ? u.bucket : "none";
+}
 function usageTag(r) {
   const u = r.usage;
   if (!u || !USAGE_LABEL[u.bucket]) return "";
@@ -3748,11 +3753,10 @@ function findAtom(id) {
 
 function treeAtomRow(a) {
   const u = a.usage;
-  const b = u && USAGE_LABEL[u.bucket] ? u.bucket : "none";
   const sel = state.selectedAtom && state.selectedAtom.id === a.id ? " sel" : "";
   const count = u ? `<span class="acount">${n(u.recalls)}×</span>` : "";
   return `<button class="atom${sel}" type="button" data-atom="${esc(a.id)}">` +
-    `<span class="udot" data-b="${b}"></span><span class="atxt">${esc(clip(a.content, 110))}</span>${count}</button>`;
+    `<span class="udot" data-b="${bucketOf(a)}"></span><span class="atxt">${esc(clip(a.content, 110))}</span>${count}</button>`;
 }
 
 function sceneBranch(s) {
@@ -3810,7 +3814,7 @@ function atomInspector() {
   const related = u && u.related && u.related.length
     ? `<div class="irel"><h3>Recalled alongside <span class="tsub">by lift, not raw count</span></h3>${
         u.related.map((r) => { const ra = findAtom(r.id); return ra
-          ? `<button class="atom" type="button" data-atom="${esc(r.id)}"><span class="udot" data-b="${ra.usage && USAGE_LABEL[ra.usage.bucket] ? ra.usage.bucket : "none"}"></span><span class="atxt">${esc(clip(ra.content, 70))}</span><span class="acount">×${r.lift.toFixed(1)}</span></button>`
+          ? `<button class="atom" type="button" data-atom="${esc(r.id)}"><span class="udot" data-b="${bucketOf(ra)}"></span><span class="atxt">${esc(clip(ra.content, 70))}</span><span class="acount">×${r.lift.toFixed(1)}</span></button>`
           : `<div class="pbullet"><span class="udot" data-b="none"></span><span>${esc(r.id)} <span class="dim">(in another store)</span> ×${r.lift.toFixed(1)}</span></div>`; }).join("")}</div>`
     : "";
   return `<aside class="inspector">

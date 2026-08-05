@@ -503,9 +503,8 @@ function checkRecallFeed() {
   const ex = pipeline().extractMod;
   if (!ex || typeof ex.readRecallSince !== "function") return;
   if (recallOffset === null) {
-    // First tick: adopt EOF silently so we don't replay the whole log on startup.
-    const seed = ex.readRecallSince(effectiveRootDir, Number.MAX_SAFE_INTEGER);
-    recallOffset = seed.rotated ? 0 : seed.newOffset;
+    // First tick: adopt EOF (a stat, no read) so we don't replay the log on startup.
+    recallOffset = ex.readRecallSize(effectiveRootDir);
     return;
   }
   let out;
@@ -516,17 +515,17 @@ function checkRecallFeed() {
   try { ({ root } = currentSnapshot()); } catch { return; }
   const idx = idIndex(root, lastKnownSnapshotId);
   for (const e of out.entries) {
-    if (e.source === "view") continue;   // the visualiser's own probes are not session activity
+    if (!ex.isSessionRecall(e)) continue;   // the visualiser's own probes are not session activity
     broadcast("recall", feedEntry(e, idx));
   }
 }
 
 function startWatcher() {
   if (PINNED) return null;
-  const t = setInterval(checkForDrift, WATCH_INTERVAL_MS);
+  // One tick drives both watchers: drift (snapshot rebuild) then the cheap recall
+  // tailer. Same period, deterministic order, one timer.
+  const t = setInterval(() => { checkForDrift(); checkRecallFeed(); }, WATCH_INTERVAL_MS);
   t.unref();
-  const f = setInterval(checkRecallFeed, WATCH_INTERVAL_MS);
-  f.unref();
   return t;
 }
 
@@ -598,24 +597,30 @@ function routeSnapshot(res, setCookie) {
   );
 }
 
-/** GET /api/store/:slug/records */
-function routeStoreRecords(res, url, slug, setCookie) {
+/**
+ * Store lookup + the 404 / STORE_UNREADABLE guard shared by every per-store route.
+ * Returns {root, snapshot, meta, storeExtract}, or sends the error and returns null.
+ */
+function resolveStoreOr404(res, slug, setCookie) {
   const { root, snapshot } = currentSnapshot();
   const meta = envelopeMeta(snapshot);
-
   const storeExtract = (root.stores || []).find((s) => s.ref && s.ref.slug === slug);
   if (!storeExtract) {
     sendJson(res, 404, C.apiError(C.API_ERROR.NOT_FOUND, `no store with slug ${JSON.stringify(slug)}`, meta), setCookie);
-    return;
+    return null;
   }
   if (storeExtract.records && storeExtract.records.status === C.STATUS.ERROR) {
-    sendJson(
-      res, 200,
-      C.apiError(C.API_ERROR.STORE_UNREADABLE, storeExtract.records.reason || "index.db unreadable", meta),
-      setCookie,
-    );
-    return;
+    sendJson(res, 200, C.apiError(C.API_ERROR.STORE_UNREADABLE, storeExtract.records.reason || "index.db unreadable", meta), setCookie);
+    return null;
   }
+  return { root, snapshot, meta, storeExtract };
+}
+
+/** GET /api/store/:slug/records */
+function routeStoreRecords(res, url, slug, setCookie) {
+  const ctx = resolveStoreOr404(res, slug, setCookie);
+  if (!ctx) return;
+  const { snapshot, meta, storeExtract } = ctx;
 
   const build = pipeline().rows;
   if (!build) {
@@ -690,18 +695,9 @@ function routeStoreRecords(res, url, slug, setCookie) {
 
 /** GET /api/store/:slug/tree — the DERIVED L2->L1 backbone for one store. */
 function routeStoreTree(res, slug, setCookie) {
-  const { root, snapshot } = currentSnapshot();
-  const meta = envelopeMeta(snapshot);
-
-  const storeExtract = (root.stores || []).find((s) => s.ref && s.ref.slug === slug);
-  if (!storeExtract) {
-    sendJson(res, 404, C.apiError(C.API_ERROR.NOT_FOUND, `no store with slug ${JSON.stringify(slug)}`, meta), setCookie);
-    return;
-  }
-  if (storeExtract.records && storeExtract.records.status === C.STATUS.ERROR) {
-    sendJson(res, 200, C.apiError(C.API_ERROR.STORE_UNREADABLE, storeExtract.records.reason || "index.db unreadable", meta), setCookie);
-    return;
-  }
+  const ctx = resolveStoreOr404(res, slug, setCookie);
+  if (!ctx) return;
+  const { snapshot, meta, storeExtract } = ctx;
   const build = pipeline().tree;
   if (!build) {
     sendJson(res, 500, C.apiError(C.API_ERROR.INTERNAL, missingPipelineMessage("tree"), meta), setCookie);
@@ -778,7 +774,7 @@ function routeRecallFeed(res, url, setCookie) {
   const { entries } = ex.readRecallTail(effectiveRootDir, limit);
   const idx = idIndex(root, snapshot && snapshot.snapshotId);
   // Newest first; the visualiser's own probes never count as session activity.
-  const feed = entries.filter((e) => e.source !== "view").reverse().map((e) => feedEntry(e, idx));
+  const feed = entries.filter(ex.isSessionRecall).reverse().map((e) => feedEntry(e, idx));
   sendJson(res, 200, C.apiOk({ feed, total: feed.length }, meta), setCookie);
 }
 

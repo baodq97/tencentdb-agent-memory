@@ -1789,13 +1789,10 @@ function buildRecallUsage(recallLog, now) {
   let firstAtMs = null;
   let lastAtMs = null;
 
-  const bump = (id, field, atMs) => {
+  const slotFor = (id) => {
     let s = stat.get(id);
     if (!s) { s = { recalls: 0, drops: 0, lastAtMs: null }; stat.set(id, s); }
-    s[field] += 1;
-    if (field === "recalls" && atMs !== null) {
-      s.lastAtMs = s.lastAtMs === null ? atMs : Math.max(s.lastAtMs, atMs);
-    }
+    return s;
   };
 
   for (const e of recallLog.entries) {
@@ -1806,8 +1803,12 @@ function buildRecallUsage(recallLog, now) {
       lastAtMs = lastAtMs === null ? atMs : Math.max(lastAtMs, atMs);
     }
     const inj = [...new Set(e.injectedIds)];
-    for (const id of new Set(e.droppedIds)) bump(id, "drops", atMs);
-    for (const id of inj) bump(id, "recalls", atMs);
+    for (const id of new Set(e.droppedIds)) slotFor(id).drops += 1;
+    for (const id of inj) {
+      const s = slotFor(id);
+      s.recalls += 1;
+      if (atMs !== null) s.lastAtMs = s.lastAtMs === null ? atMs : Math.max(s.lastAtMs, atMs);
+    }
     if (inj.length) {
       coUniverse += 1;
       for (let i = 0; i < inj.length; i++) {

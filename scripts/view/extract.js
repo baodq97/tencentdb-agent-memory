@@ -761,6 +761,19 @@ function readCaptureStateDoc(rootDir) {
 
 const NO_RECALL_LOG = { entries: null, lines: null, malformed: null, excludedView: null, files: null };
 
+/** Parse one recall_log line to an object, or null if it is malformed (truncated tail, non-object). */
+function parseRecallLine(line) {
+  try { const r = JSON.parse(line); return r && typeof r === "object" ? r : null; }
+  catch { return null; }
+}
+
+/**
+ * The one definition of "counts as session activity". `view`-source lines are the
+ * visualiser's OWN /api/recall probes; every reader of recall_log drops them
+ * through this, so the rule lives in one place instead of three.
+ */
+const isSessionRecall = (entry) => !!entry && entry.source !== "view";
+
 /**
  * `recall_log.jsonl` (+ its one rotated generation `.jsonl.1`) — the ONLY record
  * of which memories recall ever actually injected. Root-level, not per-store: a
@@ -797,10 +810,9 @@ function readRecallLogDoc(rootDir) {
       const text = fs.readFileSync(f, "utf-8");
       for (const line of text.split("\n")) {
         if (!line.trim()) continue;
-        let row;
-        try { row = JSON.parse(line); } catch { malformed += 1; continue; }
-        if (!row || typeof row !== "object") { malformed += 1; continue; }
-        if (row.source === "view") { excludedView += 1; continue; }
+        const row = parseRecallLine(line);
+        if (!row) { malformed += 1; continue; }
+        if (!isSessionRecall(row)) { excludedView += 1; continue; }
         entries.push({
           at: typeof row.at === "string" ? row.at : null,
           injectedIds: Array.isArray(row.injectedIds) ? row.injectedIds.map(String) : [],
@@ -842,9 +854,15 @@ function readRecallSince(rootDir, fromOffset = 0) {
   const entries = [];
   for (const line of buf.toString("utf-8").split("\n")) {
     if (!line.trim()) continue;
-    try { const r = JSON.parse(line); if (r && typeof r === "object") entries.push(r); } catch { /* truncated tail */ }
+    const row = parseRecallLine(line);   // null = truncated tail, skipped
+    if (row) entries.push(row);
   }
   return { entries, newOffset: stat.size, rotated, missing: false };
+}
+
+/** Current EOF byte-offset of recall_log.jsonl (0 if absent) — the feed's tailer seeds from this. */
+function readRecallSize(rootDir) {
+  try { return fs.statSync(path.join(rootPaths(rootDir).root, "recall_log.jsonl")).size; } catch { return 0; }
 }
 
 /** The last `limit` recall entries + the current EOF offset, for the feed's initial paint. */
@@ -1001,7 +1019,9 @@ module.exports = {
   readCaptureStateDoc,
   readRecallLogDoc,
   readRecallSince,
+  readRecallSize,
   readRecallTail,
+  isSessionRecall,
   extractStore,
   extractAll,
 };
