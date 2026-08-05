@@ -445,9 +445,10 @@ label { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; }
 .feed { margin-top: 16px; border: 1px solid var(--c-border); border-radius: 8px; background: var(--c-surface); overflow: hidden; }
 .feedrow { border-bottom: 1px solid var(--c-grid); }
 .feedrow:last-child { border-bottom: 0; }
-.feedhead { padding: 9px 14px; }
-.feedhead .when { color: var(--c-muted); font-variant-numeric: tabular-nums; font-size: 13px; flex: none; }
-.feedhead .fq { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.feedhead { padding: 9px 14px; align-items: flex-start; }
+.feedhead .when { color: var(--c-muted); font-variant-numeric: tabular-nums; font-size: 13px; flex: none; padding-top: 1px; }
+/* Full prompt, wrapping — the row grows; clicking expands to the injected memories. */
+.feedhead .fq { flex: 1 1 auto; min-width: 0; white-space: normal; word-break: break-word; font-weight: 500; }
 .feedhead .fsrc { color: var(--c-series2); font-weight: 600; font-size: 12px; }
 .mtype { color: var(--c-muted); font-size: 12px; }
 .fqfull { padding: 4px 8px 10px; color: var(--c-foreground); font-weight: 500; white-space: pre-wrap; word-break: break-word; }
@@ -3881,10 +3882,12 @@ function feedRow(e) {
   const counts = `<span class="tmeta">inj ${n(e.injected)} · drop ${n(e.dropped)}${
     e.chars != null ? ` · ${n(e.chars)} chars` : ""}</span>`;
   const src = e.source === "hook" ? "" : ` <span class="fsrc">${esc(e.source)}</span>`;
-  const q = clip(e.query, 90) || "(empty prompt)";
+  // Full text on one line; the CSS ellipsis on .fq cuts it to the ACTUAL row
+  // width, so a wide screen shows more and a hard 90-char "…" never lands early.
+  const q = (e.query || "").replace(/\s+/g, " ").trim();
   const head = `<button class="tnode feedhead" type="button" data-treescene="${esc(key)}" aria-expanded="${open}">
     <span class="caret">▶</span><span class="when">${esc(when)}</span>
-    <span class="fq">${esc(q)}${src}</span>${counts}</button>`;
+    <span class="fq">${q ? esc(q) : '<span class="dim">(empty prompt)</span>'}${src}</span>${counts}</button>`;
   if (!open) return `<div class="feedrow">${head}</div>`;
 
   const memLine = (m, dropped) => `<div class="pbullet${dropped ? " fdrop" : ""}"><span class="udot" data-b="none"></span><span>${
