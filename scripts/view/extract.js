@@ -629,6 +629,30 @@ function readPersonaDoc(dir = globalDir()) {
   });
 }
 
+/**
+ * The current project's store slug, resolved from the working directory exactly
+ * the way the runtime writer resolves it (`memory_reader.projectHashForCwd` — git
+ * root, then slug). This is the store whose `<project-doctrine>` the SessionStart
+ * hook would inject for a session opened here, and it is the one the visualiser's
+ * "Project Doctrine (this repo)" reads.
+ *
+ * Best-effort by design: run outside any project, or with the resolver throwing,
+ * there is simply no current project — the caller reports the doctrine as
+ * `unmeasured`, not an error. `global` is never a project doctrine, so it maps to
+ * "no current project" too.
+ *
+ * @returns {string|null}
+ */
+function currentProjectSlug() {
+  try {
+    const { projectHashForCwd } = require("../memory_reader.js");
+    const slug = projectHashForCwd();
+    return slug && slug !== "global" ? slug : null;
+  } catch {
+    return null;
+  }
+}
+
 /* ------------------------------------------------------------------ *
  * Root-level JSON documents
  * ------------------------------------------------------------------ */
@@ -914,10 +938,27 @@ function extractStore(ref, { recordLimit = DEFAULT_RECORD_LIMIT } = {}) {
 function extractAll({ recordLimit = DEFAULT_RECORD_LIMIT, rootDir } = {}) {
   const paths = rootPaths(rootDir);
   const stores = listStores(rootDir).map((ref) => extractStore(ref, { recordLimit }));
+  // The hybrid persona (0.7.0) has two halves: the cross-project global persona,
+  // and the CURRENT project's `<project-doctrine>` — a project-scoped `persona.md`
+  // holding SOPs / anti-patterns, injected once at SessionStart. The visualiser
+  // must read both. `storeDirFor` (not the writer's `projectDir`) keeps this under
+  // the same `rootDir` every other reader uses, so a fixture root stays honest.
+  const currentSlug = currentProjectSlug();
   return {
     rootDir: paths.root,
+    // The resolved current-project slug (or null). A plain identifier like rootDir,
+    // not a Source: transform uses it to pick the current project's store — e.g. its
+    // atom count for the upgrade nudges — without re-resolving cwd itself.
+    currentSlug,
     stores,
     persona: readPersonaDoc(paths.global),
+    // No current project (a global-only view) is an ABSENCE, not a failure.
+    projectDoctrine: currentSlug
+      ? readPersonaDoc(storeDirFor(currentSlug, rootDir))
+      : unmeasured(
+        "no current project — this is a global-only view; run `tmem view` from inside a project to see its doctrine",
+        NO_PERSONA,
+      ),
     state: readStateDoc(rootDir),
     config: readConfigDoc(rootDir),
     captureState: readCaptureStateDoc(rootDir),

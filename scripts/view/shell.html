@@ -425,6 +425,16 @@ label { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; }
 .dnote { color: var(--c-muted); font-size: 13px; margin-top: 14px; max-width: 60ch; }
 .dnote b { color: var(--c-secondary); }
 .tindent { padding-left: 8px; }
+.tlegend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  margin: 6px 0 14px; padding: 8px 12px; border: 1px solid var(--c-border);
+  border-radius: var(--radius); background: var(--c-surface);
+  color: var(--c-muted); font-size: 13px; }
+.tlegend .lg { display: inline-flex; align-items: center; gap: 6px; }
+.tlegend .lgsep { width: 1px; align-self: stretch; background: var(--c-border); }
+.dutykey { margin: 4px 0 18px; padding: 8px 12px; border: 1px solid var(--c-border);
+  border-radius: var(--radius); background: var(--c-surface);
+  color: var(--c-muted); font-size: 13px; max-width: 78ch; }
+.dutykey b { color: var(--c-secondary); font-weight: 600; }
 
 .inspector {
   flex: 0 0 360px; position: sticky; top: 16px; align-self: flex-start;
@@ -2645,6 +2655,25 @@ const VOCAB = {
 
 const TIER_ORDER = ["sessionStart", "promptSummary", "onDemand", "never"];
 
+/**
+ * The two clocks a persona/doctrine line runs on: injected ONCE at session start
+ * (static), vs recomputed EVERY turn against the prompt (per-turn delta). The
+ * VOCAB.tier strings above stay plain-language for the body; these are the precise
+ * mechanism, shown in the one-line legend near each persona header.
+ */
+const TWO_CLOCK = {
+  sessionStart:  "Session-static · injected once at session start",
+  promptSummary: "Per-turn · query-relevant delta",
+  onDemand:      "On demand (agent reads persona.md)",
+  never:         "Never reaches the agent",
+};
+
+/** One line explaining the two clocks, keyed to the tier marks already on each row. */
+function twoClockLegend() {
+  return `<p class="dutykey">Two clocks decide what reaches the assistant: ${
+    TIER_ORDER.map((t) => `<b>${TIER_MARK[t]} ${esc(TWO_CLOCK[t])}</b>`).join(" · ")}.</p>`;
+}
+
 /* ── formatting ─────────────────────────────────────────────────────── */
 const NUM_LOCALE = "fr-FR";                    // space thousands, comma decimal
 const nf = new Intl.NumberFormat(NUM_LOCALE);
@@ -3363,6 +3392,30 @@ function screenHealthErrored(snap, errored) {
     ${footnote()}`;
 }
 
+/**
+ * "Activate new features" — doctor's upgrade nudges, surfaced on the health screen.
+ * Each nudge is one line; its inline `/memory-consolidate` hint is lifted out as the
+ * shared action. An empty list renders nothing — an absence is not a finding.
+ */
+function upgradeNudgesCard(snap) {
+  const nudges = (snap && snap.upgradeNudges) || [];
+  if (!nudges.length) return "";
+  const items = nudges.map((raw) => {
+    const text = typeof raw === "string" ? raw : (raw && raw.text) || "";
+    // The fix hint rides inline as `: /memory-consolidate`; strip it so the line
+    // reads as a clean sentence and the command lives once, in the action row.
+    const body = esc(text.replace(/:\s*\/memory-consolidate\s*$/, "").trim());
+    return `<li>${body}</li>`;
+  }).join("");
+  return `<div class="card">
+      <h2 class="h2">Activate new features <span class="tsub">re-consolidate to apply — nothing is broken</span></h2>
+      <p class="lede">Your plugin has memory features these stores have not picked up yet. They stay latent until the next
+        consolidation — there is no migration to run, and no data is at risk.</p>
+      <ul style="margin:10px 0 14px;padding-left:20px;line-height:1.55">${items}</ul>
+      <div class="acts"><code class="cmd">/memory-consolidate</code>${copyBtn("/memory-consolidate", true)}</div>
+    </div>`;
+}
+
 function screenHealthMain(snap, opt) {
   opt = opt || {};
   const problems = buildProblems(snap);
@@ -3416,7 +3469,7 @@ function screenHealthMain(snap, opt) {
       <a class="btn" href="${esc(url(location.pathname, { view: "problem", gap: "unchecked" }))}" data-view="problem" data-gap="unchecked">Which ${plural(um.stores, "project", "projects")}</a>
     </div>` : "";
 
-  return head + list + strip + tiles(snap) + (opt.skipVerdict ? "" : footnote());
+  return head + list + strip + upgradeNudgesCard(snap) + tiles(snap) + (opt.skipVerdict ? "" : footnote());
 }
 
 function screenHealth() {
@@ -3834,6 +3887,20 @@ function treeSkeleton() {
       "<div class=\"sk\" style=\"width:70%\"></div>".repeat(5)}</div></div></div>`;
 }
 
+/**
+ * The tree renders usage as bare coloured dots and persona reach as bare emoji.
+ * A reader with no docs (and no hover on touch) must still know what each mark
+ * means, so the key is always on the page — never a tooltip only.
+ */
+function treeLegend() {
+  const dot = (b, label) => `<span class="lg"><span class="udot" data-b="${b}"></span>${label}</span>`;
+  const mark = (tier) => `<span class="lg">${TIER_MARK[tier]} ${esc(VOCAB.tier[tier])}</span>`;
+  return `<div class="tlegend" aria-label="What the marks mean">
+    ${dot("hot", "reaches often")}${dot("warm", "reaches sometimes")}${dot("dead", "dropped for space")}
+    <span class="lgsep" aria-hidden="true"></span>
+    ${mark("sessionStart")}${mark("promptSummary")}${mark("onDemand")}${mark("never")}</div>`;
+}
+
 function screenMemoryTree() {
   if (state.loading) return screenHealthLoading();
   if (state.fatal) return screenFatal(state.fatal);
@@ -3854,7 +3921,17 @@ function screenMemoryTree() {
   const persona = state.persona || snap.persona || {};
   const pcount = (persona.bullets || []).length;
 
-  const l3 = treeRoot("Persona (L3)", `${n(pcount)} standing ${plural(pcount, "rule")} — grouped by section`, personaBranch(persona));
+  const l3 = treeRoot("Persona core (L3 · global)", `${n(pcount)} standing ${plural(pcount, "rule")}, cross-project — grouped by section`, personaBranch(persona));
+
+  // The hybrid persona's second half: this repo's own doctrine (SOPs / anti-patterns),
+  // a distinct L3 root shown only when the current project actually has one.
+  const doctrine = snap.projectDoctrine;
+  const dcount = doctrine && doctrine.bullets ? doctrine.bullets.length : 0;
+  const l3doc = doctrine && doctrine.status === "ok" && dcount
+    ? treeRoot("Project doctrine (L3 · this repo)",
+        `${n(dcount)} standing ${plural(dcount, "rule")}, this project only — SOPs &amp; anti-patterns`,
+        personaBranch(doctrine))
+    : "";
 
   const scenes = t.scenes || [];
   const scenesBody = scenes.length
@@ -3873,7 +3950,7 @@ function screenMemoryTree() {
     the original <code>scene_name</code> link was dead. A memory that matches no scene is left unlinked rather than
     forced under a weak parent.</p>`;
 
-  return head + `<div class="treewrap"><div class="tree">${l3}${l2}${l1}${note}</div>${atomInspector()}</div>` + footnote();
+  return head + twoClockLegend() + treeLegend() + `<div class="treewrap"><div class="tree">${l3}${l3doc}${l2}${l1}${note}</div>${atomInspector()}</div>` + footnote();
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -3934,11 +4011,56 @@ function screenLive() {
       live ? ", newest on top, updating live" : ""}. Each is one hook or CLI recall from a real session; the tool's own probes are filtered out.</span>`);
 }
 
+/**
+ * The hybrid persona's SECOND document, rendered compactly beneath the global
+ * persona: this repo's own doctrine, with each rule under its injection tier. Only
+ * shown when the current project actually has a doctrine — a global-only view has
+ * none, and an absence is not a finding.
+ */
+function aboutDoctrine(doctrine) {
+  if (!doctrine || doctrine.status !== "ok") return "";
+  const bullets = doctrine.bullets || [];
+  if (!bullets.length) return "";
+  const proj = doctrine.projection;
+  const byTier = new Map(TIER_ORDER.map((t) => [t, []]));
+  for (const b of bullets) byTier.get(byTier.has(b.tier) ? b.tier : "never").push(b);
+  const delivered = proj ? proj.byTier.sessionStart + proj.byTier.promptSummary : byTier.get("sessionStart").length;
+
+  const groups = TIER_ORDER.map((tier) => {
+    const list = byTier.get(tier);
+    if (!list.length) return "";
+    return `<section class="group">
+      <div class="head">
+        <span class="t">${TIER_MARK[tier] || ""} ${esc(VOCAB.tier[tier])}</span>
+        <span class="c">${n(list.length)} of ${n(bullets.length)}</span>
+      </div>
+      <ul class="plist">${list.map((b) => `<li data-reach="${tier}">
+          <span class="rule"></span>
+          <span class="t"><span class="tmark" title="${esc(VOCAB.tier[tier])}">${TIER_MARK[tier] || "·"}</span> ${esc(clip(b.text, 200))}
+            <span class="sec">${esc(b.section)} · ${n(b.chars)} characters${
+              b.truncated ? " · cut short before it was handed over" : ""}</span></span>
+        </li>`).join("")}</ul>
+    </section>`;
+  }).join("");
+
+  return `<div class="card">
+    <h2 class="h2">This repo's project doctrine <span class="tsub">a second document — SOPs &amp; anti-patterns, this project only</span></h2>
+    <p class="lede">Separate from the global persona above, and scoped to this repository: injected once at the start of a
+      session opened here. <b>${n(delivered)} of ${n(bullets.length)}</b> ${plural(bullets.length, "rule")}
+      ${plural(delivered, "reaches", "reach")} the assistant.</p>
+    ${groups}
+  </div>`;
+}
+
 function screenAboutYou() {
   if (state.loading) return screenHealthLoading();
   const persona = state.persona || (state.snapshot && state.snapshot.persona);
   if (state.personaError && !persona) return errorBlock(state.personaError, "What the assistant knows about you");
   if (!persona) return screenFatal(state.fatal || apiFailure("The persona could not be read.", "", ROUTES.PERSONA));
+
+  // The per-project doctrine only ever rides on the snapshot (there is no separate
+  // /api/persona for it); render it beneath the global persona on both paths below.
+  const doctrineBlock = aboutDoctrine(state.snapshot && state.snapshot.projectDoctrine);
 
   const bullets = persona.bullets || [];
   const proj = persona.projection;
@@ -3962,7 +4084,7 @@ function screenAboutYou() {
         <span><b>Nothing is missing or broken.</b> ${esc(persona.reason || "There is simply no file to read yet")} —
         which is different from a file that was read and found empty. When one exists, this screen shows which parts
         of it reach the assistant and which do not.</span>
-      </div>`;
+      </div>` + doctrineBlock;
   }
 
   const byTier = new Map(TIER_ORDER.map((t) => [t, []]));
@@ -3976,7 +4098,10 @@ function screenAboutYou() {
 
   const head = `<h1 class="verdict sm">Of the ${n(bullets.length)} things written about you,
       <span class="${byTier.get("never").length ? "bad" : "ok"}">${n(delivered)} actually ${plural(delivered, "reaches", "reach")}</span> the assistant.</h1>
-    <p class="verdict-sub">Grouped by what happens to each one, not by how it was filed: what arrives, what might, what never does.</p>`;
+    <p class="verdict-sub">Grouped by what happens to each one, not by how it was filed: what arrives, what might, what never does.</p>
+    <p class="dutykey">The dashed chip on each line — <b>${esc(VOCAB.duty.always)}</b> · <b>${esc(VOCAB.duty.conditional)}</b> · <b>${esc(VOCAB.duty.reference)}</b> —
+      is the tool's guess at how strongly that rule applies, read from how the line is written, not your label.${
+        CFG.demo ? "" : " Click one to tell your assistant it guessed wrong."}</p>`;
 
   const groups = TIER_ORDER.map((tier) => {
     const list = byTier.get(tier);
@@ -4047,7 +4172,7 @@ function screenAboutYou() {
         <td class="num">${n(proj.byTier[t])}</td><td class="num">${n(proj.byTierChars[t])}</td></tr>`).join("")}</tbody>
     </table>` : "";
 
-  return head + groups + why + detail + (table ? `<div class="card">${table}</div>` : "") +
+  return head + twoClockLegend() + groups + why + detail + (table ? `<div class="card">${table}</div>` : "") + doctrineBlock +
     footnote(`<span><b>“${esc(VOCAB.duty.always)}”, “${esc(VOCAB.duty.reference)}” — these are the tool's guesses, not your labels.</b>
       The dashed outline says so: the classification is a heuristic and it is wrong at the margins.${
         CFG.demo ? "" : " Click one to say it got that line wrong — the note is passed to your assistant for its next turn; this page still changes nothing."}</span>`);

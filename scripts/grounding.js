@@ -89,4 +89,4 @@ function filterGrounded(records, idToText, threshold = DEFAULT_THRESHOLD) {
   return { kept, dropped };
 }
 
-module.exports = { isGrounded, significantTokens, filterGrounded, DEFAULT_THRESHOLD };
+module.exports = { isGrounded, significantTokens, STOPWORDS, filterGrounded, DEFAULT_THRESHOLD };

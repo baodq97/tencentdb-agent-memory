@@ -188,7 +188,7 @@ test("purity: importing and running transform loads no I/O module", () => {
 // Values, not source text: functions are dropped and only data is hashed, so
 // editing a comment — or a function body, which the rest of this file tests
 // behaviourally — does not trip it.
-const CONTRACT_DIGEST = "d82451af00bbd12d";
+const CONTRACT_DIGEST = "0e5c80efdbd054e1";
 
 /** Stable serialisation of the contract's data exports. */
 function canonicaliseContract(value) {
@@ -316,6 +316,69 @@ test("tmem view --snapshot: keeps the newest 10 snapshots and touches nothing el
   assert.ok(fs.statSync(path.join(viewDir, "snapshot-s2-0000000000000099.json")).isDirectory());
 
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Project doctrine — the hybrid persona's per-project half
+//
+// 0.7.0 split the persona in two: a cross-project global persona-core and a
+// per-project `<project-doctrine>` (SOPs / anti-patterns for this repo). The
+// snapshot must surface the doctrine as its OWN document, parallel to the global
+// persona and projected through the SAME projection, so the lens can draw both.
+// ───────────────────────────────────────────────────────────────────────────
+
+test("project doctrine: the snapshot surfaces it as a second persona document, parallel to the global persona", () => {
+  // Global-only view — no current project doctrine. Absent, never an error.
+  const none = T.transformRoot(rootExtract([
+    storeExtract("global", { records: [rec("m_1")] }),
+  ]));
+  assert.ok(none.projectDoctrine, "snapshot must carry projectDoctrine alongside persona");
+  assert.equal(none.projectDoctrine.status, STATUS.UNMEASURED);
+
+  // A project WITH a doctrine — tiered exactly like the persona.
+  const withDoc = T.transformRoot(rootExtract([
+    storeExtract("global", { records: [rec("m_1")] }),
+  ], { projectDoctrine: personaRead() }));
+  const doc = withDoc.projectDoctrine;
+  assert.equal(doc.status, STATUS.OK);
+  assert.ok(Array.isArray(doc.bullets) && doc.bullets.length > 0);
+  assert.ok(doc.projection, "the doctrine carries an injection projection, like the persona");
+  for (const b of doc.bullets) assert.ok(C.INJECTION_TIERS.includes(b.tier), `bullet tier ${b.tier} not a known injection tier`);
+  // A DISTINCT document from the global persona, not a copy of it.
+  assert.notEqual(doc, withDoc.persona);
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Upgrade nudges — doctor's activation hints, surfaced on the health screen
+//
+// The nudge rules live in doctor.buildUpgradeNudges (pure). The snapshot must
+// call THAT function, not a copy — one source of truth for the metric.
+// ───────────────────────────────────────────────────────────────────────────
+
+test("upgrade nudges: the snapshot surfaces doctor's activation nudges (imported, not re-implemented)", () => {
+  // The snapshot calls the canonical pure function, not a second copy of the rules.
+  assert.equal(T.buildUpgradeNudges, require("../scripts/doctor.js").buildUpgradeNudges);
+
+  // A current project with memories but no doctrine → the build-doctrine nudge.
+  const dirty = T.transformRoot(rootExtract([
+    storeExtract("global", { records: [rec("m_1")] }),
+    storeExtract("proj-x", { records: [rec("ac_1"), rec("ac_2"), rec("ac_3")] }),
+  ], { currentSlug: "proj-x" }));
+  assert.ok(Array.isArray(dirty.upgradeNudges));
+  assert.ok(dirty.upgradeNudges.length > 0, "atoms-but-no-doctrine must surface a nudge");
+  assert.ok(dirty.upgradeNudges.some((s) => /doctrine|guardrails/i.test(s)),
+    "the project doctrine nudge must be present");
+
+  // A clean world — a within-budget global persona, no orphan project — surfaces nothing.
+  const clean = T.transformRoot(rootExtract([
+    storeExtract("global", { records: [rec("m_1")] }),
+  ], {
+    persona: C.ok({
+      text: "# User Persona\n\n## Standing Instructions\n- Always answer concisely.\n",
+      bytes: 60, mtime: "2026-02-01T00:00:00Z", sections: [], bullets: [],
+    }),
+  }));
+  assert.deepEqual(clean.upgradeNudges, []);
 });
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -44,6 +44,23 @@ function pidFileForDir(dir) {
   return path.join(os.tmpdir(), `tmem-embed-${tokenForDir(dir)}.pid`);
 }
 
+/** Read the recorded daemon pid for `dir`, or null if the pidfile is absent/garbage. */
+function readPidFile(dir) {
+  try {
+    const n = parseInt(fs.readFileSync(pidFileForDir(dir), "utf-8").trim(), 10);
+    return Number.isInteger(n) ? n : null;
+  } catch { return null; }
+}
+
+/**
+ * Is `pid` a live process? `kill(pid, 0)` sends no signal, just probes existence.
+ * EPERM means it exists but we may not signal it — still alive for our purposes.
+ */
+function pidAlive(pid) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === "EPERM"); }
+}
+
 // ── embed queue: run embeds strictly one at a time ──
 let _chain = Promise.resolve();
 function enqueueEmbed(embSvc, text) {
@@ -154,4 +171,4 @@ if (require.main === module) {
   startDaemon();
 }
 
-module.exports = { addrForDir, tokenForDir, pidFileForDir, startDaemon };
+module.exports = { addrForDir, tokenForDir, pidFileForDir, readPidFile, pidAlive, startDaemon };

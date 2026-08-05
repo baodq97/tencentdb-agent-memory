@@ -242,6 +242,25 @@ function memoryId(m) {
 }
 
 /**
+ * The two-clock split: persona is a SESSION clock, not a per-turn one.
+ *
+ * Persona-type L1 atoms are the raw material the tier-0 persona core is
+ * consolidated from, and that core is injected ONCE per session by
+ * on_session_start.js. Re-injecting the same atoms in EVERY per-turn <memories>
+ * block is pure redundancy — measured at 46-71% of recall hits — so the per-turn
+ * clock keeps only the query-relevant NON-persona delta (episodic/instruction/…)
+ * plus the always-on tier-1 <persona> projection and the scene-nav index.
+ *
+ * Filtered HERE, on the recall path only: `MemoryStore.search()` stays a general
+ * keyword search for the CLI, the consolidator and the type-filtered lookups that
+ * legitimately want persona atoms. Defensive on shape (a row with no `type` is
+ * kept — it is not a persona atom).
+ */
+function dropPersonaAtoms(memories) {
+  return memories.filter((m) => !m || m.type !== "persona");
+}
+
+/**
  * Render the ranked memories into `<memories>`, recording what fitted and what
  * did not. Shared by recall() and recallAsync() so the two paths cannot start
  * reporting different things about the same budget.
@@ -251,20 +270,39 @@ function memoryId(m) {
  * line could be the ONLY memory injected out of five candidates). Rank order is
  * preserved for everything that does fit.
  */
+// Compact staleness signal: the date (YYYY-MM-DD) of a memory's newest stored
+// timestamp, so the model can weigh recency. "" when no timestamp is stored,
+// which keeps the line byte-identical for timestamp-less callers (and tests).
+function shortDate(m) {
+  const ts = (m && (m.timestamp_end || m.updated_time || m.created_time)) || "";
+  const s = String(ts);
+  return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : "";
+}
+
+// One-line "search deeper" affordance: recall is a passive push, but the agent
+// has the CLI, so name the escalation explicitly (upstream ships a MEMORY_TOOLS
+// guide for the same reason). Fixed line, appended once when the block is
+// non-empty — never counts as a memory bullet (must not start with "- ").
+const MEMORY_SEARCH_HINT =
+  'More on demand: `tmem search "<terms>"` (keywords) · `tmem scene <name>` (full scene).';
+
 function renderMemories(memories, maxChars) {
   const lines = [];
   const injectedIds = [];
   const droppedIds = [];
   let used = 0;
   for (const m of memories) {
-    const line = `- [${m.type || "?"}] ${m.content}`;
+    const when = shortDate(m);
+    const line = `- [${m.type || "?"}]${when ? ` (${when})` : ""} ${m.content}`;
     if (used + line.length + 2 > maxChars) { droppedIds.push(memoryId(m)); continue; }
     lines.push(line);
     injectedIds.push(memoryId(m));
     used += line.length + 1;
   }
   return {
-    text: lines.length ? "<memories>\n" + lines.join("\n") + "\n</memories>" : "",
+    text: lines.length
+      ? "<memories>\n" + lines.join("\n") + "\n" + MEMORY_SEARCH_HINT + "\n</memories>"
+      : "",
     injectedIds,
     droppedIds,
   };
@@ -332,7 +370,9 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
     }
   }
 
-  memories = dedupeAndRank(memories, topK);
+  // Persona is a session clock (SessionStart), not a per-turn one — drop its
+  // atoms before ranking so the delta is what remains. See dropPersonaAtoms.
+  memories = dedupeAndRank(dropPersonaAtoms(memories), topK);
 
   return finishRecall(parts, renderMemories(memories, maxChars), { source, query });
 }
@@ -481,9 +521,12 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   }
 
   let vecResults = [];
+  let embedReason = null;
   try {
-    const { embedViaDaemon } = require("./embed_client.js");
-    const queryVec = await embedViaDaemon(query);
+    const { embedViaDaemonStatus } = require("./embed_client.js");
+    const status = await embedViaDaemonStatus(query);
+    const queryVec = status.vector;
+    embedReason = status.reason;
     {
       if (queryVec) {
         for (const dir of dirs) {
@@ -509,6 +552,27 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
       }
     }
   } catch {}
+
+  // Persona is a session clock (SessionStart), not a per-turn one — drop its
+  // atoms from BOTH retrieval arms before the merge/rank. See dropPersonaAtoms.
+  ftsResults = dropPersonaAtoms(ftsResults);
+  vecResults = dropPersonaAtoms(vecResults);
+
+  // Surface (never silently swallow) the FTS-only degradation. When the embed
+  // daemon didn't return a vector but a vector store exists, this recall ran
+  // keyword-only — say so on stderr for deliberate CLI lookups so the gap isn't
+  // invisible. Kept off the hook path to avoid per-turn noise while warming.
+  if (source === RECALL_SOURCE.CLI && embedReason && embedReason !== "ready") {
+    const hasVectorStore = dirs.some((dir) => fs.existsSync(path.join(dir, "vectors.db")));
+    if (hasVectorStore) {
+      try {
+        process.stderr.write(
+          `[tmem] embedding daemon ${embedReason} — recall ran FTS-only (keyword search). ` +
+          `Run \`tmem daemon status\` / \`tmem daemon start\` to restore vector recall.\n`
+        );
+      } catch {}
+    }
+  }
 
   let memories;
   if (vecResults.length > 0 && ftsResults.length > 0) {
@@ -566,6 +630,6 @@ if (require.main === module) main();
 // caller outside this file, and the tests assert against the log ON DISK, which
 // is the contract that matters.
 module.exports = {
-  recall, recallAsync, buildSceneNav, renderMemories, projectScopeFor,
+  recall, recallAsync, buildSceneNav, renderMemories, MEMORY_SEARCH_HINT, projectScopeFor,
   RECALL_SOURCE, RECALL_LOG_MAX_BYTES,
 };

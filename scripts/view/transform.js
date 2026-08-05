@@ -95,6 +95,12 @@ const {
   renderSceneNav, byHeatDesc, NAV, heatEmoji: navHeatEmoji, CHARS_PER_TOKEN: NAV_CHARS_PER_TOKEN,
 } = require("../scene_nav.js");
 
+// doctor.js is pure (its persona-budget / secret / atom-count nudge rules require
+// only persona_projection.js and redact.js, both leaves, and only lazily). The
+// lens imports the SAME function `tmem doctor` prints so the two can never disagree
+// about when a store should be re-consolidated — never a metric defined twice.
+const { buildUpgradeNudges } = require("../doctor.js");
+
 /* ------------------------------------------------------------------ *
  * 1. Vector state — the three-way split
  * ------------------------------------------------------------------ */
@@ -1644,6 +1650,31 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
   };
 
   const persona = summarisePersona(root && root.persona, { tier0MaxChars });
+  // The hybrid persona's second half: the CURRENT project's `<project-doctrine>`
+  // (SOPs / anti-patterns, injected once at SessionStart for this repo only).
+  // Projected through the SAME projection as the global persona so the two are
+  // directly comparable; `unmeasured` when there is no current project (a
+  // global-only view), never an error. See extract.projectDoctrine.
+  const projectDoctrine = summarisePersona(root && root.projectDoctrine, { tier0MaxChars });
+
+  // Upgrade nudges: activation hints for latent post-0.7.0 features (over-budget or
+  // secret-bearing global persona, a project with atoms but no doctrine, memories
+  // with no persona to rebuild from). Computed by doctor.buildUpgradeNudges from the
+  // RAW persona texts extract already carries (`.text`; empty string when absent, an
+  // absence is not a finding) and the per-store atom counts already summarised here.
+  // `maxChars` is the same tier-0 budget the projection uses — persona-max-tokens ×
+  // CHARS_PER_TOKEN, default when unset — mirroring cli.js cmdDoctor.
+  const currentSlug = root && root.currentSlug;
+  const globalStoreForNudges = stores.find((s) => s.scope === SCOPE.GLOBAL || s.slug === "global");
+  const projectStoreForNudges = currentSlug ? stores.find((s) => s.slug === currentSlug) : null;
+  const atomCount = (s) => (s && typeof s.records === "number" ? s.records : 0);
+  const upgradeNudges = buildUpgradeNudges({
+    globalPersona: (root && root.persona && root.persona.text) || "",
+    projectPersona: (root && root.projectDoctrine && root.projectDoctrine.text) || "",
+    globalAtomCount: atomCount(globalStoreForNudges),
+    projectAtomCount: atomCount(projectStoreForNudges),
+  }, { maxChars: tier0MaxChars });
+
   const recallUsage = buildRecallUsage(root && root.recallLog, now);
   const gaps = buildGaps({ stores, persona, state, config, captureState, heat });
 
@@ -1709,6 +1740,13 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     totals,
     stores: sorted,
     persona,
+    // A distinct document from `persona`: the per-project doctrine. Deliberately
+    // NOT folded into computeSnapshotId — like recallUsage, it rides along as an
+    // additive field and must not churn the snapshot identity.
+    projectDoctrine,
+    // Activation hints (strings) from doctor.buildUpgradeNudges; `[]` when a store
+    // is already in the new shape. Additive, and out of computeSnapshotId.
+    upgradeNudges,
     // The behavioural overlay: which memories recall actually injected, folded per
     // record_id. Deliberately NOT part of computeSnapshotId — the log grows on
     // every recall and is not in the watcher's fingerprint, so it must never churn
@@ -2084,6 +2122,9 @@ module.exports = {
   buildStoreTree,
   keywordSet,
   buildGaps,
+  // Re-exported (not re-implemented) so the health screen and `tmem doctor` share
+  // one definition; the test pins this identity.
+  buildUpgradeNudges,
   computeSnapshotId,
   // pure primitives
   classifyLowSignal,

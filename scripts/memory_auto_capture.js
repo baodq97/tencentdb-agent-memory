@@ -94,6 +94,29 @@ function saveConfig(cfg) {
   fs.renameSync(tmp, p);
 }
 
+// ── warmup doubling (upstream pipeline-manager parity) ──
+//
+// A fresh store should consolidate almost immediately so a new project isn't
+// blind; then the cadence backs off by doubling (1→2→4→8→…) until it reaches
+// the steady `everyN`, after which it graduates (`warmup_threshold: 0` ⇒ use
+// everyN directly). This accelerates the L1/consolidation TRIGGER only — persona
+// synthesis still rides the cascade's L3 step, so a persona is never built from
+// a handful of atoms. Both pure: state in, number/mutation out.
+function warmupThreshold(state, everyN) {
+  const wt = state && state.warmup_threshold;
+  if (wt === 0) return everyN;                               // graduated
+  if (!Number.isInteger(wt) || wt < 1) return Math.min(1, everyN); // fresh
+  return Math.min(wt, everyN);
+}
+
+function advanceWarmup(state, everyN) {
+  if (!state || state.warmup_threshold === 0) return;        // already graduated
+  const wt = Number.isInteger(state.warmup_threshold) && state.warmup_threshold >= 1
+    ? state.warmup_threshold : 1;
+  const next = wt * 2;
+  state.warmup_threshold = next >= everyN ? 0 : next;
+}
+
 /** Effective consolidation threshold: env override > persisted config > default. */
 function getConsolidateEvery() {
   const env = parseInt(process.env.MEMORY_CONSOLIDATE_EVERY || "", 10);
@@ -293,7 +316,7 @@ function isSubstantive(text) {
  * @param {string} opts.cwd - Current working directory (for project hash)
  * @returns {{ captured: boolean, turnCount: number, consolidationDue: boolean }}
  */
-function autoCapture({ userText, assistantText, sessionId, cwd }) {
+function autoCapture({ userText, assistantText, sessionId, cwd, sourceMessageIds, gitBranch, transcriptPath }) {
   if (!isSubstantive(userText)) {
     return { captured: false, turnCount: 0, consolidationDue: false };
   }
@@ -324,8 +347,23 @@ function autoCapture({ userText, assistantText, sessionId, cwd }) {
     type: "episodic",
     priority: 50,
     scene_name: "auto-capture",
-    source_message_ids: [],
-    metadata: { auto_captured: true, session_id: sessionId || "" },
+    // The cross-layer link, measured DEAD (always []). Record the real transcript
+    // uuids so consolidate can read the whole turn (user + assistant + tool
+    // results) back and distil an outcome-aware atom, instead of the verbatim
+    // prompt this row currently holds.
+    source_message_ids: Array.isArray(sourceMessageIds) ? sourceMessageIds : [],
+    metadata: {
+      auto_captured: true,
+      session_id: sessionId || "",
+      // Pointer to the L0 slice for consolidate-time distillation (WS5).
+      pointer: {
+        sessionId: sessionId || "",
+        lastUuid: (Array.isArray(sourceMessageIds) && sourceMessageIds.length) ? sourceMessageIds[sourceMessageIds.length - 1] : "",
+        cwd: cwd || "",
+        gitBranch: gitBranch || "",
+        transcriptPath: transcriptPath || "",
+      },
+    },
     timestamps: [new Date().toISOString()],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -333,24 +371,16 @@ function autoCapture({ userText, assistantText, sessionId, cwd }) {
     sessionId: sessionId || "",
   };
 
+  // Route through the ONE canonical L1 writer: it appends the durable JSONL
+  // record (carrying source_message_ids + the L0 pointer), indexes into FTS, AND
+  // logs the write to the changelog — the hand-rolled upsert used to skip the
+  // changelog, so auto-captured atoms were invisible to `tmem changelog`.
   try {
-    const { MemoryStore } = require(path.join(__dirname, "memory_store.js"));
-    const dbPath = path.join(projectBase, "index.db");
-    fs.mkdirSync(projectBase, { recursive: true });
-    const store = new MemoryStore(dbPath);
-    store.upsert(record);
-    store.close();
+    const { writeL1Record } = require(path.join(__dirname, "memory_writer.js"));
+    writeL1Record(projectBase, record);
   } catch {
     return { captured: false, turnCount: 0, consolidationDue: false };
   }
-
-  const recordsDir = path.join(projectBase, "records");
-  try {
-    fs.mkdirSync(recordsDir, { recursive: true });
-    const d = new Date();
-    const shard = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
-    fs.appendFileSync(path.join(recordsDir, `${shard}.jsonl`), JSON.stringify(record) + "\n", "utf-8");
-  } catch {}
 
   const state = loadCaptureState();
   state.turn_count = (state.turn_count || 0) + 1;
@@ -360,7 +390,7 @@ function autoCapture({ userText, assistantText, sessionId, cwd }) {
   state.sessions[sessionId].turns = (state.sessions[sessionId].turns || 0) + 1;
   state.sessions[sessionId].last_capture = new Date().toISOString();
 
-  const threshold = getConsolidateEvery();
+  const threshold = warmupThreshold(state, getConsolidateEvery());
   const sinceLastConsolidation = state.turn_count - (state.last_consolidation_turn || 0);
   const consolidationDue = sinceLastConsolidation >= threshold;
 
@@ -407,6 +437,7 @@ function markConsolidated() {
   state.last_consolidation_turn = state.turn_count || 0;
   state.consolidation_due = false;
   state.last_consolidation_time = new Date().toISOString();
+  advanceWarmup(state, getConsolidateEvery()); // back the warmup cadence off one step
   saveCaptureState(state);
 }
 
@@ -450,4 +481,4 @@ Commands:
 
 if (require.main === module) main();
 
-module.exports = { autoCapture, checkConsolidationDue, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, parseBoolish, loadConfig };
+module.exports = { autoCapture, checkConsolidationDue, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, warmupThreshold, advanceWarmup, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, parseBoolish, loadConfig };

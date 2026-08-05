@@ -709,7 +709,7 @@ test("every Source a full extract produces is well-formed", () => {
     assert.equal(E.storeSizeBytes(s.ref), s.ref.indexDbBytes + s.ref.vectorDbBytes);
   }
 
-  for (const field of ["persona", "state", "config", "captureState"]) {
+  for (const field of ["persona", "projectDoctrine", "state", "config", "captureState"]) {
     C.validateSource(out[field], field);
   }
   assert.ok(Date.parse(out.extractedAt) > 0);

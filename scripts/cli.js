@@ -20,6 +20,16 @@ function getDirs() {
   return { gDir: globalDir(), pDir: projectDir(pHash), pHash };
 }
 
+// Resolve a `--scope global|project` flag to its store dir. One definition shared
+// by the persona read + write commands so they can't drift on what a scope means.
+function resolveScope(args, usage) {
+  const i = args.indexOf("--scope");
+  const scope = i >= 0 ? (args[i + 1] || "") : "global";
+  if (scope !== "global" && scope !== "project") { console.error(usage); process.exit(1); }
+  const { gDir, pDir } = getDirs();
+  return { scope, dir: scope === "project" ? pDir : gDir };
+}
+
 function storeRecordCount(dir) {
   const db = path.join(dir, "index.db");
   if (!fs.existsSync(db)) return 0;
@@ -463,16 +473,24 @@ function printPersonaSectionList(sections, dutyCounts, prefix) {
 
 function cmdPersona(args) {
   const { readPersona } = req("memory_writer.js");
-  const { gDir } = getDirs();
-  const p = readPersona(gDir);
-
   const argv = args || [];
+  // --scope project reads THIS repo's Operating Doctrine; default is the global persona.
+  const { dir } = resolveScope(argv, "usage: tmem persona [--scope global|project] [--sections | --section <name>]");
+  const p = readPersona(dir);
+
   const wantList = argv.includes("--sections");
   const secIdx = argv.indexOf("--section");
   const wantSection = secIdx !== -1;
-  // Section names contain spaces; take every remaining token so both
-  // `--section "Working Style"` and `--section Working Style` work.
-  const sectionName = wantSection ? argv.slice(secIdx + 1).filter(a => !a.startsWith("--")).join(" ") : "";
+  // Section names contain spaces; take every token after --section UP TO the next
+  // flag, so `--section Working Style` works and a trailing `--scope project`
+  // doesn't bleed its value into the section name.
+  const sectionName = wantSection
+    ? (() => {
+        const tail = [];
+        for (const a of argv.slice(secIdx + 1)) { if (a.startsWith("--")) break; tail.push(a); }
+        return tail.join(" ");
+      })()
+    : "";
 
   if (!wantList && !wantSection) { console.log(p || "(no persona yet)"); return; }
 
@@ -786,28 +804,34 @@ async function cmdDedup(args) {
 // ── atoms ──
 function cmdAtoms(args) {
   const { MemoryStore } = req("memory_store.js");
-  const { gDir, pDir } = getDirs();
+  const { gDir, pDir, pHash } = getDirs();
   const typeFilter = "";
   const limit = 500;
-  const scope = args[0] || "all";
+  const scope = args.find((a) => ["global", "project", "all"].includes(a)) || "all";
+
+  // Incremental read (upstream last_extraction_updated_time parity): scope the
+  // load to atoms updated after a cursor so consolidation reads the DELTA, not
+  // the whole pool. `--since <ts>` is an explicit cursor; `--since-last` resolves
+  // the stored per-project watermark. Empty cursor ⇒ full pool (cold start).
+  let since = "";
+  const iSince = args.indexOf("--since");
+  if (iSince !== -1 && args[iSince + 1]) since = args[iSince + 1];
+  if (args.includes("--since-last")) {
+    const st = req("memory_writer.js").readState();
+    since = (st.projects && st.projects[pHash] && st.projects[pHash].last_consolidated) || "";
+  }
+
+  const load = (db) => {
+    if (!fs.existsSync(db)) return [];
+    const store = new MemoryStore(db);
+    const rows = store.recordsSince(since, typeFilter, limit); // "" ⇒ allRecords
+    store.close();
+    return rows;
+  };
 
   const result = {};
-  if (scope === "all" || scope === "global") {
-    const db = path.join(gDir, "index.db");
-    if (fs.existsSync(db)) {
-      const store = new MemoryStore(db);
-      result.global = store.allRecords(typeFilter, limit);
-      store.close();
-    } else { result.global = []; }
-  }
-  if (scope === "all" || scope === "project") {
-    const db = path.join(pDir, "index.db");
-    if (fs.existsSync(db)) {
-      const store = new MemoryStore(db);
-      result.project = store.allRecords(typeFilter, limit);
-      store.close();
-    } else { result.project = []; }
-  }
+  if (scope === "all" || scope === "global") result.global = load(path.join(gDir, "index.db"));
+  if (scope === "all" || scope === "project") result.project = load(path.join(pDir, "index.db"));
   console.log(JSON.stringify(result, null, 2));
 }
 
@@ -898,19 +922,81 @@ function cmdWriteScene(args) {
 }
 
 // ── write-persona ──
-function cmdWritePersona() {
-  const { writePersona, globalDir } = req("memory_writer.js");
+function cmdWritePersona(args = []) {
+  const { writePersona } = req("memory_writer.js");
+  const force = args.includes("--force");
+  // --scope global (default) → the cross-project persona; --scope project → this
+  // repo's Operating Doctrine (the hybrid model: common traits global, per-project
+  // deltas in the project store). Family/caps by scope are layered on in WS2b.
+  const { scope, dir: targetDir } = resolveScope(args, "usage: tmem write-persona [--scope global|project] [--force]");
   let content = "";
   try { content = fs.readFileSync(0, "utf-8"); } catch {}
   if (!content.trim()) { console.error("Pipe persona content to stdin. E.g.: echo '# Persona...' | tmem write-persona"); process.exit(1); }
-  writePersona(globalDir(), content.trim());
-  console.log("Persona updated.");
+
+  // WS2 budget gate: a persona is only useful if every standing (`always`) rule
+  // actually reaches the agent. The reader can only drop, never condense, so
+  // overflow is SILENT data loss on standing instructions. Reject at write time
+  // (gate-not-convention) so the consolidator must compress rather than bloat.
+  // `--force` is the escape hatch for a deliberate raw write.
+  // WS7 hygiene: the GLOBAL persona propagates into every project, so it must not
+  // carry machine/infra secrets (redirect URIs, subscription/tenant ids, tokens).
+  // Reject at write time; the agent should abstract the value or use --scope project.
+  // Project doctrine is exempt — a repo's own doctrine may name its own hosts.
+  if (scope === "global" && !force) {
+    const { isSensitive, redactSensitive } = req("redact.js");
+    if (isSensitive(content)) {
+      console.error("Global persona rejected — it contains sensitive/infra values that would leak into every project:");
+      console.error("  " + redactSensitive(content.trim()).split("\n").filter((l) => l.includes("‹redacted:")).slice(0, 8).join("\n  "));
+      console.error("Abstract the value, drop it, or write it to --scope project. Use --force to override.");
+      process.exit(1);
+    }
+  }
+
+  // Validate against the SAME budget the SessionStart reader uses
+  // (persona-max-tokens × CHARS_PER_TOKEN), not the hard default — otherwise a
+  // user who lowered the config passes the gate here yet still silently drops a
+  // standing rule at injection time, the exact failure this gate exists to reject.
+  const { getPersonaMaxTokens } = req("memory_auto_capture.js");
+  const { checkPersonaBudget, CHARS_PER_TOKEN } = req("persona_projection.js");
+  const maxChars = Math.max(0, Number(getPersonaMaxTokens()) || 0) * CHARS_PER_TOKEN;
+  const budget = checkPersonaBudget(content.trim(), maxChars ? { maxChars } : {});
+  if (!budget.ok && !force) {
+    console.error("Persona rejected — it would silently drop standing rules:");
+    for (const v of budget.violations) {
+      if (v.kind === "tier0_overflow") {
+        console.error(`  • tier-0 overflow: ${v.droppedCount} of ${v.alwaysCount} always-rules won't be delivered (budget ${v.budgetChars} chars). Compress or demote bullets to reference sections.`);
+      } else if (v.kind === "bullet_over_max") {
+        console.error(`  • bullet too long (${v.chars} > ${v.max} chars) in "${v.section}" line ${v.lineNo}: "${v.preview}…" — split into one rule per bullet.`);
+      }
+    }
+    console.error("Fix the bullets, or pass --force to write anyway.");
+    process.exit(1);
+  }
+
+  writePersona(targetDir, content.trim());
+  const forced = force && !budget.ok ? " (budget gate forced)" : "";
+  console.log(`Persona updated (${scope})${forced}.`);
 }
 
 // ── mark-done ──
 function cmdMarkDone() {
   const { markConsolidated } = req("memory_auto_capture.js");
   markConsolidated();
+  // Advance the per-project read cursor to the newest atom folded this run, so
+  // the next `atoms --since-last` sees only what arrived after now. Best-effort:
+  // a failure here must not block releasing the lock.
+  try {
+    const { MemoryStore } = req("memory_store.js");
+    const { setConsolidatedWatermark } = req("memory_writer.js");
+    const { pDir, pHash } = getDirs();
+    const db = path.join(pDir, "index.db");
+    if (pHash && fs.existsSync(db)) {
+      const store = new MemoryStore(db);
+      const maxTs = store.maxUpdatedTime();
+      store.close();
+      if (maxTs) setConsolidatedWatermark(pHash, maxTs);
+    }
+  } catch {}
   const lockFile = path.join(os.homedir(), ".memory-tencentdb", "consolidation.lock");
   try { fs.unlinkSync(lockFile); } catch {}
   console.log("Consolidation marked complete, lock released.");
@@ -1519,6 +1605,26 @@ async function cmdDoctor(rest) {
 
   console.log(renderPlanText(plan));
 
+  // Upgrade nudges: activate the new memory features on existing stores (no schema
+  // migration exists because none is needed — all changes are additive; the value
+  // is just latent until re-consolidation). Human-only; --json keeps the machine plan.
+  try {
+    const { buildUpgradeNudges } = req("doctor.js");
+    const { readPersona } = req("memory_writer.js");
+    const { CHARS_PER_TOKEN } = req("persona_projection.js");
+    const { getPersonaMaxTokens } = req("memory_auto_capture.js");
+    const { gDir, pDir } = getDirs();
+    const maxChars = Math.max(0, Number(getPersonaMaxTokens()) || 0) * CHARS_PER_TOKEN;
+    const nudges = buildUpgradeNudges(
+      { globalPersona: readPersona(gDir), projectPersona: readPersona(pDir), projectAtomCount: storeRecordCount(pDir), globalAtomCount: storeRecordCount(gDir) },
+      { maxChars },
+    );
+    if (nudges.length) {
+      console.log("\nActivate new memory features (re-consolidate to apply):");
+      for (const n of nudges) console.log(`  • ${n}`);
+    }
+  } catch {}
+
   if (wantFix) {
     console.log("");
     await applyDoctorFixes(plan, { apply: wantApply });
@@ -1793,17 +1899,17 @@ Commands:
   search <query> [--all|--project <slug>]  Search L1 atoms (FTS5); --all = every project store
   projects                   List all memory stores (slug, records, scenes) for cross-project work
   migrate-fragments [--apply]  Merge legacy cwd-keyed fragment stores into their project root (dry-run by default)
-  atoms [global|project|all] Dump L1 atoms as JSON
+  atoms [global|project|all] [--since <iso> | --since-last]  Dump L1 atoms as JSON (--since-last = only atoms since last consolidation)
   sessions                   List pending sessions for seeding
   read-session <path>        Format session for extraction
   write-l1 [--session id]    Write L1 atoms from stdin JSON
   write-scene --name --summary --heat  Write scene block (content from stdin)
-  write-persona              Write persona from stdin
+  write-persona [--scope global|project] [--force]  Write persona (global) or this repo's doctrine (project) from stdin; gate rejects budget overflow unless --force
   scene <name>               Print one full scene block (project-first, then global)
   scenes [list|dedup]        List or deduplicate scene blocks
     --dry-run                Preview dedup without removing
   changelog [--last N]       Show recent memory changes
-  persona [--sections | --section <name>]  Show full persona; list sections (name, bullets, duty split); or print one section on demand (tier 2)
+  persona [--scope global|project] [--sections | --section <name>]  Show the global persona or this repo's project doctrine; list sections; or print one section on demand (tier 2)
   sync [--full] [--all]      Embed missing vectors (delta); --full re-embeds all; --all = every store, not just current+global
   prune --low-signal [--all] [--apply]  Remove low-signal noise records (dry-run unless --apply; archived under .pruned/)
   dedup --atoms [--all] [--apply]       Remove exact-duplicate atoms, keep newest (dry-run unless --apply; archived)
@@ -1829,7 +1935,7 @@ Commands:
     case "read-session": return cmdReadSession(restStr);
     case "write-l1": return cmdWriteL1(rest);
     case "write-scene": return cmdWriteScene(rest);
-    case "write-persona": return cmdWritePersona();
+    case "write-persona": return cmdWritePersona(rest);
     case "scene": return cmdScene(restStr);
     case "scenes": return cmdScenes(rest[0], rest);
     case "changelog": return cmdChangelog(rest);

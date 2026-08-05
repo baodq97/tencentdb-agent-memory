@@ -210,6 +210,26 @@ function readState() {
   return {};
 }
 
+// Advance the per-project consolidation watermark. This is the READ-side cursor
+// (`state.projects[<hash>].last_consolidated`) that `atoms --since-last` consumes
+// so the next consolidation reads only the delta, not the whole pool — parity
+// with upstream's last_extraction_updated_time. Idempotent, atomic tmp+rename.
+function setConsolidatedWatermark(projectHash, ts) {
+  if (!projectHash || !ts) return;
+  const statePath = path.join(memoryBaseDir(), "state.json");
+  let state = {};
+  if (fs.existsSync(statePath)) {
+    try { state = JSON.parse(fs.readFileSync(statePath, "utf-8")); } catch {}
+  }
+  if (!state.projects) state.projects = {};
+  if (!state.projects[projectHash]) state.projects[projectHash] = {};
+  state.projects[projectHash].last_consolidated = ts;
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  const tmp = statePath + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf-8");
+  fs.renameSync(tmp, statePath);
+}
+
 // Per-project recall toggle. Recall is ON by default; only an explicit
 // `recall: false` disables the UserPromptSubmit context injection for that
 // project. Ingest/consolidate (Stop hooks) are unaffected.
@@ -295,6 +315,6 @@ module.exports = {
   memoryBaseDir, globalDir, projectDir, listProjectHashes,
   generateMemoryId, writeL1Record, writeL1Batch,
   writeSceneBlock, writePersona, readPersona,
-  updateState, readState, setRecallEnabled, getRecallEnabled, listScenes, parseSceneMeta,
+  updateState, readState, setConsolidatedWatermark, setRecallEnabled, getRecallEnabled, listScenes, parseSceneMeta,
   appendChangelog, META_START, META_END,
 };

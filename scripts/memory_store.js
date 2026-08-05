@@ -16,6 +16,18 @@
 const { DatabaseSync } = require("node:sqlite");
 const fs = require("node:fs");
 const path = require("node:path");
+// EN + VI stopword set, shared with the grounding check and the scene-nav ranker
+// rather than a third copy. Reused here to clean the FTS query — see toFtsQuery.
+const { STOPWORDS } = require("./grounding.js");
+
+/**
+ * FTS5 bareword boolean operators. Kept as quoted literals (never dropped as
+ * stopwords) so a query like "TypeScript AND Python" cannot silently turn into a
+ * boolean AND against the index — the same neutralisation the surrounding quoting
+ * already does. `and`/`or` are ALSO in STOPWORDS, so this exemption is what keeps
+ * them present as searchable literals.
+ */
+const FTS5_OPERATORS = new Set(["and", "or", "not", "near"]);
 
 const SCHEMA_VERSION = 1;
 
@@ -212,6 +224,29 @@ class MemoryStore {
     ).all(limit);
   }
 
+  // Incremental read: only records updated strictly after `sinceTs` (an ISO-8601
+  // UTC string, so lexical order == chronological order). Ascending so the caller
+  // processes oldest-first, matching upstream's last_extraction_updated_time
+  // cursor. Empty `sinceTs` degrades to the whole pool (cold-start fallback).
+  recordsSince(sinceTs = "", typeFilter = "", limit = 1000) {
+    if (!sinceTs) return this.allRecords(typeFilter, limit);
+    if (typeFilter) {
+      return this.db.prepare(
+        "SELECT * FROM l1_records WHERE type=? AND updated_time > ? ORDER BY updated_time ASC LIMIT ?"
+      ).all(typeFilter, sinceTs, limit);
+    }
+    return this.db.prepare(
+      "SELECT * FROM l1_records WHERE updated_time > ? ORDER BY updated_time ASC LIMIT ?"
+    ).all(sinceTs, limit);
+  }
+
+  // Newest updated_time in the store, "" if empty. Used to advance the
+  // consolidation watermark once a run has folded everything up to now.
+  maxUpdatedTime() {
+    const r = this.db.prepare("SELECT MAX(updated_time) AS m FROM l1_records").get();
+    return (r && r.m) || "";
+  }
+
   _embedAndStore(recordId, content) {
     try {
       const { getEmbeddingService } = require("./embedding_service.js");
@@ -233,14 +268,41 @@ class MemoryStore {
   }
 }
 
+/**
+ * Turn a raw prompt into an FTS5 MATCH expression.
+ *
+ * Cleaning the query is the root fix for off-target recall: this used to OR EVERY
+ * raw token with no stopword removal, so a prompt like "what is the port" fired
+ * `"what" OR "is" OR "the" OR "port"` — three content-free words each pulling back
+ * whatever record happened to contain them. Now content-free noise is dropped:
+ *   - single-character tokens (a stray letter carries no signal), and
+ *   - EN/VI stopwords (the shared STOPWORDS set), matched case-insensitively.
+ * FTS5 operator words are exempt (see FTS5_OPERATORS) so they stay quoted literals.
+ *
+ * WHAT IS PRESERVED. NFKC-normalize, then keep Unicode letters/numbers
+ * (\p{L}\p{N}) + underscore/hyphen. ASCII \w would strip Vietnamese diacritics
+ * (e.g. "tiếng"→"ting"), breaking recall. ORIGINAL CASE is preserved in the output
+ * token (only the stopword COMPARISON lowercases), so operator literals like "AND"
+ * survive untouched.
+ *
+ * FAIL-OPEN. A null/empty/all-stopword/all-punctuation query yields "" — never a
+ * throw — and callers treat "" as "no FTS query, contribute nothing" (see
+ * MemoryStore.search), so recall degrades to empty instead of crashing on the
+ * hook hot path.
+ */
 function toFtsQuery(query) {
   const tokens = [];
-  // NFKC-normalize, then keep Unicode letters/numbers (\p{L}\p{N}) + underscore/hyphen.
-  // ASCII \w would strip Vietnamese diacritics (e.g. "tiếng"→"ting"), breaking recall.
-  // Each token is still quoted, so FTS5 operator words (AND/OR/NOT/NEAR) stay literals.
-  for (const word of query.normalize("NFKC").split(/\s+/)) {
+  for (const word of String(query == null ? "" : query).normalize("NFKC").split(/\s+/)) {
     const clean = word.replace(/[^\p{L}\p{N}_-]/gu, "");
-    if (clean) tokens.push(`"${clean}"`);
+    if (!clean) continue;
+    const lower = clean.toLowerCase();
+    // Operator words are load-bearing literals; everything else must clear the
+    // noise gate (length >= 2, not a stopword) to reach the query.
+    if (!FTS5_OPERATORS.has(lower)) {
+      if (clean.length < 2) continue;
+      if (STOPWORDS.has(lower)) continue;
+    }
+    tokens.push(`"${clean}"`);
   }
   return tokens.join(" OR ");
 }

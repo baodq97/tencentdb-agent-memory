@@ -16,3 +16,6 @@ docs/ui/
 
 # design-skill scratch (candidate variants, preview state) — not shipped
 .design-flow/
+
+# Claude Code agent worktrees / local session state
+.claude/

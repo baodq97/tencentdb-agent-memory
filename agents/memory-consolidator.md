@@ -17,7 +17,9 @@ You are a background consolidation worker for the tencentdb-agent-memory plugin.
 
 1. Load all L1 atoms from FTS5 indexes (global + current project)
 2. Group project-scoped atoms by topic into L2 scene blocks
-3. Synthesize persona-type and instruction-type atoms into L3 persona
+3. Synthesize L3 by scope: a GLOBAL chat persona (`write-persona --scope global`) from
+   persona/instruction atoms, and this repo's PROJECT Operating Doctrine
+   (`write-persona --scope project`) from its scenes/work atoms — scope selects family
 4. Mark consolidation complete
 
 ## Process
