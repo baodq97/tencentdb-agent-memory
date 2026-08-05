@@ -1,7 +1,7 @@
 {
   "name": "tencentdb-agent-memory",
   "version": "0.7.0",
-  "private": true,
+  "private": false,
   "bin": {
     "tmem": "./scripts/tmem.js"
   },
