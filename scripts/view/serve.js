@@ -488,10 +488,45 @@ function checkForDrift() {
   });
 }
 
+/* ------------------------------------------------------------------ *
+ * recall-feed tailer
+ *
+ * A second, cheaper watcher than checkForDrift: it never rebuilds the snapshot,
+ * it only reads bytes appended to recall_log.jsonl since the last tick and pushes
+ * them out as `recall` events. Started at EOF so it streams what happens AFTER a
+ * reader connects, not a replay of history (the feed route serves that).
+ * ------------------------------------------------------------------ */
+
+let recallOffset = null;
+
+function checkRecallFeed() {
+  const ex = pipeline().extractMod;
+  if (!ex || typeof ex.readRecallSince !== "function") return;
+  if (recallOffset === null) {
+    // First tick: adopt EOF silently so we don't replay the whole log on startup.
+    const seed = ex.readRecallSince(effectiveRootDir, Number.MAX_SAFE_INTEGER);
+    recallOffset = seed.rotated ? 0 : seed.newOffset;
+    return;
+  }
+  let out;
+  try { out = ex.readRecallSince(effectiveRootDir, recallOffset); } catch { return; }
+  recallOffset = out.newOffset;
+  if (!out.entries.length || clients.size === 0) return;
+  let root;
+  try { ({ root } = currentSnapshot()); } catch { return; }
+  const idx = idIndex(root, lastKnownSnapshotId);
+  for (const e of out.entries) {
+    if (e.source === "view") continue;   // the visualiser's own probes are not session activity
+    broadcast("recall", feedEntry(e, idx));
+  }
+}
+
 function startWatcher() {
   if (PINNED) return null;
   const t = setInterval(checkForDrift, WATCH_INTERVAL_MS);
   t.unref();
+  const f = setInterval(checkRecallFeed, WATCH_INTERVAL_MS);
+  f.unref();
   return t;
 }
 
@@ -674,6 +709,70 @@ function routeStoreTree(res, slug, setCookie) {
   }
   const tree = build(storeExtract, snapshot) || null;
   sendJson(res, 200, C.apiOk({ slug, ...tree }, meta), setCookie);
+}
+
+/* ------------------------------------------------------------------ *
+ * Live recall feed
+ *
+ * recall_log.jsonl is the only record of what running sessions actually pull from
+ * memory. This tails it and streams each new hook/cli recall over SSE, so the
+ * `live` screen shows sessions interacting in real time. `view`-source lines are
+ * the visualiser's OWN probes and are dropped — a feed of "what sessions do" must
+ * not show itself doing it.
+ * ------------------------------------------------------------------ */
+
+let _idIndex = { snapshotId: null, map: null };
+
+/** id -> {content, type, slug}, built once per snapshot from the already-extracted records. */
+function idIndex(root, snapshotId) {
+  if (_idIndex.snapshotId === snapshotId && _idIndex.map) return _idIndex.map;
+  const map = new Map();
+  for (const s of (root && root.stores) || []) {
+    const rd = s.records;
+    if (!rd || rd.status !== C.STATUS.OK || !Array.isArray(rd.records)) continue;
+    for (const r of rd.records) map.set(r.record_id, { content: r.content, type: r.type, slug: s.ref.slug });
+  }
+  _idIndex = { snapshotId, map };
+  return map;
+}
+
+const FEED_MEMORY_CAP = 8;
+
+/** Shape one recall_log line for the feed: counts + the injected memories, resolved to content. */
+function feedEntry(raw, idx) {
+  const inj = Array.isArray(raw.injectedIds) ? raw.injectedIds : [];
+  const drp = Array.isArray(raw.droppedIds) ? raw.droppedIds : [];
+  return {
+    at: raw.at || null,
+    source: raw.source || "hook",
+    query: typeof raw.query === "string" ? raw.query : "",
+    chars: typeof raw.chars === "number" ? raw.chars : null,
+    injected: inj.length,
+    dropped: drp.length,
+    memories: inj.slice(0, FEED_MEMORY_CAP).map((id) => {
+      const hit = idx.get(id);
+      return hit
+        ? { id, type: hit.type, slug: hit.slug, content: hit.content }
+        : { id, type: null, slug: null, content: null };  // in a store this snapshot didn't read
+    }),
+  };
+}
+
+/** GET /api/recall-feed?limit=N — the recent tail, for the feed's first paint. */
+function routeRecallFeed(res, url, setCookie) {
+  const { root, snapshot } = currentSnapshot();
+  const meta = envelopeMeta(snapshot);
+  const ex = pipeline().extractMod;
+  if (!ex || typeof ex.readRecallTail !== "function") {
+    sendJson(res, 500, C.apiError(C.API_ERROR.INTERNAL, missingPipelineMessage("extract"), meta), setCookie);
+    return;
+  }
+  const limit = clampInt(url.searchParams.get("limit"), 40, 1, 200);
+  const { entries } = ex.readRecallTail(effectiveRootDir, limit);
+  const idx = idIndex(root, snapshot && snapshot.snapshotId);
+  // Newest first; the visualiser's own probes never count as session activity.
+  const feed = entries.filter((e) => e.source !== "view").reverse().map((e) => feedEntry(e, idx));
+  sendJson(res, 200, C.apiOk({ feed, total: feed.length }, meta), setCookie);
 }
 
 /** GET /api/persona */
@@ -1050,6 +1149,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === C.ROUTES.PERSONA) return routePersona(res, setCookie);
     if (url.pathname === C.ROUTES.EXPORT) return routeExport(res, url, setCookie);
     if (url.pathname === C.ROUTES.RECALL) return routeRecall(res, url, setCookie);
+    if (url.pathname === "/api/recall-feed") return routeRecallFeed(res, url, setCookie);
 
     const m = STORE_RECORDS_RE.exec(url.pathname);
     if (m) return routeStoreRecords(res, url, decodeURIComponent(m[1]), setCookie);

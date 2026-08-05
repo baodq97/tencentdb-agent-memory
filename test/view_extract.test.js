@@ -576,6 +576,45 @@ test("recall_log: reading it mutates nothing on disk", () => {
   assert.equal(after.mtimeMs, before.mtimeMs);
 });
 
+test("recall_log tail: reads appended bytes from an offset, and resets on rotation", () => {
+  const root = makeRoot("rl-tail");
+  const file = path.join(root, "recall_log.jsonl");
+  const line = (q) => JSON.stringify({ at: "2026-08-02T00:00:00Z", source: "hook", query: q, injectedIds: [], droppedIds: [] }) + "\n";
+
+  fs.writeFileSync(file, line("one") + line("two"));
+  const first = E.readRecallSince(root, 0);
+  assert.equal(first.entries.length, 2);
+  assert.deepEqual(first.entries.map((e) => e.query), ["one", "two"]);
+
+  // Nothing new since the last offset.
+  assert.deepEqual(E.readRecallSince(root, first.newOffset).entries, []);
+
+  // Append: only the new line comes back, from the offset.
+  fs.appendFileSync(file, line("three"));
+  const next = E.readRecallSince(root, first.newOffset);
+  assert.deepEqual(next.entries.map((e) => e.query), ["three"]);
+
+  // Rotation: file shrinks below the offset -> re-read from the top, flagged.
+  fs.writeFileSync(file, line("fresh"));
+  const rot = E.readRecallSince(root, next.newOffset);
+  assert.equal(rot.rotated, true);
+  assert.deepEqual(rot.entries.map((e) => e.query), ["fresh"]);
+
+  // Missing file is not a throw.
+  assert.deepEqual(E.readRecallSince(makeRoot("rl-none"), 0).entries, []);
+});
+
+test("recall_log tail: readRecallTail returns the last N, keeping query and source", () => {
+  const root = makeRoot("rl-tailn");
+  const file = path.join(root, "recall_log.jsonl");
+  let body = "";
+  for (let i = 0; i < 5; i++) body += JSON.stringify({ at: "2026-08-02T00:00:00Z", source: i === 4 ? "cli" : "hook", query: `q${i}`, injectedIds: [`m${i}`], droppedIds: [] }) + "\n";
+  fs.writeFileSync(file, body);
+  const { entries } = E.readRecallTail(root, 2);
+  assert.deepEqual(entries.map((e) => e.query), ["q3", "q4"]);
+  assert.equal(entries[1].source, "cli", "source survives — the feed needs it to drop its own probes");
+});
+
 // ── Coverage: unmeasured stores leave the denominator ───────────────────────
 
 test("makeCoverage: storeless stores are excluded from the denominator, not counted as 0%", () => {

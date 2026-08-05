@@ -441,6 +441,16 @@ label { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; }
 .inspector .iclose { float: right; }
 @media (max-width: 900px) { .treewrap { flex-direction: column; } .inspector { position: static; flex-basis: auto; width: 100%; } }
 
+/* Live feed */
+.feed { margin-top: 16px; border: 1px solid var(--c-border); border-radius: 8px; background: var(--c-surface); overflow: hidden; }
+.feedrow { border-bottom: 1px solid var(--c-grid); }
+.feedrow:last-child { border-bottom: 0; }
+.feedhead { padding: 9px 14px; }
+.feedhead .when { color: var(--c-muted); font-variant-numeric: tabular-nums; font-size: 13px; flex: none; }
+.feedhead .fq { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.feedhead .fsrc { color: var(--c-series2); font-weight: 600; font-size: 12px; }
+.mtype { color: var(--c-muted); font-size: 12px; }
+
 .acts { display: flex; gap: 10px; margin-top: 16px; align-items: center; flex-wrap: wrap; }
 .search { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; align-items: center; }
 .search input[type="search"] { flex: 1 1 380px; min-width: 0; }
@@ -2595,6 +2605,7 @@ const ROUTES = {
   EVENTS:   "/api/events",
   RECORDS:  (slug) => "/api/store/" + encodeURIComponent(slug) + "/records",
   TREE:     (slug) => "/api/store/" + encodeURIComponent(slug) + "/tree",
+  FEED:     "/api/recall-feed",
 };
 
 /**
@@ -2683,11 +2694,13 @@ function clamped(text, key, expanded) {
 /* ── URL config ─────────────────────────────────────────────────────── */
 const VIEWS = [
   { id: "health",    label: "Health" },
+  { id: "live",      label: "Live" },
   { id: "memories",  label: "Your memories" },
   { id: "tree",      label: "Memory tree" },
   { id: "about-you", label: "What it knows about you" },
   { id: "trace",     label: "Try a prompt" },
 ];
+const FEED_MAX = 100;   // rows the live feed keeps in memory
 const VIEW_IDS = VIEWS.map((v) => v.id).concat(["problem"]);
 
 const P = new URLSearchParams(location.search);
@@ -2724,6 +2737,9 @@ const state = {
   treeLoading: false,
   treeError: null,
   selectedAtom: null,   // the atom docked in the inspector panel
+  feed: [],             // live recall feed, newest-first (SSE `recall` events)
+  feedLoading: false,
+  feedError: null,
   hideClutter: false,
   expanded: new Set(),
   noted: new Map(),     // see postEvent() — judgements posted to /api/events this session
@@ -3850,6 +3866,54 @@ function screenMemoryTree() {
   return head + `<div class="treewrap"><div class="tree">${l3}${l2}${l1}${note}</div>${atomInspector()}</div>` + footnote();
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   Screen: Live activity — recalls as running sessions make them
+   ══════════════════════════════════════════════════════════════════════ */
+function feedRow(e) {
+  const key = "feed:" + e.at;
+  const open = state.expanded.has(key);
+  const when = shortTime(e.at);
+  const counts = `<span class="tmeta">inj ${n(e.injected)} · drop ${n(e.dropped)}${
+    e.chars != null ? ` · ${n(e.chars)} chars` : ""}</span>`;
+  const src = e.source === "hook" ? "" : ` <span class="fsrc">${esc(e.source)}</span>`;
+  const q = clip(e.query, 90) || "(empty prompt)";
+  const head = `<button class="tnode feedhead" type="button" data-treescene="${esc(key)}" aria-expanded="${open}">
+    <span class="caret">▶</span><span class="when">${esc(when)}</span>
+    <span class="fq">${esc(q)}${src}</span>${counts}</button>`;
+  if (!open) return `<div class="feedrow">${head}</div>`;
+  const mems = e.memories.length
+    ? e.memories.map((m) => `<div class="pbullet"><span class="udot" data-b="none"></span><span>${
+        m.content != null
+          ? `<span class="mtype">[${esc(m.type || "?")}]</span> ${esc(clip(m.content, 120))}`
+          : `<span class="dim">${esc(m.id)} — in a store this view didn't read</span>`}</span></div>`).join("")
+    : `<p class="dim tindent">Nothing was injected for this prompt.</p>`;
+  return `<div class="feedrow">${head}<div class="tbranch">${mems}</div></div>`;
+}
+
+function screenLive() {
+  if (state.loading) return screenHealthLoading();
+  if (state.fatal) return screenFatal(state.fatal);
+
+  const live = !CFG.static && !CFG.demo;
+  const head = `<h1 class="page-title">Live activity</h1>
+    <p class="lede">Every memory recall your running Claude sessions make, as it happens. Each row is one prompt —
+      what the session asked, and which memories the recall hook injected into it. ${
+        live ? "New recalls stream in live." : "Static snapshot — not streaming."} The visualiser's own lookups are excluded.</p>`;
+
+  if (state.feedError) return head + errorBlock(state.feedError, "The live feed");
+  if (state.feedLoading && !state.feed.length) {
+    return head + `<div class="feed">${'<div class="feedrow"><div class="tnode feedhead"><span class="sk" style="width:70%"></span></div></div>'.repeat(6)}</div>`;
+  }
+  if (!state.feed.length) {
+    return head + `<p class="dim" style="margin-top:16px">No recalls yet. Open a Claude session in any project and its
+      first prompt will appear here${live ? " within a few seconds" : ""}.</p>`;
+  }
+  const body = state.feed.map(feedRow).join("");
+  return head + `<div class="feed">${body}</div>` +
+    footnote(`<span>Showing the ${n(state.feed.length)} most recent recalls${
+      live ? ", newest on top, updating live" : ""}. Each is one hook or CLI recall from a real session; the tool's own probes are filtered out.</span>`);
+}
+
 function screenAboutYou() {
   if (state.loading) return screenHealthLoading();
   const persona = state.persona || (state.snapshot && state.snapshot.persona);
@@ -4136,6 +4200,7 @@ function render() {
   let html;
   try {
     html = CFG.view === "memories" ? screenMemories()
+      : CFG.view === "live" ? screenLive()
       : CFG.view === "tree" ? screenMemoryTree()
       : CFG.view === "about-you" ? screenAboutYou()
       : CFG.view === "trace" ? screenTrace()
@@ -4179,7 +4244,20 @@ function afterNavigate() {
   if (state.loading || state.fatal) return;
   if (CFG.view === "memories" && !state.records && !state.recordsLoading && !state.recordsError) loadRecords();
   if (CFG.view === "tree" && !state.tree && !state.treeLoading && !state.treeError) loadTree();
+  if (CFG.view === "live" && !state.feed.length && !state.feedLoading && !state.feedError && !CFG.demo) loadFeed();
   if (CFG.view === "trace" && state.examples === null && !state.recall && !CFG.demo) loadExamples();
+}
+
+async function loadFeed() {
+  state.feedLoading = true; state.feedError = null; render();
+  try {
+    const data = await api(ROUTES.FEED, { limit: 40 });
+    state.feed = (data.feed || []).slice(0, FEED_MAX);
+  } catch (e) {
+    state.feedError = e;
+  }
+  state.feedLoading = false;
+  if (CFG.view === "live") render();
 }
 
 async function loadTree() {
@@ -4285,9 +4363,12 @@ function openChannel() {
 
   es.onopen = () => chan("live", "watching for changes");
   es.onerror = () => chan("lost", "live channel lost — figures may be stale");
-  es.onmessage = (ev) => {
+  // The server names its events (`event: snapshot` / `event: recall`), so they
+  // must be caught with addEventListener — a named event never reaches onmessage,
+  // which is why the change-badge sat dormant until now.
+  es.addEventListener("snapshot", (ev) => {
     let msg; try { msg = JSON.parse(ev.data); } catch (_) { return; }
-    if (!msg || msg.type !== "snapshot" || !msg.snapshotId) return;
+    if (!msg || !msg.snapshotId) return;
     if (!state.snapshotId) { state.snapshotId = msg.snapshotId; return; }
     if (msg.snapshotId === state.snapshotId) return;
 
@@ -4304,7 +4385,15 @@ function openChannel() {
       return;
     }
     showChangedBadge();
-  };
+  });
+  // Live activity: every recall a running session logs, streamed as it happens.
+  es.addEventListener("recall", (ev) => {
+    let entry; try { entry = JSON.parse(ev.data); } catch (_) { return; }
+    if (!entry) return;
+    state.feed.unshift(entry);
+    if (state.feed.length > FEED_MAX) state.feed.length = FEED_MAX;
+    if (CFG.view === "live") render();
+  });
 }
 
 async function boot() {

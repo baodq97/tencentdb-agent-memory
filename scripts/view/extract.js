@@ -814,6 +814,45 @@ function readRecallLogDoc(rootDir) {
   return ok({ entries, lines: entries.length, malformed, excludedView, files });
 }
 
+/**
+ * Incremental read of `recall_log.jsonl` from a byte offset — the primitive the
+ * live activity feed tails. Returns the RAW entries (every field, every source;
+ * the caller decides what to drop), the new EOF offset to resume from, and a
+ * `rotated` flag when the file shrank under the offset (a rotation happened, so
+ * we re-read from the top). Read-only, and it never blocks recall: a missing file
+ * is `{entries:[], newOffset:0, missing:true}`, not a throw.
+ *
+ * @param {string} rootDir
+ * @param {number} [fromOffset]
+ */
+function readRecallSince(rootDir, fromOffset = 0) {
+  const file = path.join(rootPaths(rootDir).root, "recall_log.jsonl");
+  let stat;
+  try { stat = fs.statSync(file); } catch { return { entries: [], newOffset: 0, rotated: false, missing: true }; }
+  let start = fromOffset;
+  let rotated = false;
+  if (stat.size < fromOffset) { start = 0; rotated = true; }   // rotated out from under us
+  if (stat.size === start) return { entries: [], newOffset: start, rotated, missing: false };
+
+  const fd = fs.openSync(file, "r");
+  const len = stat.size - start;
+  const buf = Buffer.alloc(len);
+  try { fs.readSync(fd, buf, 0, len, start); } finally { fs.closeSync(fd); }
+
+  const entries = [];
+  for (const line of buf.toString("utf-8").split("\n")) {
+    if (!line.trim()) continue;
+    try { const r = JSON.parse(line); if (r && typeof r === "object") entries.push(r); } catch { /* truncated tail */ }
+  }
+  return { entries, newOffset: stat.size, rotated, missing: false };
+}
+
+/** The last `limit` recall entries + the current EOF offset, for the feed's initial paint. */
+function readRecallTail(rootDir, limit = 50) {
+  const { entries, newOffset } = readRecallSince(rootDir, 0);
+  return { entries: entries.slice(-Math.max(1, limit)), offset: newOffset };
+}
+
 /* ------------------------------------------------------------------ *
  * Composition
  * ------------------------------------------------------------------ */
@@ -961,6 +1000,8 @@ module.exports = {
   readConfigDoc,
   readCaptureStateDoc,
   readRecallLogDoc,
+  readRecallSince,
+  readRecallTail,
   extractStore,
   extractAll,
 };
