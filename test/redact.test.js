@@ -39,6 +39,10 @@ const BENIGN_FIXTURES = [
   "Người dùng thích trả lời ngắn gọn bằng tiếng Việt.",
   "Remember to run the tests before committing.",
   "The meeting is at 3pm about the roadmap for Q4.",
+  // Regression: a UUID next to benign "client id"/"directory" must NOT be flagged
+  // (only strong cloud context — azure/subscription/tenant/workos/aad — qualifies).
+  "the client id for this widget is 550e8400-e29b-41d4-a716-446655440000",
+  "the directory listing has entry 550e8400-e29b-41d4-a716-446655440000",
 ];
 
 test("SENSITIVE_PATTERNS is an inspectable table", () => {

@@ -56,6 +56,28 @@ test("invalid scope is rejected (exit non-zero)", () => {
   assert.throws(() => run(["--scope", "team"], home, proj, CLEAN));
 });
 
+test("secret in a GLOBAL persona is rejected; project doctrine is exempt", () => {
+  const { home, proj } = tmpEnv();
+  const secretPersona = `# User Persona
+
+## Standing Instructions
+- Always deploy via azure subscription 550e8400-e29b-41d4-a716-446655440000.
+`;
+  // global write with a subscription id → rejected (exit non-zero), nothing written
+  assert.throws(() => run(["--scope", "global"], home, proj, secretPersona));
+  const globalPersona = path.join(home, ".memory-tencentdb", "global", "persona.md");
+  assert.ok(!fs.existsSync(globalPersona), "secret must not reach the global store");
+
+  // same content to project scope → allowed (a repo may name its own infra)
+  run(["--scope", "project"], home, proj, secretPersona);
+  const hash = projectHashForCwd(proj);
+  assert.ok(fs.existsSync(path.join(home, ".memory-tencentdb", "projects", hash, "persona.md")));
+
+  // --force overrides the global gate
+  run(["--scope", "global", "--force"], home, proj, secretPersona);
+  assert.ok(fs.existsSync(globalPersona), "--force should write despite the secret");
+});
+
 test("persona --scope project reads back the project doctrine, not global", () => {
   const { home, proj } = tmpEnv();
   const DOCTRINE = "# Team Operating Doctrine\n\n## Agent Rules\n- Always run tests before pushing here.\n";

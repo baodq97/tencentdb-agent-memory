@@ -935,6 +935,20 @@ function cmdWritePersona(args = []) {
   // overflow is SILENT data loss on standing instructions. Reject at write time
   // (gate-not-convention) so the consolidator must compress rather than bloat.
   // `--force` is the escape hatch for a deliberate raw write.
+  // WS7 hygiene: the GLOBAL persona propagates into every project, so it must not
+  // carry machine/infra secrets (redirect URIs, subscription/tenant ids, tokens).
+  // Reject at write time; the agent should abstract the value or use --scope project.
+  // Project doctrine is exempt — a repo's own doctrine may name its own hosts.
+  if (scope === "global" && !force) {
+    const { isSensitive, redactSensitive } = req("redact.js");
+    if (isSensitive(content)) {
+      console.error("Global persona rejected — it contains sensitive/infra values that would leak into every project:");
+      console.error("  " + redactSensitive(content.trim()).split("\n").filter((l) => l.includes("‹redacted:")).slice(0, 8).join("\n  "));
+      console.error("Abstract the value, drop it, or write it to --scope project. Use --force to override.");
+      process.exit(1);
+    }
+  }
+
   const { checkPersonaBudget } = req("persona_projection.js");
   const budget = checkPersonaBudget(content.trim());
   if (!budget.ok && !force) {

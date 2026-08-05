@@ -2,11 +2,12 @@
 /**
  * Sensitive-data classifier (WS7).
  *
- * The global/shared persona store must NOT accumulate machine/infra secrets
- * (prod URLs, OAuth redirect URIs, cloud subscription/tenant ids, API keys,
- * tokens, or `*_SECRET=`/`*_TOKEN=`/`*_KEY=` env assignments). This module is a
- * pure, dependency-free classifier that later workstreams wire into the writer
- * to block such content from propagating cross-project.
+ * The global/shared persona store must NOT accumulate machine/infra secrets:
+ * OAuth redirect URIs, private/internal hostnames, cloud subscription/tenant ids,
+ * API keys, tokens, or `*_SECRET=`/`*_TOKEN=`/`*_KEY=` env assignments. This module
+ * is a pure, dependency-free classifier that the writer wires in to block such
+ * content from propagating cross-project. (It intentionally does NOT try to flag
+ * arbitrary "prod URLs" — a generic https matcher is all false positives.)
  *
  * Local-first: pure regex, no LLM, no network. Precise patterns, low false
  * positives — benign prose (personal preferences, plans) must pass through.
@@ -75,12 +76,13 @@ const SENSITIVE_PATTERNS = [
     pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
   },
   {
-    // Cloud subscription/tenant id: a UUID mentioned in an Azure/WorkOS/tenant/
-    // subscription context. Context keyword within ~40 chars of the UUID keeps
-    // false positives low (a bare UUID alone is not treated as sensitive).
+    // Cloud subscription/tenant id: a UUID within ~40 chars of a STRONG cloud
+    // context keyword. Only unambiguous cloud terms qualify — bare "client id" /
+    // "directory" are common in benign prose and were dropped to avoid flagging a
+    // UUID next to them (a bare UUID alone is never treated as sensitive).
     kind: "cloud_id",
     pattern:
-      /\b(?:azure|az|subscription|tenant|workos|directory|client)\b[\s\S]{0,40}?\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+      /\b(?:azure|subscription|tenant|workos|aad)\b[\s\S]{0,40}?\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
   },
   {
     // Private / internal hostname (optionally with a port).
