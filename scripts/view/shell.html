@@ -483,6 +483,7 @@ label { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; }
 .plist li[data-reach="promptSummary"] .rule { background: var(--c-series2); }
 .plist li[data-reach="never"] .rule         { background: var(--c-critical); }
 .plist .t { font-size: 15px; min-width: 0; }
+.plist .tmark { margin-right: 4px; font-size: 13px; }
 .plist .t .more {
   font: inherit; font-size: 14px; background: none; border: 0; padding: 0 0 0 6px;
   color: var(--c-primary); cursor: pointer; text-decoration: underline;
@@ -3901,7 +3902,7 @@ function screenAboutYou() {
       ? `<span class="grow"></span><button class="btn primary" type="button" data-shorten="1">Shorten the longest one</button>` : "";
     return `<section class="group">
       <div class="head">
-        <span class="t">${esc(VOCAB.tier[tier])}</span>
+        <span class="t">${TIER_MARK[tier] || ""} ${esc(VOCAB.tier[tier])}</span>
         <span class="c">${n(list.length)} of ${n(bullets.length)}${
           alwaysDropped ? ` — ${n(alwaysDropped)} of them marked “${esc(VOCAB.duty.always)}”` : ""}</span>
         ${action}
@@ -3928,7 +3929,7 @@ function screenAboutYou() {
                 title="The tool's guess, from how the line is written — not your label. Click to tell your assistant it got this one wrong.">${label}</button>`;
         return `<li data-reach="${tier}">
           <span class="rule"></span>
-          <span class="t">${clamped(b.text, key, state.expanded.has(key))}
+          <span class="t"><span class="tmark" title="${esc(VOCAB.tier[tier])}">${TIER_MARK[tier] || "·"}</span> ${clamped(b.text, key, state.expanded.has(key))}
             <span class="sec">${esc(b.section)} · ${n(b.chars)} characters${
               b.truncated ? " · cut short before it was handed over" : ""}</span></span>
           ${claim}
