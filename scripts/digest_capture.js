@@ -73,17 +73,22 @@ function captureDigest(o = {}) {
     // no re-embed. A changed body keeps the SAME id (slot-keyed) but a different
     // content, so it is NOT skipped — writeL1Record's upsert replaces in place.
     if (stored.get(r.id) === r.content) { result.skipped++; continue; }
-    writeL1Record(o.baseDir, {
-      id: r.id,
-      content: r.content,
-      type: "semantic",          // survives keepDistilledAtoms → recallable per-turn
-      priority: 55,
-      scene_name: "session-digest",
-      sessionId: sid,
-      source_message_ids: [],
-      metadata: { digest: true, session_id: sid, slot: r.key },
-    });
-    result.written++;
+    // Per-atom try/catch: a busy/locked store (a concurrent digest child) must not
+    // abort the remaining slots. busy_timeout (memory_store) makes this rare; the
+    // write is idempotent so a skipped atom is re-written on the next digest.
+    try {
+      writeL1Record(o.baseDir, {
+        id: r.id,
+        content: r.content,
+        type: "semantic",          // survives keepDistilledAtoms → recallable per-turn
+        priority: 55,
+        scene_name: "session-digest",
+        sessionId: sid,
+        source_message_ids: [],
+        metadata: { digest: true, session_id: sid, slot: r.key },
+      });
+      result.written++;
+    } catch { result.skipped++; }
   }
   return result;
 }

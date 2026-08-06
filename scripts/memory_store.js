@@ -94,6 +94,10 @@ class MemoryStore {
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec("PRAGMA journal_mode=WAL");
     this.db.exec("PRAGMA foreign_keys=ON");
+    // Two writers can briefly overlap — e.g. two detached digest children from
+    // consecutive tool-turns hit the same store. WAL serialises writers, so make
+    // the loser WAIT up to 5s instead of failing immediately with SQLITE_BUSY.
+    this.db.exec("PRAGMA busy_timeout=5000");
     this._initSchema();
   }
 

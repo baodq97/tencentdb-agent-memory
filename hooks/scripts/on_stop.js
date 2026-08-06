@@ -77,7 +77,15 @@ async function main() {
   const { userText, assistantText, sourceMessageIds, gitBranch, hadToolUse } = lastTurn(transcript);
 
   // GAP-1: capture machine-certain outcomes from the tool blocks (idempotent).
-  if (hadToolUse) spawnDigest(transcript, payload.cwd || "", payload.session_id || "");
+  // Throttle: the digest re-parses the WHOLE transcript (measured ~90ms on an 8MB
+  // session), so running it on every tool-turn is O(n²) over a session. It is
+  // idempotent and recomputes full state each run, so spawning once every
+  // DIGEST_EVERY turns loses nothing but the outcomes of the last <N turns of a
+  // session — captured on the next run. Detached, so it never blocks turn-end.
+  const DIGEST_EVERY = Math.max(1, parseInt(process.env.TMEM_DIGEST_EVERY || "3", 10) || 3);
+  let turnCount = 0;
+  try { turnCount = require(nodePath.join(scriptsDir, "memory_auto_capture.js")).getTurnCount(); } catch {}
+  if (hadToolUse && turnCount % DIGEST_EVERY === 0) spawnDigest(transcript, payload.cwd || "", payload.session_id || "");
 
   if (userText) {
     try {
