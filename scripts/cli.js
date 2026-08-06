@@ -543,7 +543,7 @@ function cmdPersona(args) {
 async function cmdSync(args) {
   const full = (args || []).includes("--full");
   const all = (args || []).includes("--all");
-  const { MemoryStore } = req("memory_store.js");
+  const { MemoryStore, isVectorEligible } = req("memory_store.js");
   const { VectorStore } = req("vector_store.js");
   const { getEmbeddingService } = req("embedding_service.js");
 
@@ -576,18 +576,33 @@ async function cmdSync(args) {
     // count never moved — the store re-embedded the same wrong N every run and
     // never converged (measured: 226 stuck, 0 of the truly-missing fixed).
     const have = vecStore.existingIds();
-    vecStore.close();
 
+    // GC dead vectors: recall-ineligible types (episodic/persona) have exactly one
+    // reader and it discards them, so their vectors are pure dead weight that
+    // crowds every KNN (measured 98% of the index → vector arm empty on all
+    // queries). Delete them here — regenerable, and recall never reads them. This
+    // makes `tmem sync` the one-time migration off the old embed-everything store.
+    let pruned = 0;
+    for (const r of records) {
+      if (!isVectorEligible(r.type) && have.has(String(r.record_id))) {
+        try { vecStore.deleteVec(r.record_id); have.delete(String(r.record_id)); pruned++; } catch {}
+      }
+    }
+    vecStore.close();
+    if (pruned) console.log(`${label}: pruned ${pruned} dead vector(s) (recall-ineligible)`);
+
+    // Only eligible types are ever embedded — the write-side of the same invariant.
+    const eligible = records.filter(r => isVectorEligible(r.type));
     if (full) {
-      todo.push(...records.map(r => ({ dir, ...r })));
+      todo.push(...eligible.map(r => ({ dir, ...r })));
       continue;
     }
-    const missingRecs = records.filter(r => !have.has(String(r.record_id)));
+    const missingRecs = eligible.filter(r => !have.has(String(r.record_id)));
     if (!missingRecs.length) {
-      console.log(`${label}: in sync (${records.length} records, ${vecCount} vectors)`);
+      console.log(`${label}: in sync (${eligible.length} recallable records, ${vecCount - pruned} vectors)`);
       continue;
     }
-    console.log(`${label}: ${missingRecs.length} records missing vectors (${vecCount}/${records.length})`);
+    console.log(`${label}: ${missingRecs.length} records missing vectors (${vecCount - pruned}/${eligible.length})`);
     todo.push(...missingRecs.map(r => ({ dir, ...r })));
   }
 
@@ -856,6 +871,132 @@ function cmdReadSession(sessionPath) {
   if (!sessionPath) { console.error("Usage: tmem read-session <path>"); process.exit(1); }
   const { readSession, formatMessagesForExtraction } = req("memory_reader.js");
   console.log(formatMessagesForExtraction(readSession(sessionPath)));
+}
+
+// ── digest ── deterministic L0→outcome-atoms transform (no LLM). Recovers the
+// "what/where/result" (files, tests, git, releases) the prompt-only capture
+// path discards. Dry-run by default (prints); --apply writes the atoms to L1.
+function cmdDigest(args) {
+  const rest = Array.isArray(args) ? args : [String(args || "")];
+  const apply = rest.includes("--apply");
+  const sessionPath = rest.find((a) => a && !a.startsWith("--"));
+  if (!sessionPath || !fs.existsSync(sessionPath)) {
+    console.error("Usage: tmem digest <session.jsonl> [--apply]");
+    process.exit(1);
+  }
+  const { captureDigest, readEntries } = req("digest_capture.js");
+  const { projectDir } = req("memory_writer.js");
+  const { projectHashForCwd } = req("memory_reader.js");
+  const pHash = projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || process.cwd());
+  const base = projectDir(pHash);
+  const sid = path.basename(sessionPath).replace(/\.jsonl$/, "");
+
+  const res = captureDigest({
+    entries: readEntries(sessionPath), baseDir: base, sessionId: sid, apply,
+  });
+  const d = res.digest;
+  console.log(`digest: ${d.filesEdited.length} files · ${d.testRuns.length} test-run(s) · ${d.gitOps.length} git op(s) · releases ${d.releases.join(", ") || "none"}`);
+  if (!res.atoms.length) { console.log("no outcome-atoms (no tool activity in this session)"); return; }
+  console.log(`\noutcome-atoms (${res.atoms.length})${apply ? " — writing to L1" : " — dry-run, use --apply to write"}:`);
+  for (const a of res.atoms) console.log(`  • ${a.content}`);
+
+  // type=semantic (NOT episodic): recall's keepDistilledAtoms drops episodic as
+  // echoes, so a digest atom stored as episodic would be invisible per-turn until
+  // consolidated. semantic survives the filter and reaches <memories> now. Writes
+  // are idempotent (see digest_capture): re-running skips unchanged slots.
+  if (apply) console.log(`\nWrote ${res.written} · skipped ${res.skipped} unchanged → ${pHash}`);
+}
+
+// ── feedback (GAP-6) ──
+// Read the recall log, tally which atoms were actually injected, cross-reference
+// the store to name the COLD atoms (stored, never recalled). Read-only.
+function loadRecallLogRows() {
+  const { memoryBaseDir } = req("memory_writer.js");
+  const { RECALL_LOG_FILE } = req("memory_recall.js");
+  const base = memoryBaseDir();
+  const rows = [];
+  for (const f of [path.join(base, RECALL_LOG_FILE + ".1"), path.join(base, RECALL_LOG_FILE)]) {
+    if (!fs.existsSync(f)) continue;
+    for (const line of fs.readFileSync(f, "utf-8").split("\n")) {
+      const t = line.trim();
+      if (!t) continue;
+      try { rows.push(JSON.parse(t)); } catch {}
+    }
+  }
+  return rows;
+}
+
+function allStoreAtoms() {
+  const { MemoryStore } = req("memory_store.js");
+  const { globalDir, projectDir, listProjectHashes } = req("memory_writer.js");
+  const out = [];
+  const dirs = [globalDir(), ...listProjectHashes().map((h) => projectDir(h))];
+  for (const dir of dirs) {
+    const dbp = path.join(dir, "index.db");
+    if (!fs.existsSync(dbp)) continue;
+    try {
+      const store = new MemoryStore(dbp, { readOnly: true });
+      for (const r of store.allRecords("", 100000)) out.push({ id: r.record_id, content: r.content, type: r.type });
+      store.close();
+    } catch {}
+  }
+  return out;
+}
+
+function cmdFeedback(args) {
+  const rest = Array.isArray(args) ? args : [String(args || "")];
+  const asJson = rest.includes("--json");
+  const { summarizeRecallFeedback, classifyStoreAtoms } = req("recall_feedback.js");
+  const summary = summarizeRecallFeedback(loadRecallLogRows());
+  const atoms = allStoreAtoms();               // scan once, reuse for classify + labels
+  const cls = classifyStoreAtoms(atoms, summary);
+
+  if (asJson) {
+    console.log(JSON.stringify({
+      turns: summary.turns, injections: summary.injections, uniqueAtoms: summary.uniqueAtoms,
+      emptyTurns: summary.emptyTurns, coldAtoms: cls.cold.length, hotAtoms: cls.hot.length, coldPct: cls.coldPct,
+      hot: summary.perAtom.slice(0, 10),
+    }, null, 2));
+    return;
+  }
+
+  console.log("Recall feedback (which memories actually get recalled?):");
+  console.log(`  ${summary.turns} logged turn(s) · ${summary.injections} injection(s) · ${summary.emptyTurns} turn(s) recalled nothing`);
+  console.log(`  distinct atoms ever injected: ${summary.uniqueAtoms}`);
+  console.log(`  store: ${cls.hot.length} hot (recalled ≥1) · ${cls.cold.length} cold (never recalled, ${cls.coldPct}%) — prune candidates`);
+  if (summary.perAtom.length) {
+    console.log("\n  most-recalled atoms:");
+    const idToContent = new Map(atoms.map((a) => [a.id, a.content]));
+    for (const a of summary.perAtom.slice(0, 8)) {
+      const c = (idToContent.get(a.id) || "").slice(0, 70);
+      console.log(`    ${String(a.count).padStart(3)}×  ${c}`);
+    }
+  }
+}
+
+// ── persona-candidates (cross-store promotion) ──
+// Surface user-facts that recur as episodic atoms across ≥N different project
+// stores → evidence they belong in the GLOBAL persona, not one repo. SURFACE only;
+// promotion is gated by a human/consolidator via `tmem write-persona --scope global`
+// (a wrong global rule pollutes every repo, so this never auto-promotes).
+function cmdPersonaCandidates(args) {
+  const rest = Array.isArray(args) ? args : [String(args || "")];
+  const asJson = rest.includes("--json");
+  const mp = rest.find((a, i) => rest[i - 1] === "--min-projects");
+  const minProjects = mp ? Math.max(2, parseInt(mp, 10) || 2) : 2;
+  const { findPersonaCandidates } = req("cross_store.js");
+  const cands = findPersonaCandidates({ minProjects });
+
+  if (asJson) { console.log(JSON.stringify(cands, null, 2)); return; }
+  if (!cands.length) {
+    console.log(`No cross-store persona candidates (facts recurring in ≥${minProjects} projects).`);
+    return;
+  }
+  console.log(`Persona candidates — facts recurring across ≥${minProjects} project stores (SURFACE only; promote via \`tmem write-persona --scope global\`):`);
+  for (const c of cands.slice(0, 20)) {
+    console.log(`\n  ${c.projects.length} projects · ${c.count}×  ${c.sample.slice(0, 90)}`);
+  }
+  console.log(`\n${cands.length} candidate fact(s). Human/consolidator gates promotion — never auto-promoted.`);
 }
 
 // ── write-l1 ──
@@ -1610,6 +1751,72 @@ async function cmdDoctor(rest) {
 
   console.log(renderPlanText(plan));
 
+  // Recall reachability + capture-signal — the goal-proximate graders coverage
+  // cannot express (coverage read 100% while half the stores were recall-blind
+  // and capture kept only the user's prompt). Read-only, additive; --json above
+  // keeps the machine plan pure.
+  try {
+    const { summarizeReachability, isOutcomeBearing } = req("memory_reachability.js");
+    const { MemoryStore } = req("memory_store.js");
+    const { listProjectHashes, projectDir } = req("memory_writer.js");
+    const stores = [];
+    for (const h of listProjectHashes()) {
+      const dir = projectDir(h);
+      const dbp = path.join(dir, "index.db");
+      if (!fs.existsSync(dbp)) continue;
+      const store = new MemoryStore(dbp, { readOnly: true }); // measuring only — no schema-init writes
+      const recs = store.allRecords("", 100000);
+      store.close();
+      const episodic = recs.filter((r) => r.type === "episodic");
+      if (!episodic.length) continue;
+      const sb = path.join(dir, "scene_blocks");
+      const sceneCount = fs.existsSync(sb) ? fs.readdirSync(sb).filter((f) => f.endsWith(".md")).length : 0;
+      stores.push({
+        slug: h, episodicCount: episodic.length, sceneCount,
+        outcomeAtoms: episodic.filter((r) => isOutcomeBearing(r.content)).length,
+      });
+    }
+    const r = summarizeReachability(stores);
+    if (r.storesWithEpisodic) {
+      console.log("\nRecall reachability (can captured memory actually be recalled?):");
+      console.log(`  reachable stores: ${r.reachableStores}/${r.storesWithEpisodic} (${r.reachablePct}%) · blind stores: ${r.blindStores} · blind atoms: ${r.blindAtoms}`);
+      console.log(`  capture signal: ${r.outcomeAtoms}/${r.totalEpisodic} atoms carry an outcome (${r.signalPct}%) — the rest are prompt echoes`);
+      if (r.blindStores > 0) {
+        const top = r.blind.slice(0, 3).map((s) => `${s.episodicCount} atoms`).join(", ");
+        console.log(`  → ${r.blindStores} store(s) captured memory but have no scenes (unrecallable): ${top}${r.blind.length > 3 ? " …" : ""}`);
+      }
+    }
+  } catch { /* never break doctor */ }
+
+  // Recall feedback (GAP-6): close the loop — of the atoms in the store, how many
+  // have EVER been injected into a turn's <memories>? Cold atoms (never recalled)
+  // are the honest prune target. Read-only; degrades silently on an empty log.
+  try {
+    const { summarizeRecallFeedback, classifyStoreAtoms } = req("recall_feedback.js");
+    const summary = summarizeRecallFeedback(loadRecallLogRows());
+    if (summary.turns > 0) {
+      const cls = classifyStoreAtoms(allStoreAtoms(), summary);
+      console.log("\nRecall feedback (do stored memories ever get recalled?):");
+      console.log(`  ${summary.turns} logged turn(s) · ${summary.injections} injection(s) · ${summary.emptyTurns} recalled nothing`);
+      console.log(`  ${cls.hot.length} hot atom(s) recalled ≥1 · ${cls.cold.length} cold (never recalled, ${cls.coldPct}%) — run \`tmem feedback\` for detail`);
+    }
+  } catch { /* never break doctor */ }
+
+  // Cross-store awareness (GAP-5): blind stores that captured memory but were never
+  // consolidated. Cheap (COUNT + readdir per store). The persona-promotion scan is
+  // NOT run here — it reads every episodic atom in every store, too heavy for a
+  // health check — so we only point to its verb. Read-only.
+  try {
+    const { listBlindStores } = req("cross_store.js");
+    const blind = listBlindStores();
+    if (blind.length) {
+      const unconsolidated = blind.reduce((n, b) => n + b.episodicCount, 0);
+      console.log("\nCross-store awareness:");
+      console.log(`  ${blind.length} blind store(s) with ${unconsolidated} unconsolidated atom(s) — consolidation auto-dispatches to fix`);
+      console.log(`  cross-project persona candidates: run \`tmem persona-candidates\``);
+    }
+  } catch { /* never break doctor */ }
+
   // Upgrade nudges: activate the new memory features on existing stores (no schema
   // migration exists because none is needed — all changes are additive; the value
   // is just latent until re-consolidation). Human-only; --json keeps the machine plan.
@@ -1939,36 +2146,53 @@ async function main() {
 
 Usage: tmem <command> [options]
 
-Commands:
-  init                       Initialize memory store + vector index
-  status                     Show memory stats
-  recall <query>             Hybrid recall (FTS5 + vector + RRF)
-  search <query> [--all|--project <slug>]  Search L1 atoms (FTS5); --all = every project store
-  projects                   List all memory stores (slug, records, scenes) for cross-project work
-  migrate-fragments [--apply]  Merge legacy cwd-keyed fragment stores into their project root (dry-run by default)
-  atoms [global|project|all] [--since <iso> | --since-last]  Dump L1 atoms as JSON (--since-last = only atoms since last consolidation)
-  sessions                   List pending sessions for seeding
-  read-session <path>        Format session for extraction
-  write-l1 [--session id]    Write L1 atoms from stdin JSON
-  write-scene --name --summary --heat  Write scene block (content from stdin)
-  write-persona [--scope global|project] [--force]  Write persona (global) or this repo's doctrine (project) from stdin; gate rejects budget overflow unless --force
+The memory pipeline has four stages, and commands are grouped by the stage they
+serve: CAPTURE (transcript→atoms) · CONSOLIDATE (atoms→scenes+persona) · RECALL
+(read memory for a turn) · MAINTAIN (keep the store healthy). doctor is the front
+door to MAINTAIN — it measures every health signal and runs the fixes.
+
+RECALL — read memory
+  recall <query>             Per-turn hybrid recall (FTS5 + vector + RRF)
+  search <query> [--all|--project <slug>]  Ad-hoc atom lookup (FTS5); --all = every project store
   scene <name>               Print one full scene block (project-first, then global)
-  scenes [list|dedup]        List or deduplicate scene blocks
-    --dry-run                Preview dedup without removing
-  changelog [--last N]       Show recent memory changes
-  persona [--scope global|project] [--sections | --section <name>]  Show the global persona or this repo's project doctrine; list sections; or print one section on demand (tier 2)
-  sync [--full] [--all]      Embed missing vectors (delta); --full re-embeds all; --all = every store, not just current+global
-  prune --low-signal [--all] [--apply]  Remove low-signal noise records (dry-run unless --apply; archived under .pruned/)
-  dedup --atoms [--all] [--apply]       Remove exact-duplicate atoms, keep newest (dry-run unless --apply; archived)
-  mark-done                  Mark consolidation complete + release lock
-  unlock                     Release stale consolidation lock
-  config [consolidate-every [N] | scene-max-tokens [N] | persona-max-tokens [N] | noise-gate [on|off] | recall [on|off]]  Show config, or get/set a setting (noise-gate = refuse low-signal turns at capture; recall = per-project context injection)
+  scenes [list|dedup]        List scene blocks (dedup: remove duplicates; --dry-run to preview)
+  persona [--scope global|project] [--sections | --section <name>]  Show persona/doctrine; list or print one section (tier 2)
+
+CAPTURE — transcript → atoms
+  digest <path> [--apply]    Extract outcome-atoms (files/tests/git/releases) from a session; --apply writes L1 (idempotent)
+
+CONSOLIDATE — atoms → scenes + persona  (invoked by the memory-seed / memory-consolidate skills)
+  sessions                   List pending sessions for seeding
+  read-session <path>        Format a session transcript for extraction
+  atoms [global|project|all] [--since <iso> | --since-last]  Dump L1 atoms as JSON (--since-last = only new since last consolidation)
+  write-l1 [--session id]    Write L1 atoms from stdin JSON
+  write-scene --name --summary --heat  Write a scene block (body from stdin)
+  write-persona [--scope global|project] [--force]  Write global persona / project doctrine from stdin (budget gate; --force to override)
+  mark-done                  Mark consolidation complete + release the lock
+
+MAINTAIN — keep the store healthy  (doctor is the front door)
+  doctor [--all] [--json] [--fix] [--apply]  Health verdict + ranked fix plan (reachability, capture signal, recall feedback); --fix runs the auto set
+  sync [--full] [--all]      Embed missing vectors + prune recall-ineligible ones; --full re-embeds; --all = every store
+  feedback [--json]          Recall feedback: hot (recalled) vs cold (never-recalled) atoms — prune targets
+  persona-candidates [--min-projects N]  User-facts recurring across ≥N projects → global-persona candidates (surface only; human gates)
+  prune --low-signal [--all] [--apply]   Remove low-signal noise atoms (front door: doctor --fix; dry-run unless --apply, archived)
+  dedup --atoms [--all] [--apply]        Remove exact-duplicate atoms (front door: doctor --fix; dry-run unless --apply, archived)
+  migrate-fragments [--apply]  Merge legacy cwd-keyed fragment stores into their project root (dry-run by default)
+  unlock                     Release a stale consolidation lock
+
+OBSERVE / CONFIGURE
+  status                     Memory stats for the current store
+  projects                   List every memory store (slug, records, scenes) for cross-project work
+  changelog [--last N]       Recent memory changes
+  view [...]                 Open the memory visualiser (tmem view --help for flags)
+  init                       Initialize memory store + vector index
+  config [key [value]]       Show or set a setting (consolidate-every, scene/persona-max-tokens, noise-gate, recall)
   daemon <start|status|stop>  Manage the resident embed daemon (warm vector recall)
-  view [--query <q>] [--snapshot [--stdout]] [--static] [--port N] [--root <dir>]  Open the memory visualiser (live server); --snapshot exports the payload instead (tmem view --help)
-  doctor [--all] [--json] [--fix] [--apply]  Health verdict + ranked fix plan (same metrics as the visualiser); --json for an agent, --fix runs the auto-fixable set
-  contrib <add|ingest|build|persona|playbook|compare|capabilities>  Contributor intelligence
-  version                    Print the resolved CLI version, path, and node version (alias: --version, -v)
-  update [--apply]           Check npm for a newer @baodq97/tmem; --apply runs the global install`);
+  version                    Print resolved CLI version/path/node (alias: --version, -v)
+  update [--apply]           Check npm for a newer @baodq97/tmem; --apply installs it
+
+CONTRIB (separate sub-domain)
+  contrib <add|ingest|build|persona|playbook|compare|capabilities>  Contributor intelligence`);
     return;
   }
 
@@ -1982,6 +2206,9 @@ Commands:
     case "atoms": return cmdAtoms(rest);
     case "sessions": return cmdSessions();
     case "read-session": return cmdReadSession(restStr);
+    case "digest": return cmdDigest(rest);
+    case "feedback": return cmdFeedback(rest);
+    case "persona-candidates": return cmdPersonaCandidates(rest);
     case "write-l1": return cmdWriteL1(rest);
     case "write-scene": return cmdWriteScene(rest);
     case "write-persona": return cmdWritePersona(rest);

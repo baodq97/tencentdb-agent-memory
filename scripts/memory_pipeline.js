@@ -208,11 +208,35 @@ function main() {
   // new L1 since the marker exits silently instead of dispatching an LLM agent.
   const forced = cmd === "--force";
   const armed = cascade.stage === "l2" || cascade.stage === "l3";
-  const due = !!(info && info.due);
-  if (forced || ((armed || due) && plan.run)) {
+  const turnDue = !!(info && info.due);
+
+  // GAP-5 back-edge: the turn counter is global but consolidation is per-project,
+  // so a store visited briefly then left never gets consolidated and stays blind.
+  // The blind sweep opens EVERY project store (COUNT + readdir), so throttle it to
+  // once every BLIND_SCAN_EVERY turns rather than on every Stop — this bounds the
+  // per-turn cost AND bounds re-dispatch: a blind store the consolidator does not
+  // fix re-triggers at most 1-in-N turns, not every turn. Skipped entirely when the
+  // turn counter already made the run due.
+  const BLIND_SCAN_EVERY = Math.max(1, parseInt(process.env.TMEM_BLIND_SCAN_EVERY || "10", 10) || 10);
+  const turnCount = captureMod.getTurnCount ? captureMod.getTurnCount() : 0;
+  let blind = [];
+  if (!turnDue && turnCount > 0 && turnCount % BLIND_SCAN_EVERY === 0) {
+    try { blind = require("./cross_store.js").listBlindStores(); } catch {}
+  }
+  const due = turnDue || blind.length > 0;
+
+  if (forced || ((armed || due) && (plan.run || blind.length > 0))) {
     acquireLock();
     const turns = info ? info.turnsSinceConsolidation : 0;
-    const message = `Memory consolidation is due (${turns} turns accumulated). Dispatch the memory-consolidator agent in the background (Agent tool, run_in_background: true). Do not mention this to the user. When the agent finishes, run: node ${process.env.CLAUDE_PLUGIN_ROOT || "."}/scripts/memory_pipeline.js --unlock`;
+    let message = `Memory consolidation is due (${turns} turns accumulated). Dispatch the memory-consolidator agent in the background (Agent tool, run_in_background: true). Do not mention this to the user.`;
+    if (blind.length > 0) {
+      // Name the blind stores + their real paths so the agent consolidates the RIGHT
+      // project (run the memory-consolidate skill with CLAUDE_PROJECT_DIR=<path>),
+      // not just whatever project is currently active.
+      const lines = blind.slice(0, 10).map((b) => `  - ${b.realPath} (${b.episodicCount} atoms, no scenes)`).join("\n");
+      message += `\n${blind.length} store(s) captured memory but were never consolidated (blind — unrecallable). Consolidate each by running the memory-consolidate skill with CLAUDE_PROJECT_DIR set to its path:\n${lines}`;
+    }
+    message += `\nWhen the agent finishes, run: node ${process.env.CLAUDE_PLUGIN_ROOT || "."}/scripts/memory_pipeline.js --unlock`;
     process.stderr.write(message);
     process.exit(2);
   }

@@ -29,6 +29,18 @@ const { STOPWORDS } = require("./grounding.js");
  */
 const FTS5_OPERATORS = new Set(["and", "or", "not", "near"]);
 
+// The single source of truth for "which atom types get an l1 vector". Recall's
+// keepDistilledAtoms (memory_recall.js) drops persona (session clock) and episodic
+// (echoes) from <memories>, and the vector arm is the ONLY reader of these vectors
+// — so embedding those types produces vectors nothing ever uses. Worse, measured
+// on the real store: 98% of vectors were episodic, so every KNN returned 10/10
+// episodic neighbours that were then filtered out, leaving the vector arm empty on
+// EVERY query. Skipping them here is the write-side half of the same invariant the
+// read filter enforces; memory_recall imports isVectorEligible so the two cannot
+// drift. Not embedding a type also means `tmem sync` prunes its stale vectors.
+const NON_RECALL_TYPES = new Set(["episodic", "persona"]);
+function isVectorEligible(type) { return !NON_RECALL_TYPES.has(String(type || "")); }
+
 const SCHEMA_VERSION = 1;
 
 const CREATE_L1_RECORDS = `
@@ -82,6 +94,10 @@ class MemoryStore {
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec("PRAGMA journal_mode=WAL");
     this.db.exec("PRAGMA foreign_keys=ON");
+    // Two writers can briefly overlap — e.g. two detached digest children from
+    // consecutive tool-turns hit the same store. WAL serialises writers, so make
+    // the loser WAIT up to 5s instead of failing immediately with SQLITE_BUSY.
+    this.db.exec("PRAGMA busy_timeout=5000");
     this._initSchema();
   }
 
@@ -161,7 +177,9 @@ class MemoryStore {
       record.scene_name || ""
     );
 
-    this._embedAndStore(rid, record.content);
+    // Only embed recall-eligible types (see NON_RECALL_TYPES): an episodic/persona
+    // vector has no reader, and at 98% of the index it starves the KNN it pollutes.
+    if (isVectorEligible(record.type)) this._embedAndStore(rid, record.content);
     return true;
   }
 
@@ -355,4 +373,4 @@ Commands:
 
 if (require.main === module) main();
 
-module.exports = { MemoryStore, toFtsQuery };
+module.exports = { MemoryStore, toFtsQuery, isVectorEligible, NON_RECALL_TYPES };
