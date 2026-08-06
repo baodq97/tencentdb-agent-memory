@@ -5,6 +5,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-06
+
+Closes six measured end-to-end gaps in the memory pipeline (capture → embed →
+recall → maintain). Every change was measured on the real store.
+
+### Added
+- **Deterministic session digest (`tmem digest`).** Capture stored only the user
+  prompt and dropped the tool blocks where the machine-certain facts live (files
+  edited, tests, git/releases). The digest recovers them with no LLM and, when a
+  turn used a tool, the Stop hook auto-captures them. Atoms are keyed by
+  `(session, slot)` so re-running is idempotent (measured: re-digest writes 0),
+  and stored as `type=semantic` so they survive recall's distilled-atom filter and
+  are recallable per-turn.
+- **`tmem feedback`.** Recall logged which atoms it injected each turn but nothing
+  read it back. Tallies the log into hot (recalled) vs cold (never-recalled) atoms
+  — the honest prune target. Measured: 94% of stored atoms had never been recalled.
+- **`tmem persona-candidates`.** Surfaces user-facts that recur as episodic atoms
+  across ≥N project stores — evidence they belong in the global persona rather than
+  one repo. Surfaced only; promotion stays human-gated.
+- **Cross-store consolidation back-edge.** Consolidation dueness was a global turn
+  counter but the work is per-project, so a store visited briefly then left stayed
+  blind (episodic atoms, no scenes) forever. The pipeline now also triggers on
+  blind stores and names their (round-trip-verified) paths so the consolidator
+  targets the right one.
+
+### Fixed
+- **Stop embedding recall-ineligible atom types.** `episodic`/`persona` atoms were
+  embedded but recall drops them, so the vector index was 98% dead weight that
+  starved every KNN — measured 0 of 10 nearest neighbours survived the filter, so
+  the vector arm of `<memories>` returned nothing on every query. `isVectorEligible`
+  is now the single source of truth shared by the write side (what to embed) and the
+  read side (`keepDistilledAtoms`), and `tmem sync` prunes stale vectors. Measured
+  after: dead vectors 4138 → 0; vector-arm survivors 0/10 → 6/6.
+
+### Changed
+- **`tmem --help` grouped by bounded context** (Capture / Consolidate / Recall /
+  Maintain), with `doctor` as the front door to Maintain (reachability, capture
+  signal, recall feedback, cross-store awareness). README documents the contexts.
+
+### Performance
+- The pipeline's blind-store sweep is throttled to once every `TMEM_BLIND_SCAN_EVERY`
+  (10) turns instead of every Stop; the transcript digest to once every
+  `TMEM_DIGEST_EVERY` (3) turns (idempotent, so nothing is lost). Added
+  `PRAGMA busy_timeout=5000` so overlapping digest writers wait instead of failing;
+  `doctor` opens stores read-only. (From an independent code-review pass.)
+
 ## [0.7.7] — 2026-08-06
 
 ### Fixed
