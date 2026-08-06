@@ -112,6 +112,22 @@ class VectorStore {
     }
   }
 
+  /**
+   * The set of record_ids that already have a vector. Sync uses this to embed the
+   * records that are ACTUALLY missing a vector, by identity — not the newest-N by
+   * count, which loops forever when the missing records are not the most recent
+   * (measured: a store stuck re-embedding the same 226 newest records, 0 of the
+   * 226 truly-missing older ones, every run).
+   */
+  existingIds() {
+    if (this.degraded || !this.db) return new Set();
+    try {
+      return new Set(this.db.prepare("SELECT record_id FROM l1_vec").all().map((r) => String(r.record_id)));
+    } catch {
+      return new Set();
+    }
+  }
+
   close() {
     if (this.db) {
       try { this.db.close(); } catch {}

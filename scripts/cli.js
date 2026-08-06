@@ -570,20 +570,25 @@ async function cmdSync(args) {
     // catch. Surface it instead so the missing-vector gap stays visible.
     if (vecStore.degraded) { vecStore.close(); degradedStores++; continue; }
     const vecCount = vecStore.count();
+    // Select by IDENTITY, not by count. `delta = records - vecCount` + newest-N
+    // assumed the missing vectors were the most recently updated records; when
+    // they are not, upsert overwrote the newest (already-vectored) records and the
+    // count never moved — the store re-embedded the same wrong N every run and
+    // never converged (measured: 226 stuck, 0 of the truly-missing fixed).
+    const have = vecStore.existingIds();
     vecStore.close();
 
     if (full) {
       todo.push(...records.map(r => ({ dir, ...r })));
       continue;
     }
-    const delta = records.length - vecCount;
-    if (delta <= 0) {
+    const missingRecs = records.filter(r => !have.has(String(r.record_id)));
+    if (!missingRecs.length) {
       console.log(`${label}: in sync (${records.length} records, ${vecCount} vectors)`);
       continue;
     }
-    console.log(`${label}: ${delta} records missing vectors (${vecCount}/${records.length})`);
-    const sorted = records.sort((a, b) => (b.updated_time || "").localeCompare(a.updated_time || ""));
-    todo.push(...sorted.slice(0, delta).map(r => ({ dir, ...r })));
+    console.log(`${label}: ${missingRecs.length} records missing vectors (${vecCount}/${records.length})`);
+    todo.push(...missingRecs.map(r => ({ dir, ...r })));
   }
 
   if (degradedStores > 0) {
