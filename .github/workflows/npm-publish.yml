@@ -16,7 +16,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # setup-node@v6+ understands npm OIDC trusted publishing; @v4 does NOT trigger
       # the OIDC handshake (it only wrote a token .npmrc, which fell back to
