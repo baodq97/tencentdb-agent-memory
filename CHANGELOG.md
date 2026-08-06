@@ -5,6 +5,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 
 ## [Unreleased]
 
+## [0.7.5] — 2026-08-06
+
+### Changed
+- **`<recalled-facts>` ranks by embedding cosine, not keyword overlap.** The 0.7.4
+  pivot made scene-body facts the primary per-turn memory but ranked them with the
+  keyword TF-IDF scorer, which hard-drops any fact sharing no query token. Measured
+  on a paraphrase set (real facts, questions reworded to avoid the fact's keywords —
+  ML-style unseen data): keyword recall surfaced the right fact for only **48%** of
+  reworded questions vs a **95%** embedding-cosine ceiling — recall was brittle to
+  rephrasing. `recallAsync` now ranks facts by cosine against the query vector it
+  already computes for atom search (via the embed daemon), reusing a per-turn
+  bullet-vector cache keyed by content hash. Unlike the keyword path it does not
+  hard-drop zero-overlap facts; a floor keeps off-topic queries empty
+  (negative-control safe). Falls back to the keyword ranker when the daemon is cold.
+  Re-measured, same set: paraphrase surfaced **48% → 91%** (+43pp), brittleness gap
+  50pp → 9pp; held-out facts (not used to build the fix) **97%**. New pure ranker
+  `scene_nav.rankSceneFactsSemantic`; sync `recall()` unchanged (keyword fallback).
+
 ## [0.7.4] — 2026-08-05
 
 ### Changed

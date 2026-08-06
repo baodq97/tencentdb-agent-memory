@@ -1,6 +1,6 @@
 {
   "name": "@baodq97/tmem",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "tmem — local long-term memory CLI for AI coding agents: L0→L3 memory tiers, hybrid FTS+vector recall, two-clock persona, health doctor, and a read-only visualiser.",
   "bin": {
     "tmem": "./scripts/tmem.js"
