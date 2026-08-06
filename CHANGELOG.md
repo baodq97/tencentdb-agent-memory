@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 
 ## [Unreleased]
 
+## [0.7.6] — 2026-08-06
+
+### Fixed
+- **Prewarm the embedding daemon at SessionStart, fixing cold-start recall.** On a
+  cold session the embedding model loads in ~2s (measured) — longer than the
+  1500ms per-turn embed timeout — so the first query of a session embedded null and
+  per-turn `<recalled-facts>` recall silently fell back to keyword ranking. Measured
+  on a paraphrase set: cold turn-1 surfaced 48% vs 91% once warm (a 43pp hit on the
+  first, highest-context turn). The SessionStart hook now kicks `ensureDaemon()`
+  fire-and-forget, so the ~2s load overlaps the user reading the session preamble
+  and typing; by the real first query the daemon answers within the timeout and
+  recall runs in the semantic regime. Best-effort and non-blocking (detached +
+  unref'd); a spawn failure just leaves the prior cold-start behaviour.
+
 ## [0.7.5] — 2026-08-06
 
 ### Changed

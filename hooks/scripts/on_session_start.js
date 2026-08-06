@@ -25,6 +25,21 @@ const { emit } = require(path.join(__dirname, "_common.js"));
 // Plugin scripts dir — constant per process; computed once instead of in each job.
 const scriptsDir = path.join(process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, "..", ".."), "scripts");
 
+// 0) Prewarm the embedding daemon, fire-and-forget. On a cold session the model
+// load takes ~2s (measured), which is longer than the 1500ms per-turn embed
+// timeout in memory_recall — so WITHOUT this the first query embeds null and
+// recall silently falls back to keyword ranking (measured: paraphrase surfacing
+// 48% cold vs 91% once warm, a 43pp hit on turn 1). embedViaDaemonStatus already
+// self-revives on a `down` turn, but that starts the ~2s load AT turn 1; kicking
+// it here overlaps the load with the user reading this session's context and
+// typing, so the daemon answers within the timeout by the real first query.
+// ensureDaemon is detached + unref'd (survives this hook's exit), non-blocking
+// and never throws; a spawn failure just leaves today's cold-start behaviour.
+try {
+  const { ensureDaemon } = require(path.join(scriptsDir, "embed_client.js"));
+  ensureDaemon(); // fire-and-forget; result intentionally unused
+} catch { /* never break the session */ }
+
 // 1) Shim self-heal — most important; runs regardless of detection below.
 try {
   const { ensureLauncherInstalled } = require(path.join(__dirname, "..", "..", "scripts", "tmem.js"));
