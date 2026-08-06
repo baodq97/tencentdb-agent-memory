@@ -381,7 +381,12 @@ function dropPersonaAtoms(memories) {
  * any future `semantic` type. Defensive on shape: an atom with no `type` is kept.
  */
 function keepDistilledAtoms(memories) {
-  return memories.filter((m) => !m || (m.type !== "persona" && m.type !== "episodic"));
+  // Same predicate the WRITE side uses to decide what to embed (memory_store's
+  // isVectorEligible) — imported, not re-spelled, so the read filter and the
+  // embed filter can never diverge. A divergence would either re-introduce dead
+  // vectors or silently drop a type we did embed.
+  const { isVectorEligible } = require("./memory_store.js");
+  return memories.filter((m) => !m || isVectorEligible(m.type));
 }
 
 /**
@@ -769,11 +774,11 @@ Commands:
 
 if (require.main === module) main();
 
-// Exported: what another file or a test actually reads. The log's own plumbing
-// (recallLogPath, appendRecallLog, RECALL_LOG_FILE) stays private — it has no
-// caller outside this file, and the tests assert against the log ON DISK, which
-// is the contract that matters.
+// Exported: what another file or a test actually reads. RECALL_LOG_FILE is now
+// public because the feedback loop (GAP-6, recall_feedback.js) reads the log to
+// tally which atoms were actually injected per turn — the one legitimate reader
+// outside this file. appendRecallLog/recallLogPath stay private.
 module.exports = {
   recall, recallAsync, buildSceneNav, renderMemories, MEMORY_SEARCH_HINT, projectScopeFor,
-  RECALL_SOURCE, RECALL_LOG_MAX_BYTES, readSceneFacts, buildFactRecall, keepDistilledAtoms,
+  RECALL_SOURCE, RECALL_LOG_MAX_BYTES, RECALL_LOG_FILE, readSceneFacts, buildFactRecall, keepDistilledAtoms,
 };

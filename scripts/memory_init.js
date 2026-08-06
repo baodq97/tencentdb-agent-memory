@@ -67,8 +67,10 @@ async function main() {
           if (!records.length) continue;
           const vecStore = new VectorStore(path.join(dir, "vectors.db"));
           if (vecStore.degraded) continue;
+          const { isVectorEligible } = require("./memory_store.js");
           let count = 0;
           for (const r of records) {
+            if (!isVectorEligible(r.type)) continue; // recall-ineligible → no vector
             const vec = await svc.embed(r.content);
             if (vec) { vecStore.upsertVec(r.record_id, vec); count++; }
           }
