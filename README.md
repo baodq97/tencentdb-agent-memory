@@ -229,6 +229,27 @@ PR diff size (the GitHub search API omits it).
 └── models/           embeddinggemma-300m (~80MB, downloaded on first init)
 ```
 
+### Bounded contexts (ubiquitous language)
+
+The domain is a **memory pipeline** over four layers — **Transcript** (L0) →
+**Atom** (L1) → **Scene** (L2) → **Persona/Doctrine** (L3) — worked by four verbs.
+CLI commands (`tmem --help`) and modules are grouped by the stage they serve:
+
+| Stage | Does | Key modules |
+|-------|------|-------------|
+| **Capture** | Transcript → Atoms (deterministic digest of tool blocks; hook auto-capture) | `session_digest`, `digest_capture`, `memory_auto_capture`, `grounding` |
+| **Consolidate** | Atoms → Scenes + Persona (distil the "why"; dispatched by the pipeline) | `memory_pipeline`, memory-seed / memory-consolidate skills |
+| **Recall** | Read memory for a turn (hybrid FTS+vector, scene-nav, persona projection) | `memory_recall`, `scene_nav`, `persona_projection`, `recall_feedback` |
+| **Maintain** | Keep the store healthy — reachability, capture signal, recall feedback, cross-store | `doctor`, `memory_reachability`, `cross_store`, `memory_init` |
+| _Storage_ | FTS5 + vector engines under all stages | `memory_store`, `memory_writer`, `memory_reader`, `vector_store`, `embed_*` |
+| _Contrib_ | Contributor intelligence (separate sub-domain) | `contrib_*` |
+
+**Invariants worth naming:** an atom's `type` decides its lane — `isVectorEligible`
+(one source of truth) governs both what gets embedded and what recall keeps, so a
+dead vector can never be written. Digest atoms are keyed by `(session, slot)` so
+re-capture is idempotent. `doctor` is the front door to Maintain; the other
+maintenance verbs are its detail.
+
 ## Tech stack
 
 - **FTS5** — keyword search via `node:sqlite` (built-in)
