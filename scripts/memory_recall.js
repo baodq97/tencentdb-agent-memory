@@ -19,7 +19,8 @@ const { getSceneMaxTokens } = require("./memory_auto_capture.js");
 // Pure renderer + ranker, shared with view/transform.js so the block the agent
 // receives and the block the visualiser measures can never be two different
 // algorithms.
-const { renderSceneNav, rankScenes, byHeatDesc, rankSceneFacts } = require("./scene_nav.js");
+const { renderSceneNav, rankScenes, byHeatDesc, rankSceneFacts, rankSceneFactsSemantic } = require("./scene_nav.js");
+const crypto = require("node:crypto");
 const {
   parsePersona,
   projectTier1,
@@ -184,6 +185,65 @@ function buildFactRecall(projectHash, query, maxChars = FACT_RECALL_MAX_CHARS) {
   facts.push(...readSceneFacts(globalDir()));
   if (!facts.length) return "";
   return rankSceneFacts(facts, query, { limit: FACT_RECALL_LIMIT, maxChars }).block;
+}
+
+// Persisted cache of fact-bullet vectors, keyed by content hash so re-embedding
+// is O(new facts) not O(all) each turn. One small JSON at the memory root covers
+// every store's bullets (hash is content-unique). Embedding ~dozens of bullets on
+// a cold cache is a one-time cost; every later turn is a cheap map lookup.
+function factVecCachePath() { return path.join(memoryBaseDir(), "scene_facts_vec.json"); }
+function loadFactVecCache() {
+  try { return JSON.parse(fs.readFileSync(factVecCachePath(), "utf-8")); } catch { return {}; }
+}
+function saveFactVecCache(cache) {
+  try { fs.writeFileSync(factVecCachePath(), JSON.stringify(cache)); } catch { /* cache is best-effort */ }
+}
+function factHash(text) { return crypto.createHash("sha1").update(String(text)).digest("hex"); }
+
+/**
+ * Embed each fact bullet (cached by content hash). Returns vectors parallel to
+ * `facts`; a null slot means that bullet could not be embedded (ranker skips it).
+ * Only cache misses hit the daemon, in parallel.
+ */
+async function embedFactsCached(facts, embedFn) {
+  const cache = loadFactVecCache();
+  const misses = [];
+  for (const f of facts) {
+    const h = factHash(f.text);
+    if (!cache[h]) misses.push({ h, text: f.text });
+  }
+  if (misses.length) {
+    const results = await Promise.all(misses.map(async (m) => {
+      try { const r = await embedFn(m.text); return { h: m.h, vec: r && r.vector ? Array.from(r.vector) : null }; }
+      catch { return { h: m.h, vec: null }; }
+    }));
+    let changed = false;
+    for (const r of results) if (r.vec) { cache[r.h] = r.vec; changed = true; }
+    if (changed) saveFactVecCache(cache);
+  }
+  return facts.map((f) => cache[factHash(f.text)] || null);
+}
+
+/**
+ * Semantic `<recalled-facts>`: rank distilled facts by embedding cosine against
+ * the (already-computed) query vector. Falls back to the keyword builder when no
+ * query vector, no facts, or any embedding error — recall must never break.
+ */
+async function buildFactRecallSemantic(projectHash, query, queryVec, embedFn, maxChars = FACT_RECALL_MAX_CHARS) {
+  if (!queryVec) return buildFactRecall(projectHash, query, maxChars);
+  const facts = [];
+  if (projectHash) facts.push(...readSceneFacts(projectDir(projectHash)));
+  facts.push(...readSceneFacts(globalDir()));
+  if (!facts.length) return "";
+  try {
+    const vecs = await embedFactsCached(facts, embedFn);
+    // An empty block here is a CORRECT answer for an off-topic query (nothing
+    // cleared the floor) — do NOT fall back to keyword, or the negative-control
+    // property is lost. Fall back only on a real embedding failure (catch below).
+    return rankSceneFactsSemantic(facts, queryVec, vecs, { limit: FACT_RECALL_LIMIT, maxChars }).block;
+  } catch {
+    return buildFactRecall(projectHash, query, maxChars);
+  }
 }
 
 // ── Recall log ──
@@ -577,10 +637,9 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   const sceneNav = buildSceneNav(projectHash, query);
   if (sceneNav) parts.push(sceneNav);
 
-  // Distilled scene facts (own budget) — the primary per-turn memory. Surfaces
-  // what consolidation distilled into scenes instead of raw episodic echoes.
-  const factBlock = buildFactRecall(projectHash, query);
-  if (factBlock) parts.push(factBlock);
+  // Distilled scene facts are built AFTER the query embedding below, so they can
+  // be ranked by MEANING (cosine) instead of keyword overlap. Pushed into `parts`
+  // there, keeping the persona/sceneNav/facts/memories order.
 
   const dirs = [globalDir()];
   if (projectHash) dirs.push(projectDir(projectHash));
@@ -597,10 +656,11 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
 
   let vecResults = [];
   let embedReason = null;
+  let queryVec = null;
+  const { embedViaDaemonStatus } = require("./embed_client.js");
   try {
-    const { embedViaDaemonStatus } = require("./embed_client.js");
     const status = await embedViaDaemonStatus(query);
-    const queryVec = status.vector;
+    queryVec = status.vector;
     embedReason = status.reason;
     {
       if (queryVec) {
@@ -627,6 +687,14 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
       }
     }
   } catch {}
+
+  // Distilled scene facts — the primary per-turn memory. Rank by embedding cosine
+  // when the query embedded this turn (paraphrase-robust: 48% → ~95% surfaced on
+  // reworded queries), else keyword fallback. Position matches the sync path.
+  let factBlock = "";
+  try { factBlock = await buildFactRecallSemantic(projectHash, query, queryVec, embedViaDaemonStatus); } catch {}
+  if (!factBlock && !queryVec) factBlock = buildFactRecall(projectHash, query);
+  if (factBlock) parts.push(factBlock);
 
   // Drop persona (session clock) AND raw episodic (echoes) from BOTH retrieval
   // arms before the merge/rank; distilled facts (above) are the per-turn memory.

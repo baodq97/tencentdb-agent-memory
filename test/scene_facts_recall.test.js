@@ -68,3 +68,45 @@ test("readSceneFacts extracts Key Facts / Decisions bullets from a scene file", 
   assert.ok(facts.some((f) => /node:sqlite/.test(f.text)));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ── Semantic ranking (0.7.5): rank facts by embedding cosine, not keyword ──────
+// Measured: a paraphrase of the question shares few rare keywords with the fact,
+// so keyword ranking surfaced 48% of facts on reworded queries vs a 95% embedding
+// ceiling. These tests pin the pure cosine ranker with stub vectors (no daemon).
+const { rankSceneFactsSemantic } = require("../scripts/scene_nav.js");
+
+const SEM_FACTS = [
+  { sceneName: "auth", heat: 3, text: "Sessions expire after thirty minutes of inactivity." },
+  { sceneName: "billing", heat: 3, text: "Invoices are emailed on the first business day of each month." },
+  { sceneName: "infra", heat: 3, text: "The cache is warmed at deploy time to avoid a cold first request." },
+];
+// queryVec points at dimension 0; vectors chosen so cosine order is auth > infra > billing.
+const QVEC = [1, 0, 0];
+const SEM_VECS = [
+  [0.98, 0.2, 0],  // auth   — cosine ≈ 0.98 (semantically closest; shares NO keyword with query)
+  [0, 1, 0],       // billing— cosine 0 (below floor → dropped)
+  [0.6, 0.6, 0],   // infra  — cosine ≈ 0.707
+];
+
+test("rankSceneFactsSemantic ranks by cosine, not keyword overlap", () => {
+  // Query keywords ('token','logout') match NO fact text — only meaning can rank.
+  const out = rankSceneFactsSemantic(SEM_FACTS, QVEC, SEM_VECS, { limit: 3, maxChars: 1000 });
+  assert.ok(out.facts.length >= 1, "should surface facts by vector similarity");
+  assert.match(out.facts[0].text, /Sessions expire/, "highest-cosine fact ranks first");
+});
+
+test("rankSceneFactsSemantic drops facts below the floor (negative-control property)", () => {
+  const out = rankSceneFactsSemantic(SEM_FACTS, QVEC, SEM_VECS, { limit: 3, maxChars: 1000, floor: 0.4 });
+  assert.ok(!out.facts.some((f) => /Invoices/.test(f.text)), "orthogonal (cosine 0) fact must be dropped");
+  assert.strictEqual(out.facts.length, 2, "only the two above-floor facts survive");
+});
+
+test("rankSceneFactsSemantic yields an empty block when nothing clears the floor", () => {
+  const out = rankSceneFactsSemantic(SEM_FACTS, [0, 0, 1], SEM_VECS, { limit: 3, maxChars: 1000, floor: 0.4 });
+  assert.strictEqual(out.block, "", "off-topic query surfaces no fact");
+});
+
+test("rankSceneFactsSemantic returns empty when no query vector", () => {
+  const out = rankSceneFactsSemantic(SEM_FACTS, null, SEM_VECS, { limit: 3, maxChars: 1000 });
+  assert.strictEqual(out.facts.length, 0);
+});

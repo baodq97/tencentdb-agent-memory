@@ -1,0 +1,41 @@
+name: Publish to npm
+
+# Runs only when a GitHub Release is PUBLISHED (deliberate, human-authorized gate).
+# Uses npm Trusted Publishing (OIDC) — no NPM_TOKEN secret; provenance is automatic
+# for a public repo + public package. Configure the trusted publisher once at
+# npmjs.com → @baodq97/tmem → Settings → Trusted Publisher (repo + this filename).
+on:
+  release:
+    types: [published]
+
+permissions:
+  id-token: write   # OIDC token exchange for trusted publishing
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24            # >= 22.14.0 required for OIDC publishing
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm CLI >= 11.5.1; the runner default is older.
+      - run: npm install -g npm@latest
+
+      - run: npm ci
+
+      - run: npm test
+
+      # Guard: the published version must equal the release tag (vX.Y.Z).
+      - name: Verify tag matches package version
+        run: |
+          pkg="v$(node -p "require('./package.json').version")"
+          tag="${{ github.ref_name }}"
+          test "$pkg" = "$tag" || { echo "package.json $pkg != tag $tag"; exit 1; }
+
+      # No NODE_AUTH_TOKEN: OIDC provides credentials; provenance is automatic.
+      - run: npm publish --access public

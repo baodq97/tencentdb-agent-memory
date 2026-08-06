@@ -1,5 +1,9 @@
 # tencentdb-agent-memory (Claude Code plugin)
 
+[![npm version](https://img.shields.io/npm/v/@baodq97/tmem)](https://www.npmjs.com/package/@baodq97/tmem)
+[![npm downloads](https://img.shields.io/npm/dm/@baodq97/tmem)](https://www.npmjs.com/package/@baodq97/tmem)
+[![node](https://img.shields.io/node/v/@baodq97/tmem)](https://www.npmjs.com/package/@baodq97/tmem)
+
 Four-layer long-term memory (L0 Conversation → L1 Atom → L2 Scene → L3 Persona) for Claude Code, inspired by [Tencent/TencentDB-Agent-Memory](https://github.com/Tencent/TencentDB-Agent-Memory).
 
 Fully local — no external Gateway, no paid API, no Python. All extraction and consolidation is done by the Claude agent itself.

@@ -19,3 +19,7 @@ docs/ui/
 
 # Claude Code agent worktrees / local session state
 .claude/
+
+# Local benchmark harness + data — never committed (measured locally, not shipped)
+bench/
+scripts/bench_*.js
