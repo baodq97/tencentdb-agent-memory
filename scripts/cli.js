@@ -1764,7 +1764,7 @@ async function cmdDoctor(rest) {
       const dir = projectDir(h);
       const dbp = path.join(dir, "index.db");
       if (!fs.existsSync(dbp)) continue;
-      const store = new MemoryStore(dbp);
+      const store = new MemoryStore(dbp, { readOnly: true }); // measuring only — no schema-init writes
       const recs = store.allRecords("", 100000);
       store.close();
       const episodic = recs.filter((r) => r.type === "episodic");

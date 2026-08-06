@@ -412,6 +412,13 @@ function autoCapture({ userText, assistantText, sessionId, cwd, sourceMessageIds
  * Check if consolidation is due and return hint text for injection.
  * Called by UserPromptSubmit hook.
  */
+// Monotonic per-turn counter, independent of the consolidation cycle. Used to
+// throttle whole-root maintenance scans (e.g. the pipeline's blind-store sweep)
+// so they don't open every project store on every Stop. 0 on any read failure.
+function getTurnCount() {
+  try { return loadCaptureState().turn_count || 0; } catch { return 0; }
+}
+
 function checkConsolidationDue() {
   try {
     const state = loadCaptureState();
@@ -481,4 +488,4 @@ Commands:
 
 if (require.main === module) main();
 
-module.exports = { autoCapture, checkConsolidationDue, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, warmupThreshold, advanceWarmup, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, parseBoolish, loadConfig };
+module.exports = { autoCapture, checkConsolidationDue, getTurnCount, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, warmupThreshold, advanceWarmup, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, parseBoolish, loadConfig };
