@@ -5,7 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 
 ## [Unreleased]
 
-## [0.7.6] — 2026-08-06
+## [0.7.7] — 2026-08-06
+
+### Fixed
+- **`tmem sync` now selects records to embed by identity, not by count — fixing a
+  store that never converged.** The delta path computed `missing = records −
+  vectors` and embedded the newest-N records by `updated_time`, assuming the
+  records lacking a vector were the most recently updated. When they were not,
+  `upsertVec` overwrote the newest (already-vectored) records, the vector count
+  never moved, and the store re-embedded the same wrong N on every run — wasted
+  embedding compute that never closed the gap. Measured on a real store: 226
+  records stuck missing, with 0 of the 226 truly-missing (older) records in the
+  newest-226 set the sync kept re-embedding. Sync now embeds exactly the records
+  whose `record_id` is absent from the vector store (`VectorStore.existingIds()`),
+  so it converges in one pass (that store went 1740/1966 → 1966/1966).
 
 ### Fixed
 - **Prewarm the embedding daemon at SessionStart, fixing cold-start recall.** On a
