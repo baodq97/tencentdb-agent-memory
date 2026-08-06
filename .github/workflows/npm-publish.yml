@@ -18,17 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # NOTE: no `registry-url` here on purpose. That option makes setup-node write
-      # an .npmrc with `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` +
-      # `always-auth=true`; with no token that forces empty-token auth and SHADOWS
-      # OIDC (npm then 404s). The default registry is already npmjs, so OIDC works
-      # cleanly with no token .npmrc.
-      - uses: actions/setup-node@v4
+      # setup-node@v6+ understands npm OIDC trusted publishing; @v4 does NOT trigger
+      # the OIDC handshake (it only wrote a token .npmrc, which fell back to
+      # ENEEDAUTH / an empty-token 404). Runner npm is already >= 11.5.1.
+      - uses: actions/setup-node@v6
         with:
           node-version: 24            # >= 22.14.0 required for OIDC publishing
-
-      # Trusted publishing needs npm CLI >= 11.5.1 (runners have it, but be explicit).
-      - run: npm install -g npm@latest
+          registry-url: https://registry.npmjs.org
 
       - run: npm ci
 
