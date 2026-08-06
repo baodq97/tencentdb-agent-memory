@@ -5,6 +5,9 @@
   "bin": {
     "tmem": "./scripts/tmem.js"
   },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
   "files": [
     "scripts/",
     "README.md",
