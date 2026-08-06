@@ -15,8 +15,15 @@ const { projectHashForCwd, pathFromSlugProbe } = require("../scripts/memory_read
 
 function tmpGitRepo() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-root-"));
+  // Inject a git identity via env so `git commit` works with NO ambient config
+  // (CI runners have none) — the test must not depend on the host's global git.
   execSync("git init -q && git commit -q --allow-empty -m init && git worktree add -q wt-feat", {
     cwd: base, shell: "/bin/bash",
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "tmem-test", GIT_AUTHOR_EMAIL: "test@tmem.local",
+      GIT_COMMITTER_NAME: "tmem-test", GIT_COMMITTER_EMAIL: "test@tmem.local",
+    },
   });
   fs.mkdirSync(path.join(base, "svc", "deep"), { recursive: true });
   return base;
