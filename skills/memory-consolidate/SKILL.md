@@ -7,46 +7,42 @@ description: Consolidate L1 memory atoms into L2 scene blocks and L3 persona. In
 
 Analyze L1 atoms and produce L2 scene blocks + L3 persona. You perform all reasoning — no external LLM needed.
 
+## Scope boundary (read first)
+
+Consolidation is a **distillation of the memory store's own atoms** — NOT a code
+audit. Work ONLY from what `tmem consolidate-context` returns (atoms, scenes,
+persona, changelog). Do **NOT** `grep`, `find`, `cat`, `ls`, `sed`, read repo
+source/docs, or otherwise explore the filesystem — measured, that "spelunking" is
+the single largest cost driver of a consolidation run and adds no quality. If the
+atoms are thin, write less; never go looking in the repo to pad a scene.
+
 ## Workflow
 
-### 1. Check current state
+### 1. Load the consolidation context — ONE call
 
 ```bash
-tmem status
+tmem consolidate-context     # status + scenes + atoms DELTA + persona + doctrine + changelog, as JSON
 ```
 
-If zero records exist, tell the user to run memory-seed first and stop.
+This single call replaces the old status / scenes-list / atoms / persona reads.
+Parse the JSON once:
 
-### 2. List existing scenes
+- `status` — record counts (global + project). If both totals are 0, tell the user
+  to run memory-seed first and stop.
+- `scenes` — existing `{name, summary, heat}`. Reuse an exact name when a topic
+  matches, so the scene updates in place instead of duplicating.
+- `atoms.project` / `atoms.global` — the DELTA since the last consolidation (the
+  per-project watermark), so the pool you reason over stays bounded no matter how
+  large the store grows. Cold start (no watermark) returns the full pool, correct
+  for the first run; `tmem mark-done` (step 5) advances the watermark.
+- `persona.global` / `persona.project` — current global persona + project doctrine,
+  to MERGE into (step 4) — you do not re-read them separately.
+- `changelog` — recent writes, for context.
 
-```bash
-tmem scenes list
-```
+(To force a full re-read of atoms instead of the delta, use `tmem atoms project`
+with no flag or `--since <iso-timestamp>`.)
 
-Note existing scene names — you will reuse them when topics match to avoid duplicates.
-
-### 3. Load L1 atoms — the DELTA since last consolidation, not the whole pool
-
-Consolidation is incremental: read only atoms written since the last run, so the
-pool you reason over stays bounded no matter how large the store grows (upstream
-keys the same read on a `last_extraction_updated_time` cursor).
-
-```bash
-tmem atoms project --since-last     # only project atoms updated since the last consolidation
-```
-
-On a cold start (no watermark yet) this returns the full pool, which is correct
-for the first run. `tmem mark-done` (step 6) advances the watermark, so each
-subsequent run sees only new atoms. To force a full re-read, use `tmem atoms
-project` (no flag) or `--since <iso-timestamp>` for an explicit cursor.
-
-For global atoms (persona/instruction types), same delta scoping:
-
-```bash
-tmem atoms global --since-last
-```
-
-### 3b. Verify & dedup atoms before consolidating (close the loop)
+### 2. Verify & dedup atoms before consolidating (close the loop)
 
 Do not consolidate atoms blindly — the measured store was ~40% junk/duplicate and
 16% of mined "fixes" were themselves errors. First remove exact duplicates with the
@@ -71,24 +67,29 @@ Drop a mined error→fix atom whose fix ITSELF errored later in the transcript
 are allowed (an episodic + a persona describing the same fact → one atom of the
 better type).
 
-### 4. Generate L2 scene blocks
+### 3. Generate L2 scene blocks
 
 Group project-scoped atoms by topic into narrative scenes.
 
-**Important:** If a scene with the same topic already exists from step 2, reuse that exact name so the file gets updated instead of duplicated.
+**Important:** If a scene with the same topic already exists (from the `scenes` list
+in step 1), reuse that exact name so the file gets updated instead of duplicated.
 
-Write each scene using a heredoc to handle multiline content:
+Write ALL scenes in ONE call — pass a JSON array on stdin (this is one tool-call
+instead of one per scene):
 
 ```bash
-cat <<'SCENE_EOF' | tmem write-scene --name "Scene Name" --summary "One-line summary, max 80 chars" --heat 3
-## Key Facts
-- Fact 1
-- Fact 2
-
-## Decisions
-- What was decided and why
-SCENE_EOF
+cat <<'SCENES_EOF' | tmem write-scenes
+[
+  { "name": "Scene Name", "summary": "One-line summary, max 80 chars", "heat": 3,
+    "body": "## Key Facts\n- Fact 1\n- Fact 2\n\n## Decisions\n- What was decided and why" },
+  { "name": "Another Scene", "summary": "…", "heat": 5, "body": "## Key Facts\n- …" }
+]
+SCENES_EOF
 ```
+
+A reused `name` overwrites in place (no duplicate). `body` defaults to `summary` if
+omitted. (For a one-off single scene you may still use `tmem write-scene --name …
+--summary … --heat … < body`, but prefer the batch.)
 
 **Guidelines:**
 - Group by topic, not by session
@@ -140,7 +141,7 @@ Check your own output before writing it — no tool needed:
 
 **A summary is a signpost, not an abstract.** Its only job is to let the reader decide whether to run `tmem scene <name>`. It should name the subject and the distinguishing detail — enough to tell this scene apart from its neighbours — and nothing else. The full narrative lives in the scene body, readable in whole via `tmem scene <name>`; its individual bullets are ALSO recalled per turn (see the next section), so the body is no longer a budget-free dumping ground. Do not restate the body in miniature; do not open with "This scene covers…". Lead with the distinguishing noun, since the tail is what gets cut.
 
-**This applies to summaries you are only carrying through, not just to new ones.** When you reuse an existing scene name (step 4), you rewrite its summary too — pass the old one through the same 80-char test and shorten it. Scenes you never re-touch keep their over-long summaries forever, so shortening on re-consolidation is the only path by which an already-bloated store improves.
+**This applies to summaries you are only carrying through, not just to new ones.** When you reuse an existing scene name (step 3), you rewrite its summary too — pass the old one through the same 80-char test and shorten it. Scenes you never re-touch keep their over-long summaries forever, so shortening on re-consolidation is the only path by which an already-bloated store improves.
 
 Example, using synthetic data:
 
@@ -156,7 +157,7 @@ after (58 chars):
 
 The dropped clauses are not lost — they are Key Facts and Decisions in the scene body, where they belong.
 
-### 5. Generate L3 — TWO documents by scope (the hybrid model)
+### 4. Generate L3 — TWO documents by scope (the hybrid model)
 
 L3 is split by scope, and **scope selects the family**:
 
@@ -175,13 +176,9 @@ Both writes pass the **budget gate** (`tmem write-persona` rejects a document wh
 `always` rules would overflow the tier-0 budget, or whose bullets break the 160-char
 rule). Compress until it accepts; do not `--force` unless a human told you to.
 
-#### 5a. Global persona (chat family)
+#### 4a. Global persona (chat family)
 
-Read existing global persona:
-
-```bash
-tmem persona
-```
+Use `persona.global` from the step-1 context as the base — do not re-read it.
 
 Merge new insights from persona-type and instruction-type atoms. Don't replace — evolve. Evolving includes shortening: apply the bullet-length rule below to the bullets you carry forward, not only to the ones you add.
 
@@ -231,7 +228,7 @@ Check your own output before writing it — no tool needed:
 
 Write accordingly: **one rule per bullet, operative clause first**, so a bullet that has to be cut still says the right thing; put paths/versions/inventory under reference-y headings where they cost nothing rather than crowding the tier-0 budget. Prefer merging near-duplicate rules over appending another one.
 
-**This applies to bullets you are only re-reading, not just to new ones.** Consolidation rewrites the whole persona, so every over-long bullet you carry through unchanged stays over-long forever. When merging (step 5), pass each existing `always` bullet through the same 160-char test and split or tighten the failures as you go — that is the only path by which an already-bloated persona improves. Splitting one bullet into two does **not** count as amplification under the priority cap above: both halves inherit the original's priority, neither is promoted.
+**This applies to bullets you are only re-reading, not just to new ones.** Consolidation rewrites the whole persona, so every over-long bullet you carry through unchanged stays over-long forever. When merging (step 4), pass each existing `always` bullet through the same 160-char test and split or tighten the failures as you go — that is the only path by which an already-bloated persona improves. Splitting one bullet into two does **not** count as amplification under the priority cap above: both halves inherit the original's priority, neither is promoted.
 
 Example of the rewrite, using synthetic data:
 
@@ -256,13 +253,9 @@ So write the tag on the label, at the end, before the colon: `- **Eval runs** (o
 
 **No tag means the rule is universal, and that default is deliberate.** The reader keeps everything it cannot confidently place — an untagged bullet, an unparseable tag, a project it cannot identify all resolve to "apply it". Dropping a real standing rule is far worse than occasionally injecting a foreign one, so the tag is the only thing that can ever narrow a bullet's reach. If a rule truly is project-specific, it is on you to say so; if it is general, say nothing.
 
-#### 5b. Project doctrine (code/team family)
+#### 4b. Project doctrine (code/team family)
 
-Read the existing doctrine (may be empty on first run):
-
-```bash
-tmem persona --scope project    # falls back to nothing if none yet
-```
+Use `persona.project` from the step-1 context as the base (may be empty on first run).
 
 Distil this repo's scenes + work atoms into a REUSABLE Operating Doctrine — the
 rules a future agent needs to work here well. Not a project summary, not a scene
@@ -303,7 +296,7 @@ persona — the project block is injected once per session by SessionStart, same
 tier-0 economics. Evolve, don't append: fold new evidence into existing rules and
 shorten as you go; if nothing reusable is new this round, leave the doctrine unchanged.
 
-### 6. Mark complete
+### 5. Mark complete
 
 ```bash
 tmem mark-done
