@@ -117,6 +117,73 @@ function advanceWarmup(state, everyN) {
   state.warmup_threshold = next >= everyN ? 0 : next;
 }
 
+// ── per-project counter slots (GAP-5 fix) ──
+//
+// The turn counter and consolidation trigger are PER-PROJECT: capture_state.json
+// keeps `projects[<hash>]` = { turn_count, last_consolidation_turn,
+// consolidation_due, warmup_threshold }. The root `turn_count` is retained only
+// as a global odometer for whole-root throttles (digest, blind sweep) — it no
+// longer drives the trigger. `warmupThreshold`/`advanceWarmup` above are pure and
+// read `.warmup_threshold`, so they operate on a slot unchanged.
+const GLOBAL_SLOT_KEY = "global";
+function slotKey(hash) { return hash || GLOBAL_SLOT_KEY; }
+
+/**
+ * Episodic atom count already in a project's store, read-only, fail-open to 0.
+ * Used ONLY to seed a project-slot the first time it is seen so an upgrade does
+ * not make every established store "due" at once.
+ */
+function episodicCount(hash) {
+  try {
+    const base = hash
+      ? path.join(memoryBaseDir(), "projects", hash)
+      : path.join(memoryBaseDir(), "global");
+    const db = path.join(base, "index.db");
+    if (!fs.existsSync(db)) return 0;
+    const { MemoryStore } = require(path.join(__dirname, "memory_store.js"));
+    const store = new MemoryStore(db, { readOnly: true });
+    const n = store.count("episodic");
+    store.close();
+    return Number.isInteger(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Read-only view of a project-slot: stored slot or a zero default, NO mutation. */
+function readSlot(state, hash) {
+  const s = state && state.projects && state.projects[slotKey(hash)];
+  return s && typeof s === "object"
+    ? s
+    : { turn_count: 0, last_consolidation_turn: 0, consolidation_due: false };
+}
+
+/**
+ * Get-or-seed a project-slot on the WRITE path. First sight of a project seeds
+ * its counter to the atoms that already existed BEFORE this turn (baseline), so
+ * an established store migrates in "not due" (baseline > 0 ⇒ warmup graduated),
+ * while a brand-new store (baseline 0) keeps the fresh warmup fast-path.
+ */
+function ensureSlot(state, hash) {
+  if (!state.projects) state.projects = {};
+  const k = slotKey(hash);
+  if (!state.projects[k]) {
+    const baseline = Math.max(0, episodicCount(hash) - 1); // exclude the atom written this turn
+    state.projects[k] = {
+      turn_count: baseline,
+      last_consolidation_turn: baseline,
+      consolidation_due: false,
+    };
+    if (baseline > 0) state.projects[k].warmup_threshold = 0; // established store: graduated
+  }
+  return state.projects[k];
+}
+
+/** Default hash for callers that don't pass one: the current project. */
+function activeHash() {
+  return projectHashForCwd(process.cwd());
+}
+
 /** Effective consolidation threshold: env override > persisted config > default. */
 function getConsolidateEvery() {
   const env = parseInt(process.env.MEMORY_CONSOLIDATE_EVERY || "", 10);
@@ -383,27 +450,29 @@ function autoCapture({ userText, assistantText, sessionId, cwd, sourceMessageIds
   }
 
   const state = loadCaptureState();
-  state.turn_count = (state.turn_count || 0) + 1;
+  state.turn_count = (state.turn_count || 0) + 1; // global odometer (digest/blind throttle only)
 
   if (!state.sessions) state.sessions = {};
   if (!state.sessions[sessionId]) state.sessions[sessionId] = { turns: 0 };
   state.sessions[sessionId].turns = (state.sessions[sessionId].turns || 0) + 1;
   state.sessions[sessionId].last_capture = new Date().toISOString();
 
-  const threshold = warmupThreshold(state, getConsolidateEvery());
-  const sinceLastConsolidation = state.turn_count - (state.last_consolidation_turn || 0);
+  // Per-project counter drives the trigger — a project accrues and consolidates
+  // independently of every other project on the machine.
+  const slot = ensureSlot(state, projectHash);
+  slot.turn_count = (slot.turn_count || 0) + 1;
+
+  const threshold = warmupThreshold(slot, getConsolidateEvery());
+  const sinceLastConsolidation = slot.turn_count - (slot.last_consolidation_turn || 0);
   const consolidationDue = sinceLastConsolidation >= threshold;
 
-  if (consolidationDue) {
-    state.consolidation_due = true;
-    state.consolidation_due_since = new Date().toISOString();
-  }
+  if (consolidationDue) slot.consolidation_due = true;
 
   saveCaptureState(state);
 
   return {
     captured: true,
-    turnCount: state.turn_count,
+    turnCount: slot.turn_count,
     consolidationDue,
   };
 }
@@ -419,12 +488,13 @@ function getTurnCount() {
   try { return loadCaptureState().turn_count || 0; } catch { return 0; }
 }
 
-function checkConsolidationDue() {
+function checkConsolidationDue(hash) {
   try {
     const state = loadCaptureState();
-    if (!state.consolidation_due) return null;
+    const slot = readSlot(state, hash !== undefined ? hash : activeHash());
+    if (!slot.consolidation_due) return null;
     const threshold = getConsolidateEvery();
-    const sinceLastConsolidation = (state.turn_count || 0) - (state.last_consolidation_turn || 0);
+    const sinceLastConsolidation = (slot.turn_count || 0) - (slot.last_consolidation_turn || 0);
     return {
       due: true,
       turnsSinceConsolidation: sinceLastConsolidation,
@@ -437,28 +507,33 @@ function checkConsolidationDue() {
 }
 
 /**
- * Mark consolidation as completed (called after /memory-seed runs).
+ * Mark consolidation as completed for a project (called after a run finishes).
+ * Scoped to the project-slot; other projects' counters are untouched.
  */
-function markConsolidated() {
+function markConsolidated(hash) {
   const state = loadCaptureState();
-  state.last_consolidation_turn = state.turn_count || 0;
-  state.consolidation_due = false;
-  state.last_consolidation_time = new Date().toISOString();
-  advanceWarmup(state, getConsolidateEvery()); // back the warmup cadence off one step
+  const slot = ensureSlot(state, hash !== undefined ? hash : activeHash());
+  slot.last_consolidation_turn = slot.turn_count || 0;
+  slot.consolidation_due = false;
+  slot.last_consolidation_time = new Date().toISOString();
+  advanceWarmup(slot, getConsolidateEvery()); // back the warmup cadence off one step
+  state.last_consolidation_time = slot.last_consolidation_time; // global mirror for legacy readers
   saveCaptureState(state);
 }
 
-function status() {
+function status(hash) {
   const state = loadCaptureState();
-  const threshold = getConsolidateEvery();
-  const since = (state.turn_count || 0) - (state.last_consolidation_turn || 0);
+  const slot = readSlot(state, hash !== undefined ? hash : activeHash());
+  const threshold = warmupThreshold(slot, getConsolidateEvery());
+  const since = (slot.turn_count || 0) - (slot.last_consolidation_turn || 0);
   return {
-    total_turns: state.turn_count || 0,
+    total_turns: slot.turn_count || 0,
     turns_since_consolidation: since,
     consolidation_threshold: threshold,
-    consolidation_due: !!state.consolidation_due,
-    last_consolidation_time: state.last_consolidation_time || null,
+    consolidation_due: !!slot.consolidation_due,
+    last_consolidation_time: slot.last_consolidation_time || state.last_consolidation_time || null,
     active_sessions: Object.keys(state.sessions || {}).length,
+    global_turns: state.turn_count || 0,
   };
 }
 

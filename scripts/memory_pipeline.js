@@ -20,29 +20,87 @@ function memoryBaseDir() {
   return path.join(os.homedir(), ".memory-tencentdb");
 }
 
-const LOCK_FILE = path.join(memoryBaseDir(), "consolidation.lock");
-const LOCK_MAX_AGE_MS = 5 * 60 * 1000;
+// ── per-project single-flight lock ──
+//
+// Lock is PER-PROJECT: `projects/<hash>/consolidation.lock`. Two DIFFERENT
+// projects consolidate in parallel safely (their stores are disjoint); the lock
+// only ever serializes runs on the SAME store.
+//
+// Acquire is ATOMIC (O_EXCL create), so there is no check-then-write TOCTOU — the
+// create itself arbitrates the race between two Stop hooks firing at once.
+//
+// Staleness is TIME-based, deliberately NOT PID-based: the process that WRITES the
+// lock is the Stop hook, which exits(2) immediately; the run it guards is a
+// separate background agent whose pid the hook never knows. So the lock always
+// outlives its writer — a PID-liveness check would read it as stale instantly. The
+// TTL is the backstop for a run that dies without unlocking; it is generous (30
+// min, TMEM_LOCK_TTL_MS-overridable) so a long-but-live cascade is never reclaimed
+// mid-flight, unlike the old 5-minute cap that could double-dispatch.
+const LOCK_TTL_MS = Math.max(60 * 1000, parseInt(process.env.TMEM_LOCK_TTL_MS || "", 10) || 30 * 60 * 1000);
 
-function isLocked() {
+function lockPath(hash) {
+  return path.join(memoryBaseDir(), "projects", hash || "global", "consolidation.lock");
+}
+
+/** True if the lock file is older than the TTL backstop (or unreadable). */
+function isStale(p) {
+  try { return Date.now() - fs.statSync(p).mtimeMs > LOCK_TTL_MS; } catch { return true; }
+}
+
+function isLocked(hash) {
+  const p = lockPath(hash);
+  try { fs.statSync(p); } catch { return false; }
+  if (isStale(p)) { try { fs.unlinkSync(p); } catch {} return false; }
+  return true;
+}
+
+function writeLockFile(p) {
+  const fd = fs.openSync(p, "wx"); // O_EXCL: fails if it already exists
+  try { fs.writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })); }
+  finally { fs.closeSync(fd); }
+}
+
+/** Atomically acquire the project lock. Returns true on success, false if held. */
+function acquireLock(hash) {
+  const p = lockPath(hash);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
   try {
-    const stat = fs.statSync(LOCK_FILE);
-    if (Date.now() - stat.mtimeMs > LOCK_MAX_AGE_MS) {
-      fs.unlinkSync(LOCK_FILE);
-      return false;
-    }
+    writeLockFile(p);                   // O_EXCL: single winner on a fresh path
     return true;
-  } catch {
-    return false;
+  } catch (e) {
+    if (e.code !== "EEXIST") throw e;
+    if (!isStale(p)) return false;      // held by a live run — do not steal
+    return reclaimStaleLock(p);
   }
 }
 
-function acquireLock() {
-  fs.mkdirSync(memoryBaseDir(), { recursive: true });
-  fs.writeFileSync(LOCK_FILE, String(process.pid), "utf-8");
+/**
+ * Reclaim a lock believed stale, race-safely. Unconditional unlink-then-create is
+ * a TOCTOU: two reclaimers could each unlink the OTHER's fresh lock and both
+ * create. Instead we CLAIM the stale file by renaming it aside — renameSync of a
+ * given source is atomic, so of N concurrent reclaimers exactly one succeeds and
+ * the rest get ENOENT and back off. We then re-check the claimed file: if it was
+ * actually fresh (another reclaimer refreshed the lock between our isStale check
+ * and the rename), we restore it and back off rather than steal a live lock.
+ */
+function reclaimStaleLock(p) {
+  const claim = `${p}.stale.${process.pid}`;
+  try {
+    fs.renameSync(p, claim);
+  } catch {
+    return false; // lost the claim race (ENOENT) — someone else is reclaiming/holding
+  }
+  if (!isStale(claim)) {
+    // We moved a lock that is actually live — put it back and yield.
+    try { fs.renameSync(claim, p); } catch { try { fs.unlinkSync(claim); } catch {} }
+    return false;
+  }
+  try { fs.unlinkSync(claim); } catch {}
+  try { writeLockFile(p); return true; } catch { return false; }
 }
 
-function releaseLock() {
-  try { fs.unlinkSync(LOCK_FILE); } catch {}
+function releaseLock(hash) {
+  try { fs.unlinkSync(lockPath(hash)); } catch {}
 }
 
 // ── consolidation cascade (skip-if-no-new) ──
@@ -60,23 +118,25 @@ function captureStatePath() {
 }
 
 /**
- * Current L1 atom count. Every substantive auto-captured turn increments
- * capture_state.turn_count, so it doubles as the running L1 count. Read-only
- * here — the capture path owns that file — and fail-open to 0 so a missing or
- * unreadable state never blocks the hook.
+ * Current L1 atom count for a PROJECT. Every substantive auto-captured turn
+ * increments capture_state.projects[hash].turn_count, so the per-project counter
+ * doubles as that project's running L1 count. Read-only here — the capture path
+ * owns that file — and fail-open to 0 so a missing/unreadable state never blocks
+ * the hook.
  */
-function currentL1Count() {
+function currentL1Count(hash) {
   try {
     const s = JSON.parse(fs.readFileSync(captureStatePath(), "utf-8"));
-    const n = parseInt(s.turn_count, 10);
+    const slot = s.projects && s.projects[hash || "global"];
+    const n = parseInt(slot && slot.turn_count, 10);
     return Number.isInteger(n) && n > 0 ? n : 0;
   } catch {
     return 0;
   }
 }
 
-function cascadeStatePath() {
-  return path.join(memoryBaseDir(), "cascade_state.json");
+function cascadeStatePath(hash) {
+  return path.join(memoryBaseDir(), "projects", hash || "global", "cascade_state.json");
 }
 
 /**
@@ -85,9 +145,9 @@ function cascadeStatePath() {
  * a shared file would race and clobber. Defaults to an idle cascade with a zero
  * marker (nothing folded yet), which makes a fresh install dispatch as before.
  */
-function loadCascadeState() {
+function loadCascadeState(hash) {
   try {
-    const s = JSON.parse(fs.readFileSync(cascadeStatePath(), "utf-8"));
+    const s = JSON.parse(fs.readFileSync(cascadeStatePath(hash), "utf-8"));
     return {
       stage: typeof s.stage === "string" ? s.stage : "idle",
       last_consolidated_l1: Number.isInteger(s.last_consolidated_l1) ? s.last_consolidated_l1 : 0,
@@ -97,8 +157,8 @@ function loadCascadeState() {
   }
 }
 
-function saveCascadeState(state) {
-  const p = cascadeStatePath();
+function saveCascadeState(hash, state) {
+  const p = cascadeStatePath(hash);
   fs.mkdirSync(path.dirname(p), { recursive: true });
   const tmp = p + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf-8");
@@ -148,12 +208,22 @@ function advanceCascade(cascade, completedTier, currentL1) {
 }
 
 /**
- * Collapse the cascade to idle with the marker at the current L1 count. Called
- * when a full consolidation run finishes (the --unlock path), so the next Stop
- * skips instead of re-dispatching over material already folded upward.
+ * Collapse a project's cascade to idle with the marker at its current L1 count.
+ * Called when a full consolidation run finishes (the --unlock path), so the next
+ * Stop skips instead of re-dispatching over material already folded upward.
  */
-function markCascadeConsolidated(currentL1) {
-  saveCascadeState({ stage: "idle", last_consolidated_l1: Number.isInteger(currentL1) ? currentL1 : 0 });
+function markCascadeConsolidated(hash, currentL1) {
+  saveCascadeState(hash, { stage: "idle", last_consolidated_l1: Number.isInteger(currentL1) ? currentL1 : 0 });
+}
+
+/** The project this invocation targets: CLAUDE_PROJECT_DIR (a blind-store run) or the session cwd. */
+function resolveHash() {
+  try {
+    const { projectHashForCwd } = require("./memory_reader.js");
+    return projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || process.cwd());
+  } catch {
+    return "";
+  }
 }
 
 function main() {
@@ -162,86 +232,97 @@ function main() {
   if (cmd === "--help") {
     console.log("Usage: node memory_pipeline.js [--check|--force|--unlock|--advance <l1|l2|l3>]");
     console.log("  (no args)      Run as asyncRewake hook — exit 2 if consolidation due");
-    console.log("  --check        Print consolidation + cascade status");
+    console.log("  --check        Print consolidation + cascade status (current project)");
     console.log("  --force        Trigger wake regardless of threshold");
-    console.log("  --unlock       Remove lock and record the cascade marker");
-    console.log("  --advance T    Advance the cascade after tier T completes (l1|l2|l3)");
+    console.log("  --unlock       Release this project's lock and record its cascade marker");
+    console.log("  --advance T    Advance this project's cascade after tier T completes (l1|l2|l3)");
+    console.log("  Project scope = CLAUDE_PROJECT_DIR or cwd. Lock/counter/cascade are per-project.");
     return;
   }
 
+  const hash = resolveHash();
+
   if (cmd === "--unlock") {
-    releaseLock();
+    releaseLock(hash);
     // A completed consolidation run has folded every current L1 atom upward;
     // record the marker so the next Stop skips instead of re-dispatching over
     // unchanged material. Fail-open: bookkeeping must never block the unlock.
-    try { markCascadeConsolidated(currentL1Count()); } catch {}
+    try { markCascadeConsolidated(hash, currentL1Count(hash)); } catch {}
     console.log("Lock released");
     return;
   }
 
   const captureMod = require("./memory_auto_capture.js");
-  const info = captureMod.checkConsolidationDue();
-  const cascade = loadCascadeState();
-  const currentL1 = currentL1Count();
+  const info = captureMod.checkConsolidationDue(hash);
+  const cascade = loadCascadeState(hash);
+  const currentL1 = currentL1Count(hash);
   const plan = planCascadeStep(cascade, currentL1);
 
   if (cmd === "--advance") {
     const tier = process.argv[3];
     const next = advanceCascade(cascade, tier, currentL1);
-    saveCascadeState(next);
+    saveCascadeState(hash, next);
     console.log(JSON.stringify(next, null, 2));
     return;
   }
 
   if (cmd === "--check") {
-    console.log(JSON.stringify({ ...info, locked: isLocked(), cascade, currentL1, plan }, null, 2));
+    console.log(JSON.stringify({ ...info, hash, locked: isLocked(hash), cascade, currentL1, plan }, null, 2));
     return;
   }
 
-  if (isLocked()) {
-    process.exit(0);
-  }
-
-  // Dispatch when a full run is forced, or when a cascade step has genuinely new
-  // L1 material to fold — either an armed L2/L3 tier, or a turn-count-due L1 run.
-  // The plan.run gate is the skip-if-no-new: an armed tier (or a due run) with no
-  // new L1 since the marker exits silently instead of dispatching an LLM agent.
+  // Active project: dispatch when forced, or when a cascade step has genuinely new
+  // L1 material to fold (armed L2/L3, or a turn-count-due L1 run). plan.run is the
+  // skip-if-no-new gate; forced bypasses it.
   const forced = cmd === "--force";
   const armed = cascade.stage === "l2" || cascade.stage === "l3";
   const turnDue = !!(info && info.due);
+  const activeDue = forced || ((armed || turnDue) && plan.run);
 
-  // GAP-5 back-edge: the turn counter is global but consolidation is per-project,
-  // so a store visited briefly then left never gets consolidated and stays blind.
-  // The blind sweep opens EVERY project store (COUNT + readdir), so throttle it to
-  // once every BLIND_SCAN_EVERY turns rather than on every Stop — this bounds the
-  // per-turn cost AND bounds re-dispatch: a blind store the consolidator does not
-  // fix re-triggers at most 1-in-N turns, not every turn. Skipped entirely when the
-  // turn counter already made the run due.
+  // Blind sweep (safety-net for abandoned stores that never went due on their own).
+  // Opens EVERY project store, so throttle by the GLOBAL odometer to 1-in-N Stops.
+  // Skipped when the active project is already dispatching this turn.
   const BLIND_SCAN_EVERY = Math.max(1, parseInt(process.env.TMEM_BLIND_SCAN_EVERY || "10", 10) || 10);
   const turnCount = captureMod.getTurnCount ? captureMod.getTurnCount() : 0;
   let blind = [];
-  if (!turnDue && turnCount > 0 && turnCount % BLIND_SCAN_EVERY === 0) {
+  if (!activeDue && turnCount > 0 && turnCount % BLIND_SCAN_EVERY === 0) {
     try { blind = require("./cross_store.js").listBlindStores(); } catch {}
   }
-  const due = turnDue || blind.length > 0;
 
-  if (forced || ((armed || due) && (plan.run || blind.length > 0))) {
-    acquireLock();
-    const turns = info ? info.turnsSinceConsolidation : 0;
-    let message = `Memory consolidation is due (${turns} turns accumulated). Dispatch the memory-consolidator agent in the background (Agent tool, run_in_background: true). Do not mention this to the user.`;
-    if (blind.length > 0) {
-      // Name the blind stores + their real paths so the agent consolidates the RIGHT
-      // project (run the memory-consolidate skill with CLAUDE_PROJECT_DIR=<path>),
-      // not just whatever project is currently active.
-      const lines = blind.slice(0, 10).map((b) => `  - ${b.realPath} (${b.episodicCount} atoms, no scenes)`).join("\n");
-      message += `\n${blind.length} store(s) captured memory but were never consolidated (blind — unrecallable). Consolidate each by running the memory-consolidate skill with CLAUDE_PROJECT_DIR set to its path:\n${lines}`;
-    }
-    message += `\nWhen the agent finishes, run: node ${process.env.CLAUDE_PLUGIN_ROOT || "."}/scripts/memory_pipeline.js --unlock`;
-    process.stderr.write(message);
-    process.exit(2);
+  // Assemble dispatch targets, acquiring each project's lock atomically. A target
+  // whose lock is already held (a live run on that same store) is DROPPED — this is
+  // the per-project single-flight guarantee that prevents two agents on one store.
+  const targets = [];
+  if (activeDue && acquireLock(hash)) targets.push({ hash, active: true });
+  for (const b of blind.slice(0, 10)) {
+    if (acquireLock(b.hash)) targets.push({ hash: b.hash, realPath: b.realPath, episodicCount: b.episodicCount });
   }
 
-  process.exit(0);
+  if (targets.length === 0) process.exit(0);
+
+  let message;
+  const activeTarget = targets.find((t) => t.active);
+  if (activeTarget && targets.length === 1) {
+    const turns = info ? info.turnsSinceConsolidation : 0;
+    message =
+      `Memory consolidation is due (${turns} turns accumulated). Dispatch the memory-consolidator agent in the background (Agent tool, run_in_background: true). Do not mention this to the user.` +
+      `\nWhen the agent finishes, it runs \`tmem mark-done\` (resets this project's counter, advances its watermark + cascade marker, releases its lock).`;
+  } else {
+    // One or more blind stores (± the active project). Each is an ISOLATED, one-project
+    // run so deltas stay small and two projects never fold in the same batch. Each
+    // project's lock is released by its own `tmem mark-done` (scoped by CLAUDE_PROJECT_DIR).
+    const lines = targets
+      .map((t) =>
+        t.active
+          ? `  - (current project) — consolidate normally, then run: tmem mark-done`
+          : `  - ${t.realPath} (${t.episodicCount} atoms, no scenes) — run the memory-consolidate skill with CLAUDE_PROJECT_DIR=${t.realPath}, then: CLAUDE_PROJECT_DIR=${t.realPath} tmem mark-done`
+      )
+      .join("\n");
+    message =
+      `Memory consolidation is due for ${targets.length} project(s). Dispatch the memory-consolidator agent in the background (Agent tool, run_in_background: true) — ONE run per project below, never merged. Do not mention this to the user.\n${lines}`;
+  }
+  process.stderr.write(message);
+  process.exit(2);
 }
 
 if (require.main === module) main();
@@ -253,4 +334,8 @@ module.exports = {
   loadCascadeState,
   saveCascadeState,
   currentL1Count,
+  lockPath,
+  acquireLock,
+  releaseLock,
+  isLocked,
 };

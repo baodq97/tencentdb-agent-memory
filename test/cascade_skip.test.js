@@ -19,27 +19,42 @@ const { execFileSync } = require("node:child_process");
 
 const SCRIPT = path.join(__dirname, "..", "scripts", "memory_pipeline.js");
 const { planCascadeStep, advanceCascade } = require("../scripts/memory_pipeline.js");
+const { projectHashForCwd } = require("../scripts/memory_reader.js");
 
+// A deterministic project scope for the per-project state. The temp dir has no
+// .git, so projectHashForCwd falls back to the slug of its own path.
+const PROJ = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-cas-proj-"));
+const HASH = projectHashForCwd(PROJ);
+
+// Seed the per-project counter + cascade. turn_count doubles as the project's L1
+// count; consolidation_due arms the turn-count path.
 function seed(home, { turnCount, cascade }) {
   const base = path.join(home, ".memory-tencentdb");
-  fs.mkdirSync(base, { recursive: true });
+  const projDir = path.join(base, "projects", HASH);
+  fs.mkdirSync(projDir, { recursive: true });
   fs.writeFileSync(
     path.join(base, "capture_state.json"),
-    JSON.stringify({ turn_count: turnCount, last_consolidation_turn: 0, consolidation_due: true })
+    JSON.stringify({
+      turn_count: turnCount,
+      projects: { [HASH]: { turn_count: turnCount, last_consolidation_turn: 0, consolidation_due: true } },
+    })
   );
-  fs.writeFileSync(path.join(base, "cascade_state.json"), JSON.stringify(cascade));
+  fs.writeFileSync(path.join(projDir, "cascade_state.json"), JSON.stringify(cascade));
   return base;
 }
 
-// Run the asyncRewake hook (no args). Returns { code, locked }.
+// Run the asyncRewake hook (no args) scoped to the seeded project. { code, locked }.
 function runHook(home) {
   let code = 0;
   try {
-    execFileSync("node", [SCRIPT], { env: { ...process.env, HOME: home, USERPROFILE: home }, stdio: "pipe" });
+    execFileSync("node", [SCRIPT], {
+      env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_PROJECT_DIR: PROJ },
+      stdio: "pipe",
+    });
   } catch (e) {
     code = e.status;
   }
-  const locked = fs.existsSync(path.join(home, ".memory-tencentdb", "consolidation.lock"));
+  const locked = fs.existsSync(path.join(home, ".memory-tencentdb", "projects", HASH, "consolidation.lock"));
   return { code, locked };
 }
 

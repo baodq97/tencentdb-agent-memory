@@ -36,8 +36,17 @@ Invoke the memory-consolidate skill via the Skill tool, then follow its workflow
 
 ## When done
 
-Mark consolidation complete and release the lock:
+Mark consolidation complete for THIS project — resets its counter, advances its
+read watermark + cascade marker, and releases its per-project lock:
 
 ```bash
 tmem mark-done
+```
+
+Counters and locks are per-project. If you were dispatched to consolidate a
+specific store (a blind store named with its path), run the skill AND `mark-done`
+with `CLAUDE_PROJECT_DIR` set to that path, so the right project's lock is released:
+
+```bash
+CLAUDE_PROJECT_DIR=<path> tmem mark-done
 ```

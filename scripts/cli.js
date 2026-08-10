@@ -20,6 +20,11 @@ function getDirs() {
   return { gDir: globalDir(), pDir: projectDir(pHash), pHash };
 }
 
+// Per-project consolidation lock — must match memory_pipeline.js lockPath().
+function projectLockPath(pHash) {
+  return path.join(os.homedir(), ".memory-tencentdb", "projects", pHash || "global", "consolidation.lock");
+}
+
 // Resolve a `--scope global|project` flag to its store dir. One definition shared
 // by the persona read + write commands so they can't drift on what a scope means.
 function resolveScope(args, usage) {
@@ -93,7 +98,7 @@ function cmdStatus() {
   const scenes = listScenes(pDir);
   console.log("Scenes:", scenes.length, scenes.length ? scenes.map(s => s.filename).join(", ") : "");
 
-  console.log("\nCapture:", JSON.stringify(captureStatus()));
+  console.log("\nCapture:", JSON.stringify(captureStatus(pHash)));
 }
 
 // ── recall ──
@@ -1127,14 +1132,14 @@ function cmdWritePersona(args = []) {
 // ── mark-done ──
 function cmdMarkDone() {
   const { markConsolidated } = req("memory_auto_capture.js");
-  markConsolidated();
+  const { pDir, pHash } = getDirs();
+  markConsolidated(pHash); // reset THIS project's counter only
   // Advance the per-project read cursor to the newest atom folded this run, so
   // the next `atoms --since-last` sees only what arrived after now. Best-effort:
   // a failure here must not block releasing the lock.
   try {
     const { MemoryStore } = req("memory_store.js");
     const { setConsolidatedWatermark } = req("memory_writer.js");
-    const { pDir, pHash } = getDirs();
     const db = path.join(pDir, "index.db");
     if (pHash && fs.existsSync(db)) {
       const store = new MemoryStore(db);
@@ -1143,14 +1148,23 @@ function cmdMarkDone() {
       if (maxTs) setConsolidatedWatermark(pHash, maxTs);
     }
   } catch {}
-  const lockFile = path.join(os.homedir(), ".memory-tencentdb", "consolidation.lock");
+  // Record the cascade marker at this project's current L1 count so the next Stop
+  // skips instead of re-dispatching over material already folded. This is the real
+  // completion path (the agent runs `tmem mark-done`, not the pipeline --unlock),
+  // so the marker must be advanced here too. Best-effort — never block the unlock.
+  try {
+    const { markCascadeConsolidated, currentL1Count } = req("memory_pipeline.js");
+    markCascadeConsolidated(pHash, currentL1Count(pHash));
+  } catch {}
+  const lockFile = projectLockPath(pHash);
   try { fs.unlinkSync(lockFile); } catch {}
   console.log("Consolidation marked complete, lock released.");
 }
 
 // ── unlock ──
 function cmdUnlock() {
-  const lockFile = path.join(os.homedir(), ".memory-tencentdb", "consolidation.lock");
+  const { pHash } = getDirs();
+  const lockFile = projectLockPath(pHash);
   try { fs.unlinkSync(lockFile); console.log("Lock released."); } catch { console.log("No lock file."); }
 }
 
