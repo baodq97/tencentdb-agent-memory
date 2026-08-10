@@ -5,6 +5,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-08-10
+
+Per-project consolidation + a measured optimization of the consolidator agent.
+
+### Changed
+- **Per-project consolidation counter, trigger, and single-flight lock.** The turn
+  counter and consolidation trigger were global — one busy project drove the shared
+  counter to threshold while the active/target project diverged, and a single global
+  lock (non-atomic write, 5-min stale reclaim) let two consolidator agents run in
+  parallel on the same store. Now `capture_state.projects[<hash>]` counts and triggers
+  per project; cascade state is per-project; the lock is per-project, acquired
+  atomically (O_EXCL) with a 30-min mtime-TTL (`TMEM_LOCK_TTL_MS`) and race-safe stale
+  reclaim. Two different projects consolidate in parallel; the same store never
+  double-runs. Migration is lazy/additive (a slot is seeded to its existing backlog,
+  so upgrade makes no project due at once).
+- **Consolidator agent optimized for fewer calls/tokens.** Profiled on 59 real
+  subagent transcripts: the tail cost was shell repo-poking (38.6x) and fragmented
+  state reads (1.9x). Added `tmem consolidate-context` (one JSON bundle of status +
+  scenes + atoms delta + persona + doctrine + changelog, replacing 5-6 separate
+  reads) and `tmem write-scenes` (batch scene write from one JSON array); the
+  memory-consolidate skill + agent now carry a hard atoms-only boundary (no
+  grep/find/cat/ls/sed, no repo exploration).
+
 ## [0.8.0] — 2026-08-06
 
 Closes six measured end-to-end gaps in the memory pipeline (capture → embed →

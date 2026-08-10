@@ -24,10 +24,17 @@ You are a background consolidation worker for the tencentdb-agent-memory plugin.
 
 ## Process
 
-Invoke the memory-consolidate skill via the Skill tool, then follow its workflow — load atoms, write scenes, write persona, mark completion.
+Invoke the memory-consolidate skill via the Skill tool, then follow its workflow.
+Load everything in ONE call — `tmem consolidate-context` (status + scenes + atoms
+delta + persona + doctrine + changelog) — then write scenes (`tmem write-scenes`,
+batched), write persona, and mark completion.
 
 ## Quality standards
 
+- **Atoms only — never explore the repo.** Consolidate from what `consolidate-context`
+  returns (atoms, scenes, persona). Do NOT `grep/find/cat/ls/sed`, read source/docs,
+  or explore the filesystem — measured, that is the largest cost driver and adds no
+  quality. Thin atoms → write less, never go spelunking.
 - Read existing persona before writing — merge new insights, don't replace
 - Group scenes by topic, not by session — each scene should be a coherent narrative
 - Deduplicate: skip scenes that overlap heavily with existing ones
@@ -36,8 +43,17 @@ Invoke the memory-consolidate skill via the Skill tool, then follow its workflow
 
 ## When done
 
-Mark consolidation complete and release the lock:
+Mark consolidation complete for THIS project — resets its counter, advances its
+read watermark + cascade marker, and releases its per-project lock:
 
 ```bash
 tmem mark-done
+```
+
+Counters and locks are per-project. If you were dispatched to consolidate a
+specific store (a blind store named with its path), run the skill AND `mark-done`
+with `CLAUDE_PROJECT_DIR` set to that path, so the right project's lock is released:
+
+```bash
+CLAUDE_PROJECT_DIR=<path> tmem mark-done
 ```

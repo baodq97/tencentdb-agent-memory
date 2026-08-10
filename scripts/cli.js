@@ -20,6 +20,11 @@ function getDirs() {
   return { gDir: globalDir(), pDir: projectDir(pHash), pHash };
 }
 
+// Per-project consolidation lock — must match memory_pipeline.js lockPath().
+function projectLockPath(pHash) {
+  return path.join(os.homedir(), ".memory-tencentdb", "projects", pHash || "global", "consolidation.lock");
+}
+
 // Resolve a `--scope global|project` flag to its store dir. One definition shared
 // by the persona read + write commands so they can't drift on what a scope means.
 function resolveScope(args, usage) {
@@ -93,7 +98,7 @@ function cmdStatus() {
   const scenes = listScenes(pDir);
   console.log("Scenes:", scenes.length, scenes.length ? scenes.map(s => s.filename).join(", ") : "");
 
-  console.log("\nCapture:", JSON.stringify(captureStatus()));
+  console.log("\nCapture:", JSON.stringify(captureStatus(pHash)));
 }
 
 // ── recall ──
@@ -855,6 +860,70 @@ function cmdAtoms(args) {
   console.log(JSON.stringify(result, null, 2));
 }
 
+// ── consolidate-context ──
+// One call that bundles everything the memory-consolidate skill's read phase used
+// to fetch in 5-6 separate `tmem` invocations (status, scenes list, atoms delta,
+// persona, doctrine, changelog). Each old call was a separate LLM round-trip; this
+// collapses them to one. Composed purely from existing readers — no new store logic.
+function cmdConsolidateContext(args) {
+  const rest = Array.isArray(args) ? args : [String(args || "")];
+  const { MemoryStore } = req("memory_store.js");
+  const { readState, listScenes, readPersona } = req("memory_writer.js");
+  const { gDir, pDir, pHash } = getDirs();
+
+  const arg = (name, dflt) => { const i = rest.indexOf(name); return i !== -1 && rest[i + 1] ? rest[i + 1] : dflt; };
+  const atomLimit = parseInt(arg("--limit", "500"), 10) || 500;
+  const changelogLast = parseInt(arg("--last", "30"), 10) || 30;
+
+  // status: totals + counts by the types consolidation reasons over. Read-only.
+  const counts = (db) => {
+    if (!fs.existsSync(db)) return null;
+    try {
+      const s = new MemoryStore(db, { readOnly: true });
+      const byType = {};
+      for (const t of ["episodic", "semantic", "persona", "instruction"]) byType[t] = s.count(t);
+      const total = s.count("");
+      s.close();
+      return { total, byType };
+    } catch { return null; }
+  };
+
+  // atoms DELTA since the per-project watermark — same cursor as `tmem atoms
+  // --since-last` (cli cmdAtoms): read only what arrived since the last run.
+  let since = arg("--since", "");
+  if (!since) {
+    const st = readState();
+    since = (st.projects && st.projects[pHash] && st.projects[pHash].last_consolidated) || "";
+  }
+  const delta = (db) => {
+    if (!fs.existsSync(db)) return [];
+    try { const s = new MemoryStore(db); const r = s.recordsSince(since, "", atomLimit); s.close(); return r; }
+    catch { return []; }
+  };
+
+  // changelog tail — same merge/sort as cmdChangelog, newest first.
+  const changelog = [];
+  for (const [scope, dir] of [["global", gDir], ["project", pDir]]) {
+    const lp = path.join(dir, "changelog.jsonl");
+    if (!fs.existsSync(lp)) continue;
+    for (const line of fs.readFileSync(lp, "utf-8").trim().split("\n").filter(Boolean)) {
+      try { changelog.push({ ...JSON.parse(line), scope }); } catch {}
+    }
+  }
+  changelog.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+
+  const out = {
+    project_hash: pHash,
+    watermark: since || null,
+    status: { global: counts(path.join(gDir, "index.db")), project: counts(path.join(pDir, "index.db")) },
+    scenes: listScenes(pDir),
+    atoms: { project: delta(path.join(pDir, "index.db")), global: delta(path.join(gDir, "index.db")) },
+    persona: { global: readPersona(gDir) || "", project: readPersona(pDir) || "" },
+    changelog: changelog.slice(0, changelogLast),
+  };
+  console.log(JSON.stringify(out, null, 2));
+}
+
 // ── sessions ──
 function cmdSessions() {
   const { readState } = req("memory_writer.js");
@@ -1067,6 +1136,36 @@ function cmdWriteScene(args) {
   console.log("Wrote scene:", p);
 }
 
+// ── write-scenes (batch) ──
+// Write N scenes from ONE JSON array on stdin, so a run with many scenes makes one
+// tool-call instead of N heredoc `write-scene`s. Reuses writeSceneBlock (same writer
+// as cmdWriteScene), so a reused name updates in place rather than duplicating.
+function cmdWriteScenes() {
+  const { writeSceneBlock, projectDir } = req("memory_writer.js");
+  const { projectHashForCwd } = req("memory_reader.js");
+  const pHash = projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || ".");
+
+  let raw = "";
+  try { raw = fs.readFileSync(0, "utf-8"); } catch {}
+  let scenes;
+  try { scenes = JSON.parse(raw); } catch {
+    console.error('write-scenes: stdin must be a JSON array [{name,summary,heat,body}]'); process.exit(1);
+  }
+  if (!Array.isArray(scenes) || scenes.length === 0) {
+    console.error("write-scenes: expected a non-empty JSON array of scenes"); process.exit(1);
+  }
+  // Validate the WHOLE batch before writing anything — a bad entry mid-array must
+  // not leave earlier scenes flushed to disk (the error implies "wrote nothing").
+  const normalized = scenes.map((s, i) => {
+    const name = s && s.name, summary = s && s.summary;
+    if (!name || !summary) { console.error(`write-scenes: entry ${i} needs name+summary (got: ${JSON.stringify(s).slice(0, 80)})`); process.exit(1); }
+    return { name, summary, body: (s.body && String(s.body).trim()) || summary, heat: parseInt(s.heat, 10) || 1 };
+  });
+  const base = projectDir(pHash);
+  for (const s of normalized) writeSceneBlock(base, s.name, s.summary, s.body, s.heat);
+  console.log(`Wrote ${normalized.length} scene(s) → ${pHash}`);
+}
+
 // ── write-persona ──
 function cmdWritePersona(args = []) {
   const { writePersona } = req("memory_writer.js");
@@ -1127,14 +1226,14 @@ function cmdWritePersona(args = []) {
 // ── mark-done ──
 function cmdMarkDone() {
   const { markConsolidated } = req("memory_auto_capture.js");
-  markConsolidated();
+  const { pDir, pHash } = getDirs();
+  markConsolidated(pHash); // reset THIS project's counter only
   // Advance the per-project read cursor to the newest atom folded this run, so
   // the next `atoms --since-last` sees only what arrived after now. Best-effort:
   // a failure here must not block releasing the lock.
   try {
     const { MemoryStore } = req("memory_store.js");
     const { setConsolidatedWatermark } = req("memory_writer.js");
-    const { pDir, pHash } = getDirs();
     const db = path.join(pDir, "index.db");
     if (pHash && fs.existsSync(db)) {
       const store = new MemoryStore(db);
@@ -1143,14 +1242,23 @@ function cmdMarkDone() {
       if (maxTs) setConsolidatedWatermark(pHash, maxTs);
     }
   } catch {}
-  const lockFile = path.join(os.homedir(), ".memory-tencentdb", "consolidation.lock");
+  // Record the cascade marker at this project's current L1 count so the next Stop
+  // skips instead of re-dispatching over material already folded. This is the real
+  // completion path (the agent runs `tmem mark-done`, not the pipeline --unlock),
+  // so the marker must be advanced here too. Best-effort — never block the unlock.
+  try {
+    const { markCascadeConsolidated, currentL1Count } = req("memory_pipeline.js");
+    markCascadeConsolidated(pHash, currentL1Count(pHash));
+  } catch {}
+  const lockFile = projectLockPath(pHash);
   try { fs.unlinkSync(lockFile); } catch {}
   console.log("Consolidation marked complete, lock released.");
 }
 
 // ── unlock ──
 function cmdUnlock() {
-  const lockFile = path.join(os.homedir(), ".memory-tencentdb", "consolidation.lock");
+  const { pHash } = getDirs();
+  const lockFile = projectLockPath(pHash);
   try { fs.unlinkSync(lockFile); console.log("Lock released."); } catch { console.log("No lock file."); }
 }
 
@@ -2165,8 +2273,10 @@ CONSOLIDATE — atoms → scenes + persona  (invoked by the memory-seed / memory
   sessions                   List pending sessions for seeding
   read-session <path>        Format a session transcript for extraction
   atoms [global|project|all] [--since <iso> | --since-last]  Dump L1 atoms as JSON (--since-last = only new since last consolidation)
+  consolidate-context [--limit N] [--last N]  One-shot read bundle for the consolidator: status + scenes + atoms delta + persona + doctrine + changelog (JSON)
   write-l1 [--session id]    Write L1 atoms from stdin JSON
   write-scene --name --summary --heat  Write a scene block (body from stdin)
+  write-scenes               Write many scenes from one JSON array on stdin [{name,summary,heat,body}]
   write-persona [--scope global|project] [--force]  Write global persona / project doctrine from stdin (budget gate; --force to override)
   mark-done                  Mark consolidation complete + release the lock
 
@@ -2204,6 +2314,7 @@ CONTRIB (separate sub-domain)
     case "projects": return cmdProjects();
     case "migrate-fragments": return cmdMigrateFragments(rest);
     case "atoms": return cmdAtoms(rest);
+    case "consolidate-context": return cmdConsolidateContext(rest);
     case "sessions": return cmdSessions();
     case "read-session": return cmdReadSession(restStr);
     case "digest": return cmdDigest(rest);
@@ -2211,6 +2322,7 @@ CONTRIB (separate sub-domain)
     case "persona-candidates": return cmdPersonaCandidates(rest);
     case "write-l1": return cmdWriteL1(rest);
     case "write-scene": return cmdWriteScene(rest);
+    case "write-scenes": return cmdWriteScenes();
     case "write-persona": return cmdWritePersona(rest);
     case "scene": return cmdScene(restStr);
     case "scenes": return cmdScenes(rest[0], rest);

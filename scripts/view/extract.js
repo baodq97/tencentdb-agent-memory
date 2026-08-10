@@ -776,9 +776,27 @@ function readCaptureStateDoc(rootDir) {
   if (r.status !== STATUS.OK) {
     return r.status === STATUS.UNMEASURED ? unmeasured(r.reason, NO_CAPTURE) : errored(r.reason, NO_CAPTURE);
   }
+  // The turn counter and consolidation watermark are PER-PROJECT (capture_state
+  // .projects[hash]); the root turn_count is only a global odometer. The backlog
+  // shown here is the honest sum across projects: Σ turn_count − Σ last_consolidation_turn.
+  // Fall back to the root scalars for a pre-migration (legacy) capture_state.
+  const projects = r.value.projects && typeof r.value.projects === "object" ? r.value.projects : null;
+  let turnCount;
+  let lastConsolidationTurn;
+  if (projects && Object.keys(projects).length > 0) {
+    turnCount = 0;
+    lastConsolidationTurn = 0;
+    for (const slot of Object.values(projects)) {
+      turnCount += toFiniteNumber(slot && slot.turn_count, 0);
+      lastConsolidationTurn += toFiniteNumber(slot && slot.last_consolidation_turn, 0);
+    }
+  } else {
+    turnCount = toFiniteNumber(r.value.turn_count, 0);
+    lastConsolidationTurn = toFiniteNumber(r.value.last_consolidation_turn, 0);
+  }
   return ok({
-    turnCount: toFiniteNumber(r.value.turn_count, 0),
-    lastConsolidationTurn: toFiniteNumber(r.value.last_consolidation_turn, 0),
+    turnCount,
+    lastConsolidationTurn,
     sessions: r.value.sessions && typeof r.value.sessions === "object" ? r.value.sessions : {},
   });
 }
