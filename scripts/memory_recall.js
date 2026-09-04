@@ -242,18 +242,54 @@ function factHash(text) { return crypto.createHash("sha1").update(String(text)).
  * `facts`; a null slot means that bullet could not be embedded (ranker skips it).
  * Only cache misses hit the daemon, in parallel.
  */
+/**
+ * Per-turn ceiling on cache-miss embeds, and how many run at once.
+ *
+ * WHY BOUNDED. This used to be `Promise.all(misses.map(...))` — every miss fired
+ * at the daemon simultaneously. The daemon serialises requests, so on a store
+ * this process has not warmed, the Nth request waits N x ~120ms before it is even
+ * started: at 90 misses the tail is ~10s and times out no matter how generous the
+ * per-call budget is. Only SUCCESSES are cached, so the losers are retried from
+ * scratch next turn and lose again. That is not a hypothetical — store-wide the
+ * fact-vector cache covers 1358 of 3415 scene facts (39.8%), and the missing share
+ * is not random, it is whatever kept losing the race.
+ *
+ * A bounded slice converges instead of thrashing: each attempt gets the daemon
+ * mostly to itself and succeeds, and the cache fills over a few turns. Slightly
+ * fewer facts rank semantically on the first turns in a new project — but they
+ * rank on fewer facts today anyway, and today they do not converge.
+ */
+const FACT_EMBED_MAX_PER_TURN = 12;
+const FACT_EMBED_CONCURRENCY = 3;
+
+/** Map with bounded concurrency, preserving input order. */
+async function mapBounded(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
 async function embedFactsCached(facts, embedFn) {
   const cache = loadFactVecCache();
   const misses = [];
   for (const f of facts) {
     const h = factHash(f.text);
-    if (!cache[h]) misses.push({ h, text: f.text });
+    if (!cache[h] && !misses.some((m) => m.h === h)) misses.push({ h, text: f.text });
   }
   if (misses.length) {
-    const results = await Promise.all(misses.map(async (m) => {
+    const batch = misses.slice(0, FACT_EMBED_MAX_PER_TURN);
+    const results = await mapBounded(batch, FACT_EMBED_CONCURRENCY, async (m) => {
       try { const r = await embedFn(m.text); return { h: m.h, vec: r && r.vector ? Array.from(r.vector) : null }; }
       catch { return { h: m.h, vec: null }; }
-    }));
+    });
     let changed = false;
     for (const r of results) if (r.vec) { cache[r.h] = r.vec; changed = true; }
     if (changed) saveFactVecCache(cache);

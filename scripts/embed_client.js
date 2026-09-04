@@ -21,10 +21,31 @@ const { addrForDir, readPidFile, pidAlive } = require("./embed_daemon.js");
 
 const SCRIPTS_DIR = __dirname;
 const DAEMON_PATH = path.join(__dirname, "embed_daemon.js");
-// Warm round-trip (connect + embed + JSON both ways) measured at ~70ms median,
-// with idle-wake first calls spiking to ~280ms. 500ms gives headroom for jitter
-// while a down daemon still fails fast via ENOENT (no added latency when absent).
-const DEFAULT_TIMEOUT_MS = 500;
+// A TIMEOUT IS A CEILING, NOT A WAIT. The call returns the moment the daemon
+// replies, so a higher bound costs nothing on the common path — it only decides
+// when we give up and answer with something worse.
+//
+// 500ms was set from "~70ms median, idle-wake first calls spiking to ~280ms".
+// Re-measured 2026-09-04 on this machine, both numbers are wrong:
+//   idle       n=20  p50 120ms  p90 1345ms  p99 2037ms   5/20 over 500ms
+//   under load n=30  p50 131ms  p90  431ms  p99  985ms   3/30 over 500ms
+// The budget sat between p50 and p90, so it fired on roughly one call in ten.
+// Note idle is WORSE at the tail than loaded: after a gap the model is
+// descheduled and the first call pays to bring it back. That is the same
+// "idle-wake spike" the old comment named, about 5x larger than it assumed.
+//
+// WHAT THE OLD BUDGET COST. This is the only embed on the recall hot path, and
+// recallAsync treats a null vector as "no query vector", which silently drops the
+// turn to keyword ranking — measured at 48% of facts surfaced versus 91% for the
+// semantic path. So the timeout was not degrading latency, it was degrading
+// ANSWERS, on ~10% of turns, with no signal to anyone.
+//
+// 2500ms clears the measured p99 with margin. A daemon that is actually absent
+// still fails fast via ENOENT rather than waiting this out, so the new ceiling is
+// only ever paid when the daemon is connected and mid-inference — exactly the
+// case where waiting beats answering from keywords. It stays well inside the 8s
+// hook budget.
+const DEFAULT_TIMEOUT_MS = 2500;
 
 // Don't spawn a daemon storm when many embeds fail back-to-back within one process
 // (e.g. a recall loop while the daemon is still warming). One revive attempt per
