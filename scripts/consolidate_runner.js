@@ -40,6 +40,24 @@
  * NOTHING HERE MAY DISTURB THE SESSION. Every failure path records a reason and
  * exits 0. No stderr, no exit 2, no wake-up. That property is the point of the
  * change and is asserted by test/consolidate_runner.test.js.
+ *
+ * YOU CANNOT SANDBOX AN END-TO-END RUN FROM A WORKING TREE. Read this before
+ * trying: two separate attempts here wrote to the live store while believing
+ * they were isolated.
+ *
+ * The child's `tmem` calls go through Claude Code's Bash tool, which starts a
+ * LOGIN shell — the user's profile re-initialises PATH, so a shim placed at the
+ * front of PATH is overridden and `tmem` resolves to the installed CLI. Verified:
+ * `PATH=$SHIM:$PATH bash -lc 'command -v tmem'` returns ~/.local/bin/tmem while
+ * `bash -c` returns the shim. The installed CLI is whatever version was released,
+ * so it will not honour a MEMORY_TENCENTDB_HOME added in an unreleased tree, and
+ * the run silently reads and writes the real store.
+ *
+ * Consequence: a full end-to-end test of THIS file against a sandbox store is
+ * only possible once the store-root override has shipped. Until then verify the
+ * parts that do not require the child to write — the flags, the env, the
+ * verdicts, the lock, the hook staying silent — which is what the test file
+ * covers, and treat any live run as a live run.
  */
 "use strict";
 
