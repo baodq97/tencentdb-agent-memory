@@ -25,6 +25,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const runner = require("../scripts/consolidate_runner.js");
+const { envWithClaude } = require("./_fake_claude.js");
 const lock = require("../scripts/memory_pipeline.js");
 
 const HASH = "-test-consolidate-runner";
@@ -136,12 +137,12 @@ test("the daily cap counts attempts only, so a capped day cannot lock itself out
 
     process.env.MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY = "3";
     let spawned = false;
-    runner.runConsolidation({ hash: HASH, env: { PATH: process.env.PATH },
+    runner.runConsolidation({ hash: HASH, env: envWithClaude(),
       spawnSyncFn: () => { spawned = true; return { status: 0, stdout: "{}" }; } });
     assert.strictEqual(spawned, true, "the third attempt is still allowed");
 
     process.env.MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY = "2";
-    const rec = runner.runConsolidation({ hash: HASH, env: { PATH: process.env.PATH },
+    const rec = runner.runConsolidation({ hash: HASH, env: envWithClaude(),
       spawnSyncFn: () => { throw new Error("must not spawn past the cap"); } });
     assert.strictEqual(rec.reason, "daily-cap");
   });
@@ -164,7 +165,7 @@ test("exit 0 with an unchanged store is a NO-OP, not a success", () => {
   // fact into a scene, while the store it was pointed at did not change at all.
   withRoot((root) => {
     const rec = runner.runConsolidation({
-      hash: HASH, env: { PATH: process.env.PATH },
+      hash: HASH, env: envWithClaude(),
       spawnSyncFn: () => ({ status: 0, stdout: JSON.stringify({ is_error: false, num_turns: 8, total_cost_usd: 0.45 }) }),
     });
     assert.strictEqual(rec.verdict, "no-op");
@@ -178,7 +179,7 @@ test("a store that actually moved is CHANGED", () => {
   withRoot((root) => {
     const cl = path.join(root, "projects", HASH, "changelog.jsonl");
     const rec = runner.runConsolidation({
-      hash: HASH, env: { PATH: process.env.PATH },
+      hash: HASH, env: envWithClaude(),
       spawnSyncFn: () => {
         fs.appendFileSync(cl, JSON.stringify({ action: "updated", type: "scene" }) + "\n");
         return { status: 0, stdout: JSON.stringify({ total_cost_usd: 0.4 }) };
@@ -197,7 +198,7 @@ test("an updated-in-place scene counts, even though no file is added", () => {
     fs.writeFileSync(path.join(dir, "existing.md"), "before");
     const cl = path.join(root, "projects", HASH, "changelog.jsonl");
     const rec = runner.runConsolidation({
-      hash: HASH, env: { PATH: process.env.PATH },
+      hash: HASH, env: envWithClaude(),
       spawnSyncFn: () => {
         fs.writeFileSync(path.join(dir, "existing.md"), "after");
         fs.appendFileSync(cl, JSON.stringify({ action: "updated", type: "scene" }) + "\n");
@@ -212,7 +213,7 @@ test("an updated-in-place scene counts, even though no file is added", () => {
 test("a spawn that throws is FAILED and still releases the lock", () => {
   withRoot(() => {
     const rec = runner.runConsolidation({
-      hash: HASH, env: { PATH: process.env.PATH },
+      hash: HASH, env: envWithClaude(),
       spawnSyncFn: () => { throw new Error("boom"); },
     });
     assert.strictEqual(rec.verdict, "failed");
@@ -225,7 +226,7 @@ test("a spawn that throws is FAILED and still releases the lock", () => {
 test("the lock is released on the happy path too", () => {
   withRoot(() => {
     runner.runConsolidation({
-      hash: HASH, env: { PATH: process.env.PATH },
+      hash: HASH, env: envWithClaude(),
       spawnSyncFn: () => ({ status: 0, stdout: "{}" }),
     });
     assert.strictEqual(lock.isLocked(HASH), false);

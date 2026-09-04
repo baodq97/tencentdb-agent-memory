@@ -20,6 +20,7 @@ const { execFileSync } = require("node:child_process");
 const SCRIPT = path.join(__dirname, "..", "scripts", "memory_pipeline.js");
 const { projectHashForCwd } = require("../scripts/memory_reader.js");
 const lock = require("../scripts/memory_pipeline.js");
+const { envWithClaude } = require("./_fake_claude.js");
 
 /** Put an env var back exactly as it was, including "was not set". */
 function restore(key, value) {
@@ -164,7 +165,7 @@ test("Bar 2: same project — a due project is a target, a locked one is not", (
     process.env.MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY = "12";
     process.env.MEMORY_AUTO_CONSOLIDATE = "on";   // suite default is off; spawn is stubbed below
     const rec = runner.runConsolidation({
-      hash, projectDir: proj, trigger: "counter",
+      hash, projectDir: proj, trigger: "counter", env: envWithClaude(),
       spawnSyncFn: () => { throw new Error("a locked store must never reach spawn"); },
     });
     assert.strictEqual(rec.verdict, "skipped");
@@ -263,7 +264,7 @@ test("Bar 3: two different projects both dispatch (parallel allowed)", () => {
       assert.strictEqual(lock.acquireLock(hashA), true, "project A's run is in flight");
       let sawSpawn = false;
       const recB = runner.runConsolidation({
-        hash: hashB, projectDir: projB, trigger: "counter",
+        hash: hashB, projectDir: projB, trigger: "counter", env: envWithClaude(),
         // Stubbed: this asserts B got PAST the lock, not that a model ran.
         spawnSyncFn: () => { sawSpawn = true; return { status: 0, stdout: "{}" }; },
       });
