@@ -334,9 +334,27 @@ function renderFactDocs(ordered, limit, maxChars) {
 // keywords (measured: keyword ranking surfaced 48% of facts for reworded queries
 // vs 95% by embedding cosine). So rank by MEANING when a query vector is available.
 // Floor guards the negative-control property: an off-topic query (weather, math)
-// must surface NOTHING, not the least-unrelated fact. 768-d model baseline
-// similarity for unrelated text sits well under this; tune with the bench set.
-const SEMANTIC_FACT_FLOOR = 0.4;
+// must surface NOTHING, not the least-unrelated fact.
+//
+// 0.55, NOT 0.4. The original 0.4 came from bench/uq_floor_probe.js sweeping the
+// candidate grid [0.25, 0.3, 0.35, 0.4] against FOUR off-topic queries — the grid's
+// maximum is the value that shipped, so nothing above 0.4 was ever evaluated. The
+// assumption in the old comment ("baseline similarity for unrelated text sits well
+// under this") is false for this 768-d model: measured on 20 off-topic queries,
+// an unrelated query clears 0.4 against a MEDIAN of 29 of the 90 in-scope facts,
+// and every one of the 20 produced a non-empty block.
+//
+// Re-measured 2026-09-04, top-1 cosine, daemon warm:
+//   OFF-topic (n=20): min 0.399  p50 0.497  max 0.533
+//   ON-topic  (n=10): min 0.519  p50 0.627  max 0.763
+// The two populations overlap only in [0.519, 0.533], so 0.55 sits above every
+// off-topic top-1 and below all but one on-topic top-1. Trade is explicit and
+// pre-registered in bench/RESULT_RECALL_PRECISION.md: off-topic block emission
+// 20/20 -> 0/20, on-topic 10/10 -> 9/10 (loses "scene heat là gì" at 0.519).
+//
+// Re-tune only with bench/negative_control.json in the loop; a sweep whose top
+// candidate is the incumbent cannot discover that the incumbent is too low.
+const SEMANTIC_FACT_FLOOR = 0.55;
 
 function cosineSim(a, b) {
   if (!a || !b || a.length !== b.length) return -1;
@@ -378,4 +396,8 @@ function rankSceneFactsSemantic(facts, queryVec, factVecs, opts = {}) {
 module.exports = {
   CHARS_PER_TOKEN, NAV, heatEmoji, truncate, navLine, sceneText, byHeatDesc, rankScenes, renderSceneNav,
   rankSceneFacts, rankSceneFactsSemantic, SEMANTIC_FACT_FLOOR,
+  // Exported so the atom floor in memory_recall.js scores similarity with the
+  // SAME function the fact floor uses. Two hand-rolled cosines would be two
+  // things to keep in agreement for no benefit.
+  cosineSim,
 };

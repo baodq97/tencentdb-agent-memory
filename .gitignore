@@ -23,3 +23,6 @@ docs/ui/
 # Local benchmark harness + data — never committed (measured locally, not shipped)
 bench/
 scripts/bench_*.js
+
+# codegraph local index
+.codegraph/

@@ -19,7 +19,7 @@ const { getSceneMaxTokens } = require("./memory_auto_capture.js");
 // Pure renderer + ranker, shared with view/transform.js so the block the agent
 // receives and the block the visualiser measures can never be two different
 // algorithms.
-const { renderSceneNav, rankScenes, byHeatDesc, rankSceneFacts, rankSceneFactsSemantic } = require("./scene_nav.js");
+const { renderSceneNav, rankScenes, byHeatDesc, rankSceneFacts, rankSceneFactsSemantic, cosineSim } = require("./scene_nav.js");
 const crypto = require("node:crypto");
 const {
   parsePersona,
@@ -38,6 +38,35 @@ const DEFAULT_MAX_TOKENS = 280;
 // residual atom pool. ~175 tok is room for ~4-5 one-line facts.
 const FACT_RECALL_MAX_CHARS = 700;
 const FACT_RECALL_LIMIT = 5;
+
+/**
+ * Minimum cosine an atom must reach to enter `<memories>`.
+ *
+ * WHY THIS EXISTS AT ALL. `<recalled-facts>` has had a floor since 0.7.5; the atom
+ * path never did, and the vector arm returns its k nearest neighbours no matter how
+ * far away they are. With a small eligible pool the nearest is therefore ALWAYS
+ * "close enough": measured 2026-09-04 on 20 off-topic control queries, 16 of 20
+ * produced a non-empty `<memories>` block — "hôm nay ăn gì" reliably returned Law 0.
+ * FTS does not save it either; 8 of the same 20 land an eligible atom through
+ * generic shared tokens.
+ *
+ * WHY 0.60. Top-1 atom cosine, 2026-09-04:
+ *   OFF-topic (n=20): min 0.434  p50 0.503  p90 0.533  max 0.563
+ *   rule-shaped ON  : 0.798 (gh auth switch), 0.729 (pull main), 0.710 (merge
+ *                     conflict), 0.708 (npm publish), 0.669 (per-project lock)
+ * 0.58 already blocks all 20, but leaves only 0.017 of headroom over the observed
+ * off-topic maximum; 0.60 keeps every rule-shaped query above and buys 0.037. With
+ * a 20-query control the margin is worth more than the two borderline atoms.
+ *
+ * WHAT IT DELIBERATELY DROPS: queries about project EVENTS stop pulling atoms.
+ * That is the intent, not a loss — events are answered by `<recalled-facts>` from
+ * distilled scene bodies. Atoms are for standing rules and durable facts.
+ *
+ * Applies only when the turn produced a query vector. On a cold daemon the gate is
+ * skipped rather than guessed, so recall degrades to today's behaviour instead of
+ * silently returning nothing; the same reason `buildFactRecallSemantic` falls back.
+ */
+const ATOM_FLOOR = 0.6;
 
 /**
  * Open an FTS MemoryStore READ-ONLY for recall, returning null (never throwing)
@@ -380,6 +409,30 @@ function dropPersonaAtoms(memories) {
  * episodic (echoes), keeping only distilled standing atoms — `instruction` and
  * any future `semantic` type. Defensive on shape: an atom with no `type` is kept.
  */
+/**
+ * Drop atoms whose cosine to the query is below `floor`. Pure: the caller owns
+ * both the similarity map and the decision to apply it at all.
+ *
+ * An atom with NO entry in `simById` is KEPT. That case means the vector store
+ * could not score it (degraded vec0, a record embedded after the last sync, a
+ * store with no vectors.db at all), and a missing measurement is not evidence of
+ * irrelevance. Treating unknown as zero would let one degraded store silently
+ * empty the block — the same failure the read-path degradation gate in
+ * openMemoryStoreRO exists to prevent.
+ *
+ * @param {Array} memories
+ * @param {Map<string, number>} simById
+ * @param {number} floor
+ */
+function applyAtomFloor(memories, simById, floor = ATOM_FLOOR) {
+  if (!Array.isArray(memories) || !simById || !simById.size) return memories || [];
+  return memories.filter((m) => {
+    if (!m) return true;
+    const sim = simById.get(memoryId(m));
+    return typeof sim !== "number" || Number.isNaN(sim) ? true : sim >= floor;
+  });
+}
+
 function keepDistilledAtoms(memories) {
   // Same predicate the WRITE side uses to decide what to embed (memory_store's
   // isVectorEligible) — imported, not re-spelled, so the read filter and the
@@ -662,6 +715,11 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   let vecResults = [];
   let embedReason = null;
   let queryVec = null;
+  // record_id -> cosine(query, atom). Filled from the KNN distance where the
+  // vector arm already scored a record, and from stored vectors for FTS-only
+  // candidates. An id ABSENT from this map means "similarity unknown", which the
+  // floor treats as keep — never as zero.
+  const simById = new Map();
   const { embedViaDaemonStatus } = require("./embed_client.js");
   try {
     const status = await embedViaDaemonStatus(query);
@@ -686,6 +744,19 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
                 ftsStore.close();
               }
             }
+            // l1_vec is created with distance_metric=cosine, so the distance the
+            // KNN returns IS 1 - cosine. Recording it here means the floor never
+            // re-embeds anything the search already scored.
+            for (const hit of hits) simById.set(hit.record_id, 1 - hit.distance);
+            // FTS-only candidates carry a bm25 rank, not a distance. Their vectors
+            // are already stored (eligible-record coverage is 100%), so read them
+            // back rather than paying an embed per candidate inside the hook budget.
+            const ungraded = ftsResults.map(memoryId).filter((id) => id && !simById.has(id));
+            if (ungraded.length) {
+              for (const [id, vec] of vecStore.getVecs(ungraded)) {
+                simById.set(id, cosineSim(queryVec, vec));
+              }
+            }
           }
           vecStore.close();
         }
@@ -706,6 +777,15 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   // See keepDistilledAtoms.
   ftsResults = keepDistilledAtoms(ftsResults);
   vecResults = keepDistilledAtoms(vecResults);
+
+  // Relevance floor, BEFORE the merge — rrfMerge scores by rank position only, so
+  // an off-topic atom that is merely the least-unrelated candidate would otherwise
+  // arrive at rank 1 and be rendered with full confidence. Gated on queryVec: with
+  // a cold daemon there is nothing to measure and the turn keeps today's behaviour.
+  if (queryVec) {
+    ftsResults = applyAtomFloor(ftsResults, simById);
+    vecResults = applyAtomFloor(vecResults, simById);
+  }
 
   // Surface (never silently swallow) the FTS-only degradation. When the embed
   // daemon didn't return a vector but a vector store exists, this recall ran
@@ -781,4 +861,5 @@ if (require.main === module) main();
 module.exports = {
   recall, recallAsync, buildSceneNav, renderMemories, MEMORY_SEARCH_HINT, projectScopeFor,
   RECALL_SOURCE, RECALL_LOG_MAX_BYTES, RECALL_LOG_FILE, readSceneFacts, buildFactRecall, keepDistilledAtoms,
+  applyAtomFloor, ATOM_FLOOR,
 };

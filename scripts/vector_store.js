@@ -64,6 +64,46 @@ class VectorStore {
     `);
   }
 
+  /**
+   * Read stored embeddings back, by record id.
+   *
+   * WHY: recall's atom floor has to score BOTH retrieval arms, but only the
+   * vector arm carries a `distance`. An FTS5 hit arrives with a bm25 rank and no
+   * notion of semantic distance, and measured on the negative-control set FTS is
+   * not a relevance gate on its own — 8 of 20 off-topic queries land a
+   * recall-eligible atom through generic shared tokens ("hello", "time", "rule",
+   * "hôm nay", "một"). Re-embedding those hits per turn would cost N embeds
+   * inside an 8s hook budget; the vectors already exist (coverage is 100% of
+   * eligible records), so reading them back is the cheap half of the same answer.
+   *
+   * Returns a Map of id -> number[]; ids with no stored vector are simply absent,
+   * which callers must read as "similarity unknown", never as "similarity zero".
+   */
+  getVecs(recordIds) {
+    const out = new Map();
+    if (this.degraded || !this.db || !Array.isArray(recordIds) || !recordIds.length) return out;
+    try {
+      // Chunked: SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999, and the
+      // candidate list grows with topK, so an unchunked IN (...) is a latent
+      // failure that would only fire on a large store.
+      const CHUNK = 200;
+      for (let i = 0; i < recordIds.length; i += CHUNK) {
+        const slice = recordIds.slice(i, i + CHUNK);
+        const holes = slice.map(() => "?").join(",");
+        const rows = this.db.prepare(
+          `SELECT record_id, vec_to_json(embedding) AS j FROM l1_vec WHERE record_id IN (${holes})`
+        ).all(...slice);
+        for (const r of rows) {
+          try { out.set(r.record_id, JSON.parse(r.j)); } catch { /* skip unreadable vector */ }
+        }
+      }
+    } catch {
+      // Degrade to "no similarity known" — the caller keeps the atom rather than
+      // dropping it, so a vec0 surprise can never silently empty the block.
+    }
+    return out;
+  }
+
   upsertVec(recordId, embedding) {
     if (this.degraded || !this.db) return false;
     try {
