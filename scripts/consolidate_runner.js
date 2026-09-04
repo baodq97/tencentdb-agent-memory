@@ -265,6 +265,12 @@ function runConsolidation(opts) {
     scenes_before: before.scenes,
     scenes_after: after.scenes,
     changelog_delta: after.changelog - before.changelog,
+    // The child's own last words, truncated. A `no-op` has two very different
+    // causes — the delta genuinely held nothing durable, or the run silently
+    // aborted (headless can report success with a bare result when an injected
+    // command is refused) — and without this the runs log cannot tell them
+    // apart. Capped because this file is appended to on every run forever.
+    result_head: out && typeof out.result === "string" ? out.result.slice(0, 400) : null,
   };
   record(rec);
   return rec;
