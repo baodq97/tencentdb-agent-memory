@@ -166,6 +166,9 @@ function vectorStateFor(vectors) {
  * one definition rather than acquiring a second one.
  */
 const { classifyLowSignal } = require("../low_signal.js");
+// From constants.js, the leaf that requires nothing — NOT from memory_store.js,
+// which loads node:sqlite and would break this module's no-I/O purity tests.
+const { isVectorEligible } = require("../constants.js");
 
 /** True when any matched class is in the pinned union set. */
 function isLowSignalUnion(classes) {
@@ -582,6 +585,7 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
   const wpTotals = zeroMap(WRITE_PATHS);
   const wpCovered = zeroMap(WRITE_PATHS);
   let withVector = 0;
+  let eligibleRecords = 0;
 
   for (const r of records) {
     const type = RECORD_TYPES.includes(r.type) ? r.type : RECORD_TYPE_OTHER;
@@ -600,7 +604,15 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
     if (r.updated_time && (!newestRecordAt || r.updated_time > newestRecordAt)) newestRecordAt = r.updated_time;
     if (r.created_time && (!oldestRecordAt || r.created_time < oldestRecordAt)) oldestRecordAt = r.created_time;
 
-    if (vecIds) {
+    // The population embedding coverage is ABOUT. `records` counts every row,
+    // but the writer never embeds episodic/persona by design, so dividing by it
+    // measured a number no fix command could ever move: on the real store the
+    // 5,459 "missing" vectors were exactly episodic 5,420 + persona 39, and
+    // `tmem sync` correctly reported "all vectors in sync" while doctor showed 2%.
+    const eligible = isVectorEligible(r.type);
+    if (eligible) eligibleRecords += 1;
+
+    if (vecIds && eligible) {
       wpTotals[wp] += 1;
       if (vecIds.has(r.record_id)) {
         withVector += 1;
@@ -673,8 +685,14 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
       status: STATUS.OK,
       reason: null,
       withVector,
-      withoutVector: records.length - withVector,
-      ratio: records.length > 0 ? withVector / records.length : 0,
+      withoutVector: eligibleRecords - withVector,
+      ratio: eligibleRecords > 0 ? withVector / eligibleRecords : 0,
+      // Surfaced so a reader can see WHICH population the ratio divides by, and
+      // how many rows were excluded as never-embedded-by-design. Without this the
+      // ratio and the neighbouring `records` count invite the same misreading the
+      // ratio itself used to make.
+      eligibleRecords,
+      ineligibleRecords: records.length - eligibleRecords,
       byWritePath: byPath,
       missingByMonth,
       // A vector whose record is gone. Never negative: `count` is the row count of
@@ -1047,16 +1065,23 @@ const subjectFor = (s) => ({ scope: s.scope, slug: s.slug, id: null, label: s.la
  */
 function vectorsMissingGap(s, { severity, withVector, withoutVector, ratio, extra = {} }) {
   const empty = s.vectorState === VECTOR_STATE.EMPTY;
+  // Eligible population when it was measurable, else the row count (a truncated or
+  // errored store carries no per-record types to count).
+  const pop = typeof s.vectors.eligibleRecords === "number" ? s.vectors.eligibleRecords : s.records;
   return gap({
     kind: GAP_KIND.VECTORS_MISSING,
     severity,
     subject: subjectFor(s),
     title: empty
-      ? `${s.label}: l1_vec is present and empty — all ${s.records} records are FTS-only`
-      : `${s.label}: ${withoutVector} of ${s.records} records without embeddings`,
+      ? `${s.label}: l1_vec is present and empty — all ${pop} recall-eligible records are FTS-only`
+      : `${s.label}: ${withoutVector} of ${pop} recall-eligible records without embeddings`,
     evidence: {
       slug: s.slug,
       records: s.records,
+      // The denominator the ratio and `withoutVector` actually use. Printed
+      // beside `records` so the two can never be confused again: they differ by
+      // the episodic/persona rows nothing ever embeds.
+      eligibleRecords: pop,
       withVector,
       withoutVector,
       ratio: round(ratio, 4),
@@ -1111,7 +1136,7 @@ function buildGaps({ stores, persona, state, config, captureState, heat }) {
         gaps.push(vectorsMissingGap(s, {
           severity: SEVERITY.CRITICAL,
           withVector: 0,
-          withoutVector: s.records,
+          withoutVector: typeof s.vectors.eligibleRecords === "number" ? s.vectors.eligibleRecords : s.records,
           ratio: 0,
           extra: { recordsMeasured: s.recordsMeasured, reason: s.vectors.reason },
         }));
@@ -1545,7 +1570,11 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     vectorStateRecords[s.vectorState] += s.records;
 
     if (s.vectors.status === STATUS.OK) {
-      covEntries.push({ status: STATUS.OK, records: s.records, covered: s.vectors.withVector });
+      // `eligibleRecords`, not `records`: the denominator has to be the population
+      // the numerator could ever come from. `tmem sync` embeds only eligible types,
+      // so dividing by every row made store-wide coverage read 2% on a store that
+      // sync correctly called fully in sync.
+      covEntries.push({ status: STATUS.OK, records: s.vectors.eligibleRecords, covered: s.vectors.withVector });
       for (const wp of WRITE_PATHS) {
         const p = s.vectors.byWritePath[wp];
         covEntriesByPath[wp].push({
@@ -1565,8 +1594,13 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
       // it stays in the denominator rather than being demoted to unknown. The
       // per-write-path split below cannot follow it there, because that one does
       // need the slice.
+      // An empty l1_vec is a whole-store fact, but the population it is empty OF
+      // is still the eligible one. `eligibleRecords` is null on an unmeasured
+      // envelope (contract.source forbids numbers there), so fall back to the row
+      // count — an over-estimate, never an under-report of the gap.
+      const emptyPop = typeof s.vectors.eligibleRecords === "number" ? s.vectors.eligibleRecords : s.records;
       const entry = s.vectorState === VECTOR_STATE.EMPTY
-        ? { status: STATUS.OK, records: s.records, covered: 0 }
+        ? { status: STATUS.OK, records: emptyPop, covered: 0 }
         : { status: s.vectors.status, reason: s.vectors.reason, records: s.records };
       covEntries.push(entry);
       for (const wp of WRITE_PATHS) {

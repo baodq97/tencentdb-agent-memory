@@ -38,8 +38,11 @@ const FTS5_OPERATORS = new Set(["and", "or", "not", "near"]);
 // EVERY query. Skipping them here is the write-side half of the same invariant the
 // read filter enforces; memory_recall imports isVectorEligible so the two cannot
 // drift. Not embedding a type also means `tmem sync` prunes its stale vectors.
-const NON_RECALL_TYPES = new Set(["episodic", "persona"]);
-function isVectorEligible(type) { return !NON_RECALL_TYPES.has(String(type || "")); }
+// The VALUES live in constants.js so view/transform.js — which is asserted to load
+// no sqlite and do no I/O — can divide embedding coverage by the eligible
+// population instead of by every record. The rationale above stays here, with the
+// module that owns what the set MEANS.
+const { NON_RECALL_TYPES, isVectorEligible } = require("./constants.js");
 
 const SCHEMA_VERSION = 1;
 

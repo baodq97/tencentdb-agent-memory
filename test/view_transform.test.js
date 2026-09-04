@@ -28,10 +28,16 @@ const {
 
 // ── Fixtures (hand-built; transform never reads a byte) ─────────────────────
 
+// Vector-eligible BY DEFAULT ("semantic", not "episodic"). Embedding coverage now
+// divides by the eligible population, so an episodic default made every coverage
+// fixture describe a state the writer cannot produce: an episodic record WITH a
+// vector, when `tmem sync` never embeds that type. The fixtures were pinning the
+// bug — a denominator no fix command could move. Tests that care about a specific
+// type still pass one explicitly.
 const rec = (id, over = {}) => ({
   record_id: id,
   content: over.content ?? `content of ${id}`,
-  type: "episodic",
+  type: "semantic",
   priority: 50,
   scene_name: "",
   session_key: "",
