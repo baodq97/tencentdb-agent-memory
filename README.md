@@ -52,10 +52,19 @@ into `~/.memory-tencentdb/models/`, not at install.
 |------|--------|
 | `SessionStart` | Inject the tier-0 persona core once per session (`<persona-core>`) + keep the global `tmem` shim current |
 | `UserPromptSubmit` | Hybrid recall (FTS5 + vector + RRF) + L2 scene-navigation index → inject `<memory-context>` |
-| `Stop` | Auto-capture turn + background consolidation after N turns |
-| `SessionEnd` | Mark session as pending for later seeding |
+| `Stop` | Auto-capture turn; spawn a detached headless consolidation once N new turns have accumulated |
+| `SessionEnd` | Mark session as pending for later seeding; spawn consolidation for a session that produced ≥3 new turns |
 
 Hooks never block — failures degrade to no injection.
+
+Consolidation runs **outside the session**, as a detached `claude -p` subprocess
+that outlives it, so it costs the session no context and cannot be skipped by the
+session declining to dispatch. Two arms fire it: a turn counter, and the session
+boundary — the median session is short enough that a counter alone never reaches
+most projects. Success is a **measured store delta**, never the child's exit code
+(a validating run reported success while the store was byte-for-byte unchanged);
+every run appends its verdict, cost and delta to `consolidation_runs.jsonl`, which
+`tmem status` summarises. Turn it off with `tmem config auto-consolidate off`.
 
 ## How recall works
 
@@ -140,7 +149,12 @@ tmem atoms [global|project|all] Dump L1 atoms as JSON
 tmem sessions                   List pending sessions
 tmem init                       Initialize memory store
 tmem mark-done                  Mark consolidation complete
-tmem config consolidate-every N Set consolidation threshold (default 20)
+tmem config consolidate-every N Set the counter-arm threshold (default 10 new turns)
+tmem config consolidate-on-session-end N  Session-arm threshold (default 3 new turns)
+tmem config auto-consolidate [on|off]     Headless auto-consolidation (default on)
+tmem config consolidate-model NAME        Model for the headless child (default sonnet)
+tmem config consolidate-max-runs-per-day N  Machine-wide daily cap (default 12)
+tmem config consolidate-budget-usd N      Per-run budget ceiling
 tmem config scene-max-tokens N  Set L2 scene-navigation token budget (default 200, 0 disables)
 tmem config persona-max-tokens N  Set the tier-0 persona budget (default 1200; 0 rejected)
 tmem config recall [on|off]     Toggle per-turn recall injection for this project
@@ -225,8 +239,16 @@ PR diff size (the GitHub search API omits it).
 │   └── contributors/ /contrib store (isolated from self-memory)
 ├── projects/{hash}/  index.db + vectors.db + records/ + scene_blocks/
 ├── view/             `tmem view` session + snapshot output (never inside a repo)
-├── config.json       consolidate-every, scene-max-tokens, persona-max-tokens, per-project recall
+├── config.json       consolidate-* thresholds, scene/persona budgets, per-project recall
+├── consolidation_runs.jsonl  one record per headless run: verdict, cost, store delta
 └── models/           embeddinggemma-300m (~80MB, downloaded on first init)
+
+The store root is `~/.memory-tencentdb`, overridable with `MEMORY_TENCENTDB_HOME`
+(absolute path). The override is what lets a run be pointed at a sandbox store —
+but note that a child reaching `tmem` through Claude Code's Bash tool resolves it
+through a LOGIN shell, so a PATH shim does not isolate it; repoint the resolved
+binary itself (`ln -sfn <repo>/scripts/tmem.js ~/.local/bin/tmem`) and verify with
+`bash -lc 'readlink -f $(command -v tmem)'`.
 ```
 
 ### Bounded contexts (ubiquitous language)
@@ -238,7 +260,7 @@ CLI commands (`tmem --help`) and modules are grouped by the stage they serve:
 | Stage | Does | Key modules |
 |-------|------|-------------|
 | **Capture** | Transcript → Atoms (deterministic digest of tool blocks; hook auto-capture) | `session_digest`, `digest_capture`, `memory_auto_capture`, `grounding` |
-| **Consolidate** | Atoms → Scenes + Persona (distil the "why"; dispatched by the pipeline) | `memory_pipeline`, memory-seed / memory-consolidate skills |
+| **Consolidate** | Atoms → Scenes + Persona (distil the "why"; runs headless in a detached `claude -p`, never in the user's session) | `consolidate_runner`, `memory_pipeline`, memory-seed / memory-consolidate skills |
 | **Recall** | Read memory for a turn (hybrid FTS+vector, scene-nav, persona projection) | `memory_recall`, `scene_nav`, `persona_projection`, `recall_feedback` |
 | **Maintain** | Keep the store healthy — reachability, capture signal, recall feedback, cross-store | `doctor`, `memory_reachability`, `cross_store`, `memory_init` |
 | _Storage_ | FTS5 + vector engines under all stages | `memory_store`, `memory_writer`, `memory_reader`, `vector_store`, `embed_*` |

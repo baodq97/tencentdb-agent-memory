@@ -41,9 +41,9 @@
  * exits 0. No stderr, no exit 2, no wake-up. That property is the point of the
  * change and is asserted by test/consolidate_runner.test.js.
  *
- * YOU CANNOT SANDBOX AN END-TO-END RUN FROM A WORKING TREE. Read this before
- * trying: two separate attempts here wrote to the live store while believing
- * they were isolated.
+ * A PATH SHIM CANNOT SANDBOX AN END-TO-END RUN. Read this before trying: two
+ * separate attempts here wrote to the live store while believing they were
+ * isolated.
  *
  * The child's `tmem` calls go through Claude Code's Bash tool, which starts a
  * LOGIN shell — the user's profile re-initialises PATH, so a shim placed at the
@@ -53,11 +53,27 @@
  * so it will not honour a MEMORY_TENCENTDB_HOME added in an unreleased tree, and
  * the run silently reads and writes the real store.
  *
- * Consequence: a full end-to-end test of THIS file against a sandbox store is
- * only possible once the store-root override has shipped. Until then verify the
- * parts that do not require the child to write — the flags, the env, the
- * verdicts, the lock, the hook staying silent — which is what the test file
- * covers, and treat any live run as a live run.
+ * What works instead is repointing the CLI the login shell already resolves:
+ * `ln -sfn <repo>/scripts/tmem.js ~/.local/bin/tmem`. The launcher then finds its
+ * sibling cli.js (resolution rule 2, the dev-repo case) rather than falling
+ * through to the newest plugin-cache version, so the tree's
+ * MEMORY_TENCENTDB_HOME is honoured. Verify through a LOGIN shell —
+ * `bash -lc 'readlink -f $(command -v tmem)'` — not `bash -c`, which is the check
+ * that passed while both earlier attempts were writing to the live store.
+ *
+ * MEASURED IN PRODUCTION, 2026-09-04. Six scopes, real backlogs (152/32/32/32/29/22
+ * pending turns): 6/6 `verdict: changed`, 7-12 turns, 50-164 s, $0.41-1.11 each
+ * ($4.07 total). One scope had a three-week-old stale lock (pid 680432); the
+ * reclaim path took it and released cleanly.
+ *
+ * That run also validated what `snapshot()` measures. Consolidation's entire write
+ * surface is L2/L3 — scene bodies, project doctrine, changelog. Across the six
+ * scopes the recall-eligible L1 pool (type semantic/instruction) went 104 -> 103,
+ * the -1 being a duplicate the child's own dedup removed, while scene-fact bullets
+ * went 961 -> 1012 and scene files 98 -> 103. Counting eligible atoms would
+ * therefore report every successful run as a no-op; scenes + changelog is the
+ * correct success signal, and per skills/memory-consolidate/SKILL.md the scene-fact
+ * bullet — not the L1 atom — is the per-turn recall surface by design.
  */
 "use strict";
 
