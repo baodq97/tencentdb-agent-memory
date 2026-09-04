@@ -150,7 +150,12 @@ function buildPlan(snapshot, opts = {}) {
       vectorsCovered,
       vectorsMissing,
       vectorRatio: typeof cov.ratio === "number" ? Number(cov.ratio.toFixed(4)) : null,
-      lowSignal: (t.lowSignal && t.lowSignal.unionRecords) ?? null,
+      // PRUNABLE, not the 6-class union. The header sits directly above a
+      // "fix: tmem prune --low-signal --apply" line, and the union counts three
+      // classes prune never deletes -- it printed "897 low-signal" while a dry
+      // run matched 0 records across all 86 stores. The union is still available
+      // on the finding's evidence for anyone auditing the corpus.
+      lowSignal: (t.lowSignal && t.lowSignal.prunableRecords) ?? null,
       duplicates: (t.duplicates && t.duplicates.exact) ?? null,
     },
     findings: findings.map((f) => ({
@@ -184,7 +189,7 @@ function renderPlanText(plan) {
   if (t.stores != null) bits.push(`${t.stores} stores`);
   if (t.records != null) bits.push(`${t.records} records`);
   if (t.vectorsMissing != null) bits.push(`${t.vectorsMissing} missing vectors (${Math.round((t.vectorRatio ?? 0) * 100)}% covered)`);
-  if (t.lowSignal != null) bits.push(`${t.lowSignal} low-signal`);
+  if (t.lowSignal != null) bits.push(`${t.lowSignal} prunable low-signal`);
   if (t.duplicates != null) bits.push(`${t.duplicates} duplicate`);
   if (bits.length) out.push("  " + bits.join(" · "));
 

@@ -165,7 +165,7 @@ function vectorStateFor(vectors) {
  * Re-exported below so existing consumers (and `buildRecordRows`) keep reading
  * one definition rather than acquiring a second one.
  */
-const { classifyLowSignal } = require("../low_signal.js");
+const { classifyLowSignal, NOISE_GATE_CLASSES } = require("../low_signal.js");
 // From constants.js, the leaf that requires nothing — NOT from memory_store.js,
 // which loads node:sqlite and would break this module's no-I/O purity tests.
 const { isVectorEligible } = require("../constants.js");
@@ -173,6 +173,28 @@ const { isVectorEligible } = require("../constants.js");
 /** True when any matched class is in the pinned union set. */
 function isLowSignalUnion(classes) {
   for (const c of classes) if (LOW_SIGNAL_UNION_CLASSES.includes(c)) return true;
+  return false;
+}
+
+/**
+ * True when `tmem prune --low-signal` would actually DELETE this record.
+ *
+ * Deliberately a different predicate from isLowSignalUnion. The union spans six
+ * classes and is the corpus-level lens metric ("how much of the store is
+ * low-signal"), pinned against an audit baseline. The prune gate spans three
+ * (NOISE_GATE_CLASSES) and is the only population the fix command touches;
+ * pasteDump, slashOrTag and continuation are reported but never deleted, with the
+ * rationale in low_signal.js.
+ *
+ * Reporting the union next to a "fix: tmem prune --low-signal --apply" suggestion
+ * promised 765 deletable records where a dry run matched zero across all 86
+ * stores. Worse, the three gate classes are also the WRITE gate, so on a store
+ * captured by the current version they are removed on the way in and the retro
+ * count is ~0 by construction. A finding that carries a fix must count what that
+ * fix can move.
+ */
+function isPrunable(classes) {
+  for (const c of classes) if (NOISE_GATE_CLASSES.includes(c)) return true;
   return false;
 }
 
@@ -548,7 +570,7 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
       status: STATUS.ERROR,
       reason: rd.reason,
       records: null, byType: null, byWritePath: null, contentLength: null,
-      lowSignal: null, lowSignalUnion: null, duplicates: null,
+      lowSignal: null, lowSignalUnion: null, lowSignalPrunable: null, duplicates: null,
       vectors: unmeasuredVectors(`store unreadable: ${rd.reason}`),
       vectorState: VECTOR_STATE.UNMEASURED,
       scenes: summariseScenes(sr, { now, navBudgetChars, scope: ref.scope }),
@@ -576,6 +598,7 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
   const lowSignal = zeroMap(LOW_SIGNAL_CLASSES);
   const lengths = [];
   let lowSignalUnion = 0;
+  let lowSignalPrunable = 0;
   let newestRecordAt = null;
   let oldestRecordAt = null;
 
@@ -600,6 +623,7 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
     const classes = classifyLowSignal(content);
     for (const c of classes) lowSignal[c] += 1;
     if (isLowSignalUnion(classes)) lowSignalUnion += 1;
+    if (isPrunable(classes)) lowSignalPrunable += 1;
 
     if (r.updated_time && (!newestRecordAt || r.updated_time > newestRecordAt)) newestRecordAt = r.updated_time;
     if (r.created_time && (!oldestRecordAt || r.created_time < oldestRecordAt)) oldestRecordAt = r.created_time;
@@ -720,6 +744,7 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
     contentLength: quantiles(lengths),
     lowSignal,
     lowSignalUnion,
+    lowSignalPrunable,
     duplicates: { exact: exact.records, normalised: normalised.records },
     duplicateGroups: { exact: exact.groups, normalised: normalised.groups },
     vectors,
@@ -1293,21 +1318,29 @@ function buildGaps({ stores, persona, state, config, captureState, heat }) {
   }
 
   // ---- low signal (root level, union only) -------------------------
-  if (heat.lowSignal && heat.lowSignal.records > 0) {
+  // Gated on PRUNABLE, not on the union: this finding carries
+  // "fix: tmem prune --low-signal --apply", and a finding whose fix matches zero
+  // records is noise dressed as a defect. The union stays in the evidence as the
+  // corpus-level datum it is.
+  if (heat.lowSignal && heat.lowSignal.records > 0 && heat.lowSignal.prunableRecords > 0) {
     const ls = heat.lowSignal;
+    const prunableRatio = ls.records > 0 ? ls.prunableRecords / ls.records : 0;
     gaps.push(gap({
       kind: GAP_KIND.LOW_SIGNAL_RECORDS,
-      severity: ls.ratio >= 0.25 ? SEVERITY.WARN : SEVERITY.INFO,
+      severity: prunableRatio >= 0.25 ? SEVERITY.WARN : SEVERITY.INFO,
       subject: { scope: "root", slug: null, id: null, label: "all stores" },
       // `ls.records` is the read population; when a store truncated, the unread
       // remainder is named in the title instead of being folded into the share.
-      title: `${ls.unionRecords} of ${ls.records} records (${pct(ls.ratio)}) are low-signal` +
+      title: `${ls.prunableRecords} of ${ls.records} records (${pct(prunableRatio)}) are prunable low-signal` +
+        ` — ${ls.unionRecords} match a low-signal class, but prune deletes only ${NOISE_GATE_CLASSES.join("/")}` +
         (ls.recordsUnread > 0 ? ` — ${ls.recordsUnread} further records were not read` : ""),
       evidence: {
         records: ls.records,
         recordsUnread: ls.recordsUnread,
         unionRecords: ls.unionRecords,
+        prunableRecords: ls.prunableRecords,
         ratio: round(ls.ratio, 4),
+        prunableRatio: round(prunableRatio, 4),
         ...ls.perClass,
         pinnedRatio: round(LOW_SIGNAL_BASELINE.ratio, 4),
         withinBaselineTolerance: ls.baseline.withinTolerance,
@@ -1523,6 +1556,7 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
   let scenes = 0, sizeBytes = 0;
   let readableStores = 0, erroredStores = 0;
   let lowSignalUnion = 0;
+  let lowSignalPrunable = 0;
   let scenesReachableInSomeNav = 0, scenesUnreachableInEveryNav = 0, staleHot = 0;
   let scenesNavUnmeasured = 0;
   // One string, not a set: every unmeasured store's reason comes out of the same
@@ -1560,6 +1594,7 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     for (const k of WRITE_PATHS) byWritePath[k] += s.byWritePath[k];
     for (const k of LOW_SIGNAL_CLASSES) lowSignalPerClass[k] += s.lowSignal[k];
     lowSignalUnion += s.lowSignalUnion;
+    lowSignalPrunable += s.lowSignalPrunable;
     for (const k of DUPLICATE_TIERS) {
       duplicates[k] += s.duplicates[k];
       duplicateGroupCount[k] += s.duplicateGroups[k];
@@ -1657,6 +1692,8 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     records: recordsMeasured,
     recordsUnread: Math.max(0, records - recordsMeasured),
     unionRecords: lowSignalUnion,
+    // What `tmem prune --low-signal` can actually delete. Always <= unionRecords.
+    prunableRecords: lowSignalPrunable,
     ratio: lowSignalRatio,
     unionClasses: [...LOW_SIGNAL_UNION_CLASSES],
     perClass: lowSignalPerClass,
