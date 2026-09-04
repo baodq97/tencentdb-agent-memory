@@ -299,11 +299,19 @@ async function embedFactsCached(facts, embedFn) {
 
 /**
  * Semantic `<recalled-facts>`: rank distilled facts by embedding cosine against
- * the (already-computed) query vector. Falls back to the keyword builder when no
- * query vector, no facts, or any embedding error — recall must never break.
+ * the (already-computed) query vector.
+ *
+ * NO KEYWORD FALLBACK. It used to fall back to `buildFactRecall` whenever the
+ * query vector was missing or embedding threw, on the principle that recall must
+ * never break. But the keyword ranker has no floor — it only hard-drops facts
+ * sharing zero tokens with the query — so every fallback turn silently gave up
+ * the negative-control property. Measured on 20 off-topic controls: the semantic
+ * path leaked on 0, the fallback path on 8. Returning nothing IS the working
+ * behaviour for a turn that cannot rank by meaning; returning the
+ * least-unrelated facts is the failure this floor was added to remove.
  */
 async function buildFactRecallSemantic(projectHash, query, queryVec, embedFn, maxChars = FACT_RECALL_MAX_CHARS) {
-  if (!queryVec) return buildFactRecall(projectHash, query, maxChars);
+  if (!queryVec) return "";
   const facts = [];
   if (projectHash) facts.push(...readSceneFacts(projectDir(projectHash)));
   facts.push(...readSceneFacts(globalDir()));
@@ -315,7 +323,9 @@ async function buildFactRecallSemantic(projectHash, query, queryVec, embedFn, ma
     // property is lost. Fall back only on a real embedding failure (catch below).
     return rankSceneFactsSemantic(facts, queryVec, vecs, { limit: FACT_RECALL_LIMIT, maxChars }).block;
   } catch {
-    return buildFactRecall(projectHash, query, maxChars);
+    // Same reasoning as the missing-vector case above: an embedding failure means
+    // we cannot rank by meaning, not that keyword ranking has become safe.
+    return "";
   }
 }
 
@@ -813,7 +823,22 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   // reworded queries), else keyword fallback. Position matches the sync path.
   let factBlock = "";
   try { factBlock = await buildFactRecallSemantic(projectHash, query, queryVec, embedViaDaemonStatus); } catch {}
-  if (!factBlock && !queryVec) factBlock = buildFactRecall(projectHash, query);
+  // FAIL CLOSED WITHOUT A QUERY VECTOR. The keyword ranker has no floor — it only
+  // hard-drops facts sharing zero tokens — so on any turn that could not embed its
+  // query, the negative-control property is simply gone: measured, an off-topic
+  // control set leaked facts on 8 of 20 queries through the fallback while the
+  // semantic path leaked on 0.
+  //
+  // That is a correctness hole, not a latency symptom. Raising the embed timeout
+  // makes the fallback rarer but cannot make it safe, and the rate moves with
+  // whatever else is using the daemon — so B1 was reproducible only as long as the
+  // machine was quiet. Ranking by meaning is what earns this block the right to
+  // speak; with no measurement there is no claim to make, and injecting the
+  // least-unrelated facts is exactly the failure Wave 1 removed.
+  //
+  // The turn still gets <persona> and <scene-navigation>, and SessionStart prewarms
+  // the daemon, so this should be rare rather than routine. If it stops being rare,
+  // that is a daemon problem to fix at the daemon, not a reason to lower the bar.
   if (factBlock) parts.push(factBlock);
 
   // Drop persona (session clock) AND raw episodic (echoes) from BOTH retrieval
