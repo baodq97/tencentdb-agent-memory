@@ -127,7 +127,11 @@ function runsInLastDay() {
 
 function record(rec) {
   try {
-    fs.mkdirSync(path.dirname(RUNS_LOG()), { recursive: true });
+    // Never CREATE the store root. This runs detached, after whatever spawned it
+    // has moved on, so materialising a directory here would resurrect a store the
+    // user (or a test) had just removed — and a run record inside a store that
+    // does not exist is evidence of nothing. Declining to run must leave no trace.
+    if (!fs.existsSync(memoryBaseDir())) return;
     fs.appendFileSync(RUNS_LOG(), JSON.stringify({ at: new Date().toISOString(), ...rec }) + "\n");
   } catch { /* the log is evidence, never a dependency */ }
 }

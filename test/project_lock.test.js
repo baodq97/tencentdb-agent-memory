@@ -265,8 +265,11 @@ test("Bar 3: two different projects both dispatch (parallel allowed)", () => {
       delete process.env.MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY;
       delete process.env.MEMORY_AUTO_CONSOLIDATE;
     }
-    assert.strictEqual(runHook(home, projA), 0, "neither hook signals the session");
-    assert.strictEqual(runHook(home, projB), 0);
+    // Deliberately no runHook() here. This test's subject is cross-project
+    // parallelism, and "the hook exits 0" is already pinned by cascade_skip.
+    // Spawning from here raced the cleanup: the detached runner starts after
+    // execFileSync returns, so it could touch the throwaway HOME after the
+    // finally had removed it.
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(projA, { recursive: true, force: true });
