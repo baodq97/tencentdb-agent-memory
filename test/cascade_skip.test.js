@@ -58,6 +58,27 @@ function runHook(home) {
   return { code, locked };
 }
 
+// Evaluate the target decision in-process under a throwaway HOME. Deterministic:
+// no child, no detached runner, nothing that could reach a real store.
+function targetsUnderHome(home, cascade, currentL1) {
+  const prev = { h: process.env.HOME, u: process.env.USERPROFILE, d: process.env.CLAUDE_PROJECT_DIR };
+  process.env.HOME = home; process.env.USERPROFILE = home; process.env.CLAUDE_PROJECT_DIR = PROJ;
+  try {
+    const pipeline = require("../scripts/memory_pipeline.js");
+    return pipeline.selectTargets({
+      hash: HASH,
+      forced: false,
+      info: { due: true },
+      cascade,
+      plan: pipeline.planCascadeStep(cascade, currentL1),
+      captureMod: { getTurnCount: () => 0 },
+    });
+  } finally {
+    process.env.HOME = prev.h; process.env.USERPROFILE = prev.u;
+    if (prev.d === undefined) delete process.env.CLAUDE_PROJECT_DIR; else process.env.CLAUDE_PROJECT_DIR = prev.d;
+  }
+}
+
 test("planCascadeStep skips an armed tier with no new L1", () => {
   for (const stage of ["l2", "l3"]) {
     const plan = planCascadeStep({ stage, last_consolidated_l1: 10 }, 10);
@@ -109,13 +130,22 @@ test("armed L2 with no new L1 since marker is NOT dispatched (exit 0, no lock)",
   }
 });
 
-test("armed L2 with a new L1 atom IS dispatched (exit 2, lock held)", () => {
+test("armed L2 with a new L1 atom IS selected as a target (hook still exits 0)", () => {
+  // Ported from an exit-2 assertion. Consolidation no longer interrupts the
+  // session: the hook spawns a detached runner and always exits 0, and the
+  // runner — not the hook — acquires the lock, so a spawn that never happens
+  // cannot wedge the project for the lock's 30-minute TTL. The DECISION is now
+  // asserted directly via selectTargets(); the hook's contract is only that it
+  // stays silent.
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-cas-run-"));
   try {
     seed(home, { turnCount: 11, cascade: { stage: "l2", last_consolidated_l1: 10 } });
+    const targets = targetsUnderHome(home, { stage: "l2", last_consolidated_l1: 10 }, 11);
+    assert.strictEqual(targets.length, 1, "a new L1 atom must produce exactly one target");
+    assert.strictEqual(targets[0].hash, HASH);
     const { code, locked } = runHook(home);
-    assert.strictEqual(code, 2, "expected dispatch (exit 2) when a new L1 atom exists");
-    assert.strictEqual(locked, true, "dispatch must acquire the consolidation lock");
+    assert.strictEqual(code, 0, "the hook must never signal the session again");
+    assert.strictEqual(locked, false, "the hook must not hold the lock — the runner acquires it");
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }

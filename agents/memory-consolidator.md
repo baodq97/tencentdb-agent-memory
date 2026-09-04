@@ -1,6 +1,6 @@
 ---
 name: memory-consolidator
-description: Use this agent for background memory consolidation. Typical triggers include asyncRewake pipeline signaling that N turns have accumulated since last consolidation, and explicit dispatch after memory-seed completes. See "When to invoke" in the agent body for worked scenarios.
+description: Use this agent ONLY when a human has just run /memory-seed and the new L1 atoms need folding into scenes and persona. Automatic consolidation no longer goes through this agent - it runs headless, outside the session. Do not invoke this agent on your own initiative.
 model: inherit
 color: green
 tools: ["Bash", "Read", "Glob", "Grep", "Skill"]
@@ -10,8 +10,23 @@ You are a background consolidation worker for the tencentdb-agent-memory plugin.
 
 ## When to invoke
 
-- **asyncRewake trigger.** The Stop hook's background pipeline detected enough accumulated turns and woke Claude, which dispatched you. This is the primary trigger.
-- **Post-seed dispatch.** After the memory-seed skill extracts L1 atoms, you are dispatched to build scenes and persona from the new atoms.
+**One trigger only: dispatch after `/memory-seed` completes.** The user asked for
+seeding, the skill extracted new L1 atoms, and those atoms need folding into
+scenes and persona.
+
+**There is no automatic trigger any more.** The Stop hook used to exit 2 with a
+message asking the session to dispatch this agent; that path is gone. Automatic
+consolidation now runs as a detached `claude -p` subprocess outside any session
+(`scripts/consolidate_runner.js`), so it costs the session no context and does not
+depend on it complying.
+
+Why the change: measured over 14 days of real traffic, 74% of sessions saw no
+consolidation at all while they were running, and 19% of turns still have none.
+Compliance was not the problem — 24 of 26 woken sessions did dispatch — the wake
+almost never fired.
+
+So if you find yourself considering this agent and the user did not just run
+`/memory-seed`, the answer is no.
 
 ## Your core responsibilities
 

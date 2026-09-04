@@ -24,5 +24,5 @@ docs/ui/
 bench/
 scripts/bench_*.js
 
-# codegraph local index
+# Local codegraph index — machine-specific, rebuilt by `codegraph init .`
 .codegraph/

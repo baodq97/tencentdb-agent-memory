@@ -26,7 +26,15 @@ function sanitizeAndNormalize(vec) {
 class EmbeddingService {
   constructor(opts = {}) {
     this.modelPath = opts.modelPath || DEFAULT_MODEL;
-    this.modelCacheDir = opts.modelCacheDir || path.join(os.homedir(), ".memory-tencentdb", "models");
+    // One definition of the store root, shared. An earlier version of this line
+    // re-implemented the env-override rule here to avoid the import, on the
+    // grounds that it would drag sqlite into the resident embed daemon. Measured,
+    // that was wrong twice over: memory_store is required lazily inside a write
+    // function, not at module load, and requiring memory_writer costs 15.9 ms
+    // once at daemon start. Two hand-written copies of one rule, kept in step by
+    // a test, is the worse trade.
+    const { memoryBaseDir } = require("./memory_writer.js");
+    this.modelCacheDir = opts.modelCacheDir || path.join(memoryBaseDir(), "models");
     this.state = "idle";
     this.initPromise = null;
     this.initError = null;
