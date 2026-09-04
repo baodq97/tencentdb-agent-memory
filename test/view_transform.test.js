@@ -1127,6 +1127,48 @@ test("gaps: capture backlog fires only against a known threshold", () => {
   assert.equal(gapKinds(unknown).includes(GAP_KIND.CAPTURE_BACKLOG), false);
 });
 
+test("gaps: capture backlog is per-project, never a cross-project sum", () => {
+  // The live shape of the bug: many projects, each a few turns behind, none of
+  // them due. Summed they are 60 turns behind a threshold of 20 -- which is how
+  // doctor reported a backlog while `tmem status` reported consolidation_due:
+  // false for the current project. Dueness is an ANY over slots, not a SUM.
+  const many = Array.from({ length: 12 }, (_, i) => ({
+    slug: `p${i}`, turnCount: 5, lastConsolidationTurn: 0, behind: 5, warmupThreshold: 0,
+  }));
+  const notDue = T.transformRoot(rootExtract([storeExtract("s", { records: [rec("m_1")] })], {
+    captureState: C.ok({ turnCount: 60, lastConsolidationTurn: 0, sessions: {}, projects: many }),
+    config: C.ok({ config: {}, consolidateEvery: 20, sceneNavBudgetTokens: 200 }),
+  }));
+  assert.equal(gapKinds(notDue).includes(GAP_KIND.CAPTURE_BACKLOG), false,
+    "12 projects 5 turns behind a threshold of 20 is no backlog, whatever they sum to");
+
+  // One project over its own threshold IS a backlog, and the finding names it.
+  const oneDue = T.transformRoot(rootExtract([storeExtract("s", { records: [rec("m_1")] })], {
+    captureState: C.ok({
+      turnCount: 85, lastConsolidationTurn: 0, sessions: {},
+      projects: [...many, { slug: "busy", turnCount: 25, lastConsolidationTurn: 0, behind: 25, warmupThreshold: 0 }],
+    }),
+    config: C.ok({ config: {}, consolidateEvery: 20, sceneNavBudgetTokens: 200 }),
+  }));
+  const g2 = oneDue.gaps.find((x) => x.kind === GAP_KIND.CAPTURE_BACKLOG);
+  assert.ok(g2, "a project past its own threshold must still be reported");
+  assert.equal(g2.evidence.projectsDue, 1);
+  assert.equal(g2.evidence.worstSlug, "busy");
+  assert.equal(g2.evidence.behind, 25, "behind is the worst project's backlog, not the 85-turn sum");
+  assert.match(g2.title, /busy/);
+
+  // A warmup slot graduates later: a fresh project is due almost immediately.
+  const fresh = T.transformRoot(rootExtract([storeExtract("s", { records: [rec("m_1")] })], {
+    captureState: C.ok({
+      turnCount: 2, lastConsolidationTurn: 0, sessions: {},
+      projects: [{ slug: "new", turnCount: 2, lastConsolidationTurn: 0, behind: 2, warmupThreshold: 2 }],
+    }),
+    config: C.ok({ config: {}, consolidateEvery: 20, sceneNavBudgetTokens: 200 }),
+  }));
+  assert.ok(fresh.gaps.find((x) => x.kind === GAP_KIND.CAPTURE_BACKLOG),
+    "warmup threshold must be honoured, as memory_auto_capture.warmupThreshold does");
+});
+
 test("gaps: a corrupt root document is reported, an absent one is not a defect", () => {
   const broken = T.transformRoot(rootExtract([storeExtract("s", { records: [] })], {
     state: C.errored("state.json unreadable (/fixture/state.json): bad json", { sessions: null, projects: null, pendingSessions: null, recallDisabledSlugs: null }),

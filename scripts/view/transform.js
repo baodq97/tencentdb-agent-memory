@@ -1419,18 +1419,58 @@ function buildGaps({ stores, persona, state, config, captureState, heat }) {
 
   // ---- capture backlog --------------------------------------------
   if (captureState.status === STATUS.OK && config.status === STATUS.OK && config.consolidateEvery > 0) {
-    const behind = (captureState.turnCount || 0) - (captureState.lastConsolidationTurn || 0);
-    if (behind >= config.consolidateEvery) {
+    const every = config.consolidateEvery;
+    const slots = Array.isArray(captureState.projects) ? captureState.projects : null;
+
+    // DUENESS IS PER PROJECT. Each slot is compared against the threshold on its
+    // own, exactly as memory_pipeline does. The previous version compared the SUM
+    // of every project's backlog against a single project's threshold, so 47
+    // projects a few turns behind each cleared a bar none of them had reached —
+    // doctor reported a backlog in the same breath as `tmem status` reporting
+    // consolidation_due: false. A sum is not the answer to an "any" question.
+    //
+    // Same warmup rule as memory_auto_capture.warmupThreshold: 0 = graduated to
+    // the full threshold, a positive integer is a lower warmup bar, absent = fresh.
+    const thresholdFor = (slot) => {
+      const wt = slot && slot.warmupThreshold;
+      if (wt === 0) return every;
+      if (!Number.isInteger(wt) || wt < 1) return Math.min(1, every);
+      return Math.min(wt, every);
+    };
+
+    const due = slots
+      ? slots.filter((sl) => sl.behind >= thresholdFor(sl)).sort((a, b) => b.behind - a.behind)
+      : (() => {
+          // Legacy capture_state with no per-project slots: the root scalars are
+          // the only reading available, and for a single-project store they mean
+          // what they used to.
+          const behind = (captureState.turnCount || 0) - (captureState.lastConsolidationTurn || 0);
+          return behind >= every ? [{ slug: null, behind, turnCount: captureState.turnCount, lastConsolidationTurn: captureState.lastConsolidationTurn, warmupThreshold: null }] : [];
+        })();
+
+    if (due.length > 0) {
+      const worst = due[0];
       gaps.push(gap({
         kind: GAP_KIND.CAPTURE_BACKLOG,
-        severity: behind >= config.consolidateEvery * 2 ? SEVERITY.WARN : SEVERITY.INFO,
+        severity: worst.behind >= every * 2 ? SEVERITY.WARN : SEVERITY.INFO,
         subject: { scope: "root", slug: null, id: null, label: "consolidation" },
-        title: `${behind} turns captured since the last consolidation (threshold ${config.consolidateEvery})`,
+        title: due.length === 1 && worst.slug
+          ? `${worst.slug}: ${worst.behind} turns captured since its last consolidation (threshold ${thresholdFor(worst)})`
+          : `${due.length} project(s) due for consolidation — worst ${worst.slug || "store"} at ${worst.behind} turns (threshold ${every})`,
         evidence: {
-          turnCount: captureState.turnCount,
-          lastConsolidationTurn: captureState.lastConsolidationTurn,
-          behind,
-          consolidateEvery: config.consolidateEvery,
+          projectsDue: due.length,
+          projectsTracked: slots ? slots.length : null,
+          worstSlug: worst.slug,
+          // `behind` keeps its original name and meaning -- turns behind for the
+          // project this finding is about -- so existing consumers keep working.
+          // It is the WORST project's backlog now, never a cross-project sum.
+          behind: worst.behind,
+          worstBehind: worst.behind,
+          consolidateEvery: every,
+          // The store-wide sums stay available, clearly labelled as sums so they
+          // are never mistaken for a dueness signal again.
+          sumTurnCount: captureState.turnCount,
+          sumLastConsolidationTurn: captureState.lastConsolidationTurn,
         },
         suggestion: "/memory-consolidate",
       }));
