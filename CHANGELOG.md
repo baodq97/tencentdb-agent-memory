@@ -5,6 +5,61 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-09-04
+
+Consolidation stops asking the session to do it, and runs headless instead.
+
+### Changed
+- **Consolidation runs outside the session.** The Stop hook used to exit 2 with an
+  `asyncRewake` message asking the main agent to dispatch the memory-consolidator, so
+  the only step that turns raw L1 atoms into readable L2 scene facts depended on the
+  session complying, and spent the session's own context. Measured over 14 days of real
+  traffic (838 injected turns, 17 projects): 74% of sessions had zero scene write while
+  still running, 19% of turns had no consolidation at all, median turn waited 4.15 h.
+  Compliance was not the problem — 24 of 26 woken sessions did dispatch — the wake
+  almost never fired. `scripts/consolidate_runner.js` now runs `claude -p
+  /memory-consolidate` as a detached subprocess that outlives the session.
+- **Two trigger arms, not one.** A turn counter plus the session boundary. The session
+  arm is not redundant: the median session is 4 turns, so a project with short sessions
+  never accumulates enough to fire at any counter threshold.
+- **Success is a measured store delta, never the exit code.** The spike that validated
+  this approach returned `is_error: false` and a confident "I folded it into the scene"
+  while the store was byte-for-byte unchanged. Every run appends its verdict, cost and
+  delta to `consolidation_runs.jsonl`; `tmem status` summarises it.
+- **The `memory-consolidator` agent now has one trigger only** — dispatch after
+  `/memory-seed`. There is no automatic path through it any more.
+
+### Added
+- `MEMORY_TENCENTDB_HOME` overrides the store root, which is what lets a run be pointed
+  at a sandbox store. Note that a child reaching `tmem` through Claude Code's Bash tool
+  resolves it through a *login* shell, so a PATH shim does not isolate it — repoint the
+  resolved binary and verify with `bash -lc 'readlink -f $(command -v tmem)'`.
+- Five `tmem config consolidate-*` keys: `auto-consolidate`, `consolidate-on-session-end`,
+  `consolidate-model`, `consolidate-max-runs-per-day`, `consolidate-budget-usd`.
+
+### Fixed
+- **Test-suite temp-directory leak.** One `npm test` left 51 scratch directories and
+  1,413 had accumulated. Fixed once via `--import ./test/_tmp_cleanup.js`, scoped to the
+  process that created them — a sweep by name or timestamp would delete a parallel
+  sibling's live fixture. 51 → 0.
+- **A live test-isolation bug.** Two tests in `project_lock.test.js` deleted
+  `MEMORY_AUTO_CONSOLIDATE` in their `finally` instead of restoring it, removing the
+  suite-wide kill switch for every later test in the file; their hook subprocesses then
+  spawned real `claude -p` runs. Cause of an intermittent failure and of a 364 ms test
+  taking 1705 ms.
+- Docs: the five `consolidate-*` config keys were undocumented, `consolidate-every`'s
+  default was listed as 20 against the code's 10, and the pipeline table still credited
+  dispatch to the session.
+
+### Measured
+First production run, six scopes with backlogs of 152/32/32/32/29/22 pending turns:
+**6/6 `verdict: changed`**, 7-12 turns, 50-164 s, $0.41-1.11 each ($4.07 total).
+Produced 5 new scene files (98 → 103), +51 scene-fact bullets (961 → 1012), 5
+project-doctrine writes, 18 changelog rows. The recall-eligible L1 pool went 104 → 103
+(the −1 a duplicate the child's own dedup removed) — expected, because consolidation's
+write surface is L2/L3 by design and the scene-fact bullet, not the L1 atom, is the
+per-turn recall surface.
+
 ## [0.8.1] — 2026-08-10
 
 Per-project consolidation + a measured optimization of the consolidator agent.
