@@ -99,6 +99,40 @@ function cmdStatus() {
   console.log("Scenes:", scenes.length, scenes.length ? scenes.map(s => s.filename).join(", ") : "");
 
   console.log("\nCapture:", JSON.stringify(captureStatus(pHash)));
+
+  // Consolidation is now unattended: nothing about it reaches the session any
+  // more, so this is the only place an operator learns whether it is working.
+  // The counts come from the runs log rather than from exit codes on purpose —
+  // a headless run reported success while writing nothing to its store, and
+  // `no-op` is what that looks like when it is counted honestly.
+  printConsolidationHealth(pHash);
+}
+
+function printConsolidationHealth(pHash) {
+  const cap = req("memory_auto_capture.js");
+  const runner = req("consolidate_runner.js");
+  let runs = [];
+  try {
+    runs = fs.readFileSync(runner.RUNS_LOG(), "utf-8").split("\n").filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch { /* no runs yet */ }
+
+  const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+  const recent = runs.filter((r) => Date.parse(r.at) >= cutoff);
+  const by = recent.reduce((a, r) => (a[r.verdict] = (a[r.verdict] || 0) + 1, a), {});
+  const cost = recent.reduce((a, r) => a + (typeof r.cost_usd === "number" ? r.cost_usd : 0), 0);
+  const mine = recent.filter((r) => r.project === pHash);
+  const last = mine.length ? mine[mine.length - 1] : null;
+
+  console.log("\nAuto-consolidation:", cap.getAutoConsolidate() ? "on" : "off",
+    `(model ${cap.getConsolidateModel()}, counter>=${cap.getConsolidateEvery()}, session-end>=${cap.getConsolidateOnSessionEnd()}, max ${cap.getConsolidateMaxRunsPerDay()}/day)`);
+  console.log("  last 7d, all projects:", recent.length, "runs", JSON.stringify(by), `$${cost.toFixed(2)}`);
+  console.log("  this project:", last
+    ? `${last.verdict} at ${last.at} (${last.trigger}, +${last.changelog_delta} changelog)`
+    : "(no run recorded yet)");
+  if (!runner.findClaude(process.env)) {
+    console.log("  note: no `claude` binary on PATH — auto-consolidation cannot run here.");
+  }
 }
 
 // ── recall ──
@@ -1264,7 +1298,18 @@ function cmdUnlock() {
 
 // ── config ──
 function cmdConfig(args) {
-  const { getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, parseBoolish, loadConfig } = req("memory_auto_capture.js");
+  const cap = req("memory_auto_capture.js");
+  const { getConsolidateEvery, setConsolidateEvery, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, parseBoolish, loadConfig } = cap;
+
+  // The headless auto-consolidation settings, declared as data. Six near-identical
+  // read/write branches would otherwise be six places to forget one.
+  const AUTO_KEYS = {
+    "auto-consolidate": { get: () => (cap.getAutoConsolidate() ? "on" : "off"), set: cap.setAutoConsolidate, env: "MEMORY_AUTO_CONSOLIDATE" },
+    "consolidate-on-session-end": { get: cap.getConsolidateOnSessionEnd, set: cap.setConsolidateOnSessionEnd, env: "MEMORY_CONSOLIDATE_ON_SESSION_END" },
+    "consolidate-model": { get: cap.getConsolidateModel, set: cap.setConsolidateModel, env: "MEMORY_CONSOLIDATE_MODEL" },
+    "consolidate-max-runs-per-day": { get: cap.getConsolidateMaxRunsPerDay, set: cap.setConsolidateMaxRunsPerDay, env: "MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY" },
+    "consolidate-budget-usd": { get: cap.getConsolidateBudgetUsd, set: cap.setConsolidateBudgetUsd, env: "MEMORY_CONSOLIDATE_BUDGET_USD" },
+  };
   const key = args[0];
 
   if (!key) {
@@ -1272,7 +1317,12 @@ function cmdConfig(args) {
     const { getRecallEnabled } = req("memory_writer.js");
     const pHash = projectHashForCwd(process.env.CLAUDE_PROJECT_DIR || ".");
     console.log(JSON.stringify({
+      auto_consolidate: cap.getAutoConsolidate() ? "on" : "off",
       consolidate_every: getConsolidateEvery(),
+      consolidate_on_session_end: cap.getConsolidateOnSessionEnd(),
+      consolidate_model: cap.getConsolidateModel(),
+      consolidate_max_runs_per_day: cap.getConsolidateMaxRunsPerDay(),
+      consolidate_budget_usd: cap.getConsolidateBudgetUsd(),
       scene_max_tokens: getSceneMaxTokens(),
       persona_max_tokens: getPersonaMaxTokens(),
       noise_gate: getNoiseGateEnabled() ? "on" : "off",
@@ -1284,6 +1334,11 @@ function cmdConfig(args) {
         MEMORY_SCENE_MAX_TOKENS: process.env.MEMORY_SCENE_MAX_TOKENS || null,
         MEMORY_PERSONA_MAX_TOKENS: process.env.MEMORY_PERSONA_MAX_TOKENS || null,
         MEMORY_NOISE_GATE: process.env.MEMORY_NOISE_GATE || null,
+        MEMORY_AUTO_CONSOLIDATE: process.env.MEMORY_AUTO_CONSOLIDATE || null,
+        MEMORY_CONSOLIDATE_ON_SESSION_END: process.env.MEMORY_CONSOLIDATE_ON_SESSION_END || null,
+        MEMORY_CONSOLIDATE_MODEL: process.env.MEMORY_CONSOLIDATE_MODEL || null,
+        MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY: process.env.MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY || null,
+        MEMORY_CONSOLIDATE_BUDGET_USD: process.env.MEMORY_CONSOLIDATE_BUDGET_USD || null,
       },
     }, null, 2));
     return;
@@ -1304,6 +1359,19 @@ function cmdConfig(args) {
     }
     setRecallEnabled(pHash, enabled);
     console.log(`recall ${enabled ? "on" : "off"} for this project (${pHash})`);
+    return;
+  }
+
+  if (AUTO_KEYS[key]) {
+    const spec = AUTO_KEYS[key];
+    if (args[1] === undefined) { console.log(spec.get()); return; }
+    try {
+      const v = spec.set(args[1]);
+      console.log(`${key} set to ${typeof v === "boolean" ? (v ? "on" : "off") : v}`);
+    } catch (e) {
+      console.error(e.message);
+      process.exit(1);
+    }
     return;
   }
 

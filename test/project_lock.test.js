@@ -120,16 +120,52 @@ function runHook(home, projDir) {
   return code;
 }
 
-test("Bar 2: same project — first Stop dispatches, second is blocked by the lock", () => {
+test("Bar 2: same project — a due project is a target, a locked one is not", () => {
+  // Ported. Single-flight moved DOWN a layer: the hook no longer acquires, so it
+  // no longer exits 2 and no longer leaves a lock behind. The guarantee is
+  // unchanged — one run per store — but it is now enforced where the run
+  // actually starts. Two assertions replace the old one: the hook's decision
+  // skips an already-locked project, and the runner refuses to start on one.
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-lock-hook-"));
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-lock-proj-"));
+  const prev = { h: process.env.HOME, u: process.env.USERPROFILE, d: process.env.CLAUDE_PROJECT_DIR };
   try {
     const hash = projectHashForCwd(proj);
     seedDue(home, hash);
-    assert.strictEqual(runHook(home, proj), 2, "first run dispatches (exit 2)");
-    assert.ok(fs.existsSync(path.join(home, ".memory-tencentdb", "projects", hash, "consolidation.lock")));
-    assert.strictEqual(runHook(home, proj), 0, "second run is blocked by the held lock (exit 0)");
+    process.env.HOME = home; process.env.USERPROFILE = home; process.env.CLAUDE_PROJECT_DIR = proj;
+
+    const pipeline = require("../scripts/memory_pipeline.js");
+    const select = () => pipeline.selectTargets({
+      hash, forced: false, info: { due: true },
+      cascade: { stage: "idle", last_consolidated_l1: 0 },
+      plan: { run: true, tier: "l1", reason: "new-l1" },
+      captureMod: { getTurnCount: () => 0 },
+    });
+
+    assert.strictEqual(select().length, 1, "an unlocked due project is a target");
+    assert.strictEqual(lock.acquireLock(hash), true, "simulate a run in flight");
+    assert.strictEqual(select().length, 0, "a locked project is not offered again");
+
+    // And the runner itself refuses, which is the authoritative guarantee: the
+    // check above is only a cheap filter that saves starting a doomed process.
+    // The cap is pinned so the developer's own config cannot decide this test,
+    // and spawnSyncFn is stubbed so no `claude -p` can ever start from a test.
+    const runner = require("../scripts/consolidate_runner.js");
+    process.env.MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY = "12";
+    process.env.MEMORY_AUTO_CONSOLIDATE = "on";   // suite default is off; spawn is stubbed below
+    const rec = runner.runConsolidation({
+      hash, projectDir: proj, trigger: "counter",
+      spawnSyncFn: () => { throw new Error("a locked store must never reach spawn"); },
+    });
+    assert.strictEqual(rec.verdict, "skipped");
+    assert.strictEqual(rec.reason, "locked", "the runner must not start on a locked store");
+
+    assert.strictEqual(runHook(home, proj), 0, "and the hook never signals the session");
   } finally {
+    process.env.HOME = prev.h; process.env.USERPROFILE = prev.u;
+    delete process.env.MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY;
+    delete process.env.MEMORY_AUTO_CONSOLIDATE;
+    if (prev.d === undefined) delete process.env.CLAUDE_PROJECT_DIR; else process.env.CLAUDE_PROJECT_DIR = prev.d;
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(proj, { recursive: true, force: true });
   }
@@ -173,9 +209,13 @@ test("completion loop: mark-done releases the lock, resets the counter, next Sto
     seedDue(home, hash);
     const env = { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_PROJECT_DIR: proj };
 
-    assert.strictEqual(runHook(home, proj), 2, "due ⇒ dispatch");
+    // The lock is now taken by the runner, not the hook, so this stands in for a
+    // run in flight. What mark-done must still guarantee is unchanged: it
+    // releases the lock and resets the counter so the next Stop is quiet.
+    assert.strictEqual(runHook(home, proj), 0, "due ⇒ the hook spawns and stays silent");
     const lockFile = path.join(home, ".memory-tencentdb", "projects", hash, "consolidation.lock");
-    assert.ok(fs.existsSync(lockFile), "lock held after dispatch");
+    fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+    fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
 
     execFileSync("node", [CLI, "mark-done"], { env, stdio: "pipe" });
     assert.ok(!fs.existsSync(lockFile), "mark-done released the lock");
@@ -184,6 +224,7 @@ test("completion loop: mark-done releases the lock, resets the counter, next Sto
     assert.strictEqual(cs.projects[hash].consolidation_due, false, "counter reset");
 
     assert.strictEqual(runHook(home, proj), 0, "next Stop is quiet (not due, cascade marker advanced)");
+    assert.ok(!fs.existsSync(lockFile), "and no lock is left behind");
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(proj, { recursive: true, force: true });
@@ -199,8 +240,33 @@ test("Bar 3: two different projects both dispatch (parallel allowed)", () => {
     const hashB = projectHashForCwd(projB);
     seedDue(home, hashA);
     seedDue(home, hashB);
-    assert.strictEqual(runHook(home, projA), 2, "project A dispatches");
-    assert.strictEqual(runHook(home, projB), 2, "project B dispatches despite A's lock");
+    // Ported from exit-2. Cross-project parallelism is the property; it is now
+    // observed through the runner, which acquires per project. A holds a lock and
+    // B must still be able to take its own.
+    const runner = require("../scripts/consolidate_runner.js");
+    const prev = { h: process.env.HOME, u: process.env.USERPROFILE };
+    process.env.HOME = home; process.env.USERPROFILE = home;
+    try {
+      process.env.MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY = "12";
+      process.env.MEMORY_AUTO_CONSOLIDATE = "on";   // suite default is off; spawn is stubbed below
+      assert.strictEqual(lock.acquireLock(hashA), true, "project A's run is in flight");
+      let sawSpawn = false;
+      const recB = runner.runConsolidation({
+        hash: hashB, projectDir: projB, trigger: "counter",
+        // Stubbed: this asserts B got PAST the lock, not that a model ran.
+        spawnSyncFn: () => { sawSpawn = true; return { status: 0, stdout: "{}" }; },
+      });
+      assert.strictEqual(sawSpawn, true, "B must reach its run despite A's lock");
+      assert.notStrictEqual(recB.reason, "locked");
+      assert.strictEqual(lock.isLocked(hashA), true, "and A's lock is untouched");
+      assert.strictEqual(lock.isLocked(hashB), false, "B released its own lock when it finished");
+    } finally {
+      process.env.HOME = prev.h; process.env.USERPROFILE = prev.u;
+      delete process.env.MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY;
+      delete process.env.MEMORY_AUTO_CONSOLIDATE;
+    }
+    assert.strictEqual(runHook(home, projA), 0, "neither hook signals the session");
+    assert.strictEqual(runHook(home, projB), 0);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(projA, { recursive: true, force: true });

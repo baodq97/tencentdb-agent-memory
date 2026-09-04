@@ -17,7 +17,7 @@ Branch: `feat/self-consolidation-memory` (JS port + self-consolidation memory sy
 | Baseline (no plugin)                      | **0%**     | Model cannot know personal facts a priori |
 | **Absolute lift, top-K**                  | **+100pp** | 0% → 100%                                |
 | Token budget                              | **PASS**   | 77/300 tokens max                         |
-| Auto-capture + consolidation              | ✓          | 8/8 checks, asyncRewake pipeline          |
+| Auto-capture + consolidation              | ✓          | 8/8 checks, headless consolidation runner |
 | Total checks passed                       | **87/87**  | All sections green                        |
 
 > The recall numbers above are on the **local FTS5 keyword-only** path with zero paid services.
@@ -187,7 +187,7 @@ writing, recall, real transcripts, and auto-capture.
 ✅ **Offline-capable.** The local FTS5 path works entirely without the Gateway, giving users
 memory recall even when the sidecar isn't running.
 
-✅ **Auto-consolidation.** The asyncRewake Stop hook triggers LLM-quality consolidation (L1→L2→L3)
+✅ **Auto-consolidation.** The Stop and SessionEnd hooks spawn a detached headless run (L1→L2→L3)
 in the background after every N turns, without polluting the user's conversation context.
 
 🟡 **For best results, run `/memory-seed`** to extract L1 atoms from past conversations. Without

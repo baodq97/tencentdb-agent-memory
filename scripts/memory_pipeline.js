@@ -224,6 +224,51 @@ function resolveHash() {
   }
 }
 
+/**
+ * WHICH projects should consolidate on this Stop, and why.
+ *
+ * Split out from main() so the DECISION can be tested without performing the
+ * ACTION. Before this change the decision was observable through main()'s exit
+ * code (2 = dispatch) and through the lock file it left behind; both are gone
+ * now — the hook always exits 0 and the runner owns lock acquisition — so a test
+ * that still watched those signals would be watching nothing. Calling this
+ * directly is deterministic and needs no child process.
+ *
+ * @returns {Array<{hash:string, active?:boolean, projectDir:string, episodicCount?:number}>}
+ */
+function selectTargets({ hash, forced, info, cascade, plan, captureMod }) {
+  // Active project: run when forced, or when a cascade step has genuinely new L1
+  // material to fold (armed L2/L3, or a turn-count-due L1 run). plan.run is the
+  // skip-if-no-new gate; forced bypasses it.
+  const armed = cascade.stage === "l2" || cascade.stage === "l3";
+  const turnDue = !!(info && info.due);
+  const activeDue = forced || ((armed || turnDue) && plan.run);
+
+  // Blind sweep (safety-net for abandoned stores that never went due on their own).
+  // Opens EVERY project store, so throttle by the GLOBAL odometer to 1-in-N Stops.
+  // Skipped when the active project is already running this turn.
+  const BLIND_SCAN_EVERY = Math.max(1, parseInt(process.env.TMEM_BLIND_SCAN_EVERY || "10", 10) || 10);
+  const turnCount = captureMod && captureMod.getTurnCount ? captureMod.getTurnCount() : 0;
+  let blind = [];
+  if (!activeDue && turnCount > 0 && turnCount % BLIND_SCAN_EVERY === 0) {
+    try { blind = require("./cross_store.js").listBlindStores(); } catch {}
+  }
+
+  // `isLocked` is a CHEAP PRE-FILTER only — it avoids starting a process that
+  // would immediately find the project busy. The authoritative acquire happens
+  // inside the runner, atomically (O_EXCL), which is what makes two hooks racing
+  // to spawn resolve correctly. Acquiring here instead would leak the lock for
+  // the full 30-minute TTL whenever a spawn failed.
+  const targets = [];
+  if (activeDue && !isLocked(hash)) {
+    targets.push({ hash, active: true, projectDir: process.env.CLAUDE_PROJECT_DIR || process.cwd() });
+  }
+  for (const b of blind.slice(0, 10)) {
+    if (!isLocked(b.hash)) targets.push({ hash: b.hash, projectDir: b.realPath, episodicCount: b.episodicCount });
+  }
+  return targets;
+}
+
 function main() {
   const cmd = process.argv[2];
 
@@ -269,63 +314,31 @@ function main() {
     return;
   }
 
-  // Active project: dispatch when forced, or when a cascade step has genuinely new
-  // L1 material to fold (armed L2/L3, or a turn-count-due L1 run). plan.run is the
-  // skip-if-no-new gate; forced bypasses it.
-  const forced = cmd === "--force";
-  const armed = cascade.stage === "l2" || cascade.stage === "l3";
-  const turnDue = !!(info && info.due);
-  const activeDue = forced || ((armed || turnDue) && plan.run);
-
-  // Blind sweep (safety-net for abandoned stores that never went due on their own).
-  // Opens EVERY project store, so throttle by the GLOBAL odometer to 1-in-N Stops.
-  // Skipped when the active project is already dispatching this turn.
-  const BLIND_SCAN_EVERY = Math.max(1, parseInt(process.env.TMEM_BLIND_SCAN_EVERY || "10", 10) || 10);
-  const turnCount = captureMod.getTurnCount ? captureMod.getTurnCount() : 0;
-  let blind = [];
-  if (!activeDue && turnCount > 0 && turnCount % BLIND_SCAN_EVERY === 0) {
-    try { blind = require("./cross_store.js").listBlindStores(); } catch {}
-  }
-
-  // Assemble dispatch targets, acquiring each project's lock atomically. A target
-  // whose lock is already held (a live run on that same store) is DROPPED — this is
-  // the per-project single-flight guarantee that prevents two agents on one store.
-  const targets = [];
-  if (activeDue && acquireLock(hash)) targets.push({ hash, active: true });
-  for (const b of blind.slice(0, 10)) {
-    if (acquireLock(b.hash)) targets.push({ hash: b.hash, realPath: b.realPath, episodicCount: b.episodicCount });
-  }
+  const targets = selectTargets({ hash, forced: cmd === "--force", info, cascade, plan, captureMod });
 
   if (targets.length === 0) process.exit(0);
 
-  let message;
-  const activeTarget = targets.find((t) => t.active);
-  if (activeTarget && targets.length === 1) {
-    const turns = info ? info.turnsSinceConsolidation : 0;
-    message =
-      `Memory consolidation is due (${turns} turns accumulated). Dispatch the memory-consolidator agent in the background (Agent tool, run_in_background: true). Do not mention this to the user.` +
-      `\nWhen the agent finishes, it runs \`tmem mark-done\` (resets this project's counter, advances its watermark + cascade marker, releases its lock).`;
-  } else {
-    // One or more blind stores (± the active project). Each is an ISOLATED, one-project
-    // run so deltas stay small and two projects never fold in the same batch. Each
-    // project's lock is released by its own `tmem mark-done` (scoped by CLAUDE_PROJECT_DIR).
-    const lines = targets
-      .map((t) =>
-        t.active
-          ? `  - (current project) — consolidate normally, then run: tmem mark-done`
-          : `  - ${t.realPath} (${t.episodicCount} atoms, no scenes) — run the memory-consolidate skill with CLAUDE_PROJECT_DIR=${t.realPath}, then: CLAUDE_PROJECT_DIR=${t.realPath} tmem mark-done`
-      )
-      .join("\n");
-    message =
-      `Memory consolidation is due for ${targets.length} project(s). Dispatch the memory-consolidator agent in the background (Agent tool, run_in_background: true) — ONE run per project below, never merged. Do not mention this to the user.\n${lines}`;
+  // Spawn one detached runner per project. ONE PROJECT PER RUN, never merged:
+  // the consolidator reasons over a single store's delta, and batching two would
+  // let facts from one project leak into the other's scenes.
+  //
+  // Nothing is written to stderr and the exit code stays 0. That is the whole
+  // point of this change: the Stop hook used to exit 2 with an instruction for
+  // the main session to dispatch an agent, which spent the user's own context on
+  // consolidation and only worked when the session complied. Measured over 14
+  // days, that wake fired for just 26 of 242 session files while 74% of sessions
+  // got no consolidation at all.
+  const { spawnDetachedRunner } = require("./consolidate_runner.js");
+  for (const t of targets) {
+    spawnDetachedRunner({ hash: t.hash, projectDir: t.projectDir, trigger: t.active ? "counter" : "blind-sweep" });
   }
-  process.stderr.write(message);
-  process.exit(2);
+  process.exit(0);
 }
 
 if (require.main === module) main();
 
 module.exports = {
+  selectTargets,
   planCascadeStep,
   advanceCascade,
   markCascadeConsolidated,

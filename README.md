@@ -109,7 +109,7 @@ The URL carries a per-session key and is required verbatim: the page renders raw
 | Skill | `tmem-cli` | CLI reference for memory inspection/management |
 | Skill | `contrib-profile` | Orchestrates the `/contrib` pipeline end to end |
 | Skill | `contrib-ingest` / `contrib-consolidate` / `contrib-synthesize` | Internal `/contrib` phases (not user-invocable) |
-| Agent | `memory-consolidator` | Background worker dispatched by asyncRewake |
+| Agent | `memory-consolidator` | Dispatched after `/memory-seed` only; automatic runs are headless |
 | Module | `scripts/persona_projection.js` | Pure persona duty classification + tier 0/1 projection; shared by the hook, the CLI and the visualiser |
 | Module | `scripts/scene_nav.js` | Pure `<scene-navigation>` renderer + budget arithmetic; shared by recall and the visualiser |
 
