@@ -608,6 +608,10 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
   const wpTotals = zeroMap(WRITE_PATHS);
   const wpCovered = zeroMap(WRITE_PATHS);
   let withVector = 0;
+  // Vectors matched to ANY record, eligible or not. Separate from `withVector`
+  // (eligible-only, the coverage numerator) because the orphan question is a
+  // different one: does this vector's record still exist?
+  let vectorsWithRecord = 0;
   let eligibleRecords = 0;
 
   for (const r of records) {
@@ -635,6 +639,8 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
     // `tmem sync` correctly reported "all vectors in sync" while doctor showed 2%.
     const eligible = isVectorEligible(r.type);
     if (eligible) eligibleRecords += 1;
+
+    if (vecIds && vecIds.has(r.record_id)) vectorsWithRecord += 1;
 
     if (vecIds && eligible) {
       wpTotals[wp] += 1;
@@ -719,9 +725,14 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
       ineligibleRecords: records.length - eligibleRecords,
       byWritePath: byPath,
       missingByMonth,
-      // A vector whose record is gone. Never negative: `count` is the row count of
-      // l1_vec and `withVector` counts a subset of it.
-      orphanVectors: Math.max(0, (vr.count || 0) - withVector),
+      // A vector whose record is GONE — measured against every record, not just
+      // the eligible ones. Subtracting `withVector` (eligible-only since coverage
+      // moved to the eligible denominator) counted every episodic/persona vector
+      // as an orphan. On a store written before the write-side eligibility filter
+      // — the state constants.js documents as "98% of vectors were episodic" —
+      // that reports thousands of orphans that do not exist, and fires the
+      // vectors_orphaned finding on a healthy store.
+      orphanVectors: Math.max(0, (vr.count || 0) - vectorsWithRecord),
       dimensions: vr.dimensions ?? null,
       vectorRows: vr.count || 0,
     };

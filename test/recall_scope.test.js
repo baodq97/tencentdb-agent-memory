@@ -68,3 +68,46 @@ test("an unknown source is treated as deliberate, not as the hook", () => {
   assert.equal(dirs.length, 2);
   assert.ok(dirs.some(isGlobal));
 });
+
+// The rule above was enforced only where it was easy to reach. `recallDirs` is a
+// pure function and every test here called it directly — while the SYNC `recall()`
+// hardcoded globalDir() then projectDir() and never consulted it. That path is not
+// dead: hooks/scripts/on_user_prompt.js falls back to `recall()` whenever
+// `recallAsync` throws, so a hook turn taking the fallback injected exactly the
+// global atoms this scoping removes, unfloored, and the suite stayed green.
+//
+// Testing the predicate is not testing the caller. This drives the real entry
+// point against a seeded temp store and asserts on what came back.
+const fsx = require("node:fs");
+const osx = require("node:os");
+const { execFileSync } = require("node:child_process");
+const RECALL_JS = path.join(__dirname, "..", "scripts", "memory_recall.js");
+
+test("the SYNC recall() honours the hook scope too, not just recallDirs", () => {
+  const home = fsx.mkdtempSync(path.join(osx.tmpdir(), "tmem-scope-sync-"));
+  try {
+    const base = path.join(home, ".memory-tencentdb");
+    const hash = "-work-alpha";
+    for (const [dir, marker] of [
+      [path.join(base, "global"), "GLOBALONLYMARKER rule about pushing tags"],
+      [path.join(base, "projects", hash), "PROJECTONLYMARKER rule about pushing tags"],
+    ]) {
+      fsx.mkdirSync(path.join(dir, "records"), { recursive: true });
+      const { MemoryStore } = require("../scripts/memory_store.js");
+      const s = new MemoryStore(path.join(dir, "index.db"));
+      s.upsert({ id: `m_${marker.slice(0, 6)}`, content: marker, type: "instruction", priority: 60 });
+      s.close();
+    }
+    const env = { ...process.env, HOME: home, USERPROFILE: home, MEMORY_TENCENTDB_HOME: base };
+    const out = execFileSync("node", ["-e",
+      `const { recall, RECALL_SOURCE } = require(${JSON.stringify(RECALL_JS)});
+       process.stdout.write(recall("rule about pushing tags", ${JSON.stringify(hash)}, 280, 5, RECALL_SOURCE.HOOK) || "");`],
+      { env, encoding: "utf-8" });
+
+    assert.ok(out.includes("PROJECTONLYMARKER"), `the project atom must still reach the hook:\n${out}`);
+    assert.ok(!out.includes("GLOBALONLYMARKER"),
+      `the hook must not read global on the sync path either:\n${out}`);
+  } finally {
+    fsx.rmSync(home, { recursive: true, force: true });
+  }
+});

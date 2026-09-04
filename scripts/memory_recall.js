@@ -280,14 +280,49 @@ function factLogId(f) {
 const FACT_EMBED_MAX_PER_TURN = 12;
 const FACT_EMBED_CONCURRENCY = 3;
 
-/** Map with bounded concurrency, preserving input order. */
-async function mapBounded(items, limit, fn) {
+/**
+ * Wall-clock ceiling on the whole fact-embed stage, and a shorter per-call budget
+ * than the query embed gets.
+ *
+ * WHY BOTH. The query timeout went 500 -> 2500ms to stop a slow embed silently
+ * costing the turn its semantic ranking. But the fact stage runs 12 misses at
+ * concurrency 3 — four sequential waves — so against a daemon that is connected
+ * but never answers (the `stuck` reason, which only resolves at the full timeout)
+ * the stage alone would cost 4 x 2500 = 10s, plus 2.5s for the query embed. The
+ * UserPromptSubmit hook budget is 8s (hooks/hooks.json), and neither recallAsync
+ * nor the hook carries an overall deadline, so the hook would be KILLED and the
+ * turn would get no memory context at all — strictly worse than the keyword
+ * degradation the timeout raise was meant to remove.
+ *
+ * The two budgets are not the same question. The query embed is the critical
+ * path: without it the turn falls back or fails closed, so it is worth waiting
+ * for. A fact embed is a cache fill — a miss just means that bullet does not rank
+ * semantically THIS turn, and the cache converges over the next few. So facts get
+ * a tighter per-call budget and the stage gets a hard deadline.
+ *
+ * Worst case now: 2500 (query) + 1500 (stage deadline) + 800 (one in-flight call
+ * that started just under the deadline) = ~4.8s, inside the 8s hook budget with
+ * room for the FTS, persona and scene-nav work around it.
+ */
+const FACT_EMBED_TIMEOUT_MS = 800;
+const FACT_EMBED_STAGE_BUDGET_MS = 1500;
+
+/**
+ * Map with bounded concurrency, preserving input order.
+ *
+ * `deadline` is an absolute timestamp: a worker stops CLAIMING new items once it
+ * is past, so the stage is bounded by the deadline plus at most one in-flight
+ * call. Unclaimed slots stay undefined, which every caller here already treats as
+ * "not embedded" — the same state as a failed embed.
+ */
+async function mapBounded(items, limit, fn, deadline = Infinity) {
   const out = new Array(items.length);
   let next = 0;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (true) {
       const i = next++;
       if (i >= items.length) return;
+      if (Date.now() >= deadline) return;
       out[i] = await fn(items[i]);
     }
   });
@@ -304,12 +339,17 @@ async function embedFactsCached(facts, embedFn) {
   }
   if (misses.length) {
     const batch = misses.slice(0, FACT_EMBED_MAX_PER_TURN);
+    const deadline = Date.now() + FACT_EMBED_STAGE_BUDGET_MS;
     const results = await mapBounded(batch, FACT_EMBED_CONCURRENCY, async (m) => {
-      try { const r = await embedFn(m.text); return { h: m.h, vec: r && r.vector ? Array.from(r.vector) : null }; }
-      catch { return { h: m.h, vec: null }; }
-    });
+      try {
+        const r = await embedFn(m.text, { timeoutMs: FACT_EMBED_TIMEOUT_MS });
+        return { h: m.h, vec: r && r.vector ? Array.from(r.vector) : null };
+      } catch { return { h: m.h, vec: null }; }
+    }, deadline);
     let changed = false;
-    for (const r of results) if (r.vec) { cache[r.h] = r.vec; changed = true; }
+    // `results` can hold undefined for slots the deadline cut — the same "not
+    // embedded" state as a failed call, so the guard covers both.
+    for (const r of results) if (r && r.vec) { cache[r.h] = r.vec; changed = true; }
     if (changed) saveFactVecCache(cache);
   }
   return facts.map((f) => cache[factHash(f.text)] || null);
@@ -620,27 +660,21 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
   const factIds = factRecall.ids;
   if (factRecall.block) parts.push(factRecall.block);
 
+  // SAME scope rule as recallAsync. This path hardcoded global-then-project, so
+  // the property test/recall_scope.test.js pins — "the automatic hook reads the
+  // project store only" — held on the async path and silently did not hold here.
+  // on_user_prompt.js falls back to recall() whenever recallAsync throws, so a
+  // hook turn taking that route still injected unfloored global atoms: the exact
+  // double-billing (a standing rule delivered once as <persona> and again as a
+  // search hit) that scoping the hook exists to stop.
   let memories = [];
-  const gDir = globalDir();
-  const gDb = path.join(gDir, "index.db");
-  if (fs.existsSync(gDb)) {
-    const store = openMemoryStoreRO(gDb);
-    if (store) {
-      memories.push(...store.search(query, topK));
-      store.close();
-    }
-  }
-
-  if (projectHash) {
-    const pDir = projectDir(projectHash);
-    const pDb = path.join(pDir, "index.db");
-    if (fs.existsSync(pDb)) {
-      const store = openMemoryStoreRO(pDb);
-      if (store) {
-        memories.push(...store.search(query, topK));
-        store.close();
-      }
-    }
+  for (const dir of recallDirs(projectHash, source)) {
+    const db = path.join(dir, "index.db");
+    if (!fs.existsSync(db)) continue;
+    const store = openMemoryStoreRO(db);
+    if (!store) continue;
+    memories.push(...store.search(query, topK));
+    store.close();
   }
 
   // Drop persona (session clock) AND raw episodic (echoes); the distilled facts
@@ -799,7 +833,7 @@ function dedupeAndRank(memories, limit) {
 /* `truncate()` moved to scene_nav.js: the scene-nav summary cut was its only
  * caller, and the renderer that needs it now lives there. */
 
-async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 5, source = RECALL_SOURCE.HOOK) {
+async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 5, source = RECALL_SOURCE.HOOK, opts = {}) {
   const maxChars = maxTokens * CHARS_PER_TOKEN;
   const parts = [];
 
@@ -837,7 +871,11 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   // candidates. An id ABSENT from this map means "similarity unknown", which the
   // floor treats as keep — never as zero.
   const simById = new Map();
-  const { embedViaDaemonStatus } = require("./embed_client.js");
+  // Injectable for the same reason consolidate_runner injects its spawn: the
+  // interesting behaviour is what happens AROUND the embed, and a test that needs
+  // a live daemon cannot reach the semantic path at all — which is exactly how the
+  // missing factIds above survived a test that asserted on it.
+  const embedViaDaemonStatus = opts.embedFn || require("./embed_client.js").embedViaDaemonStatus;
   try {
     const status = await embedViaDaemonStatus(query);
     queryVec = status.vector;
@@ -949,7 +987,12 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
     memories = dedupeAndRank([...ftsResults, ...vecResults], topK);
   }
 
-  return finishRecall(parts, renderMemories(memories, maxChars), { source, query });
+  // factIds, not just injectedIds. Omitting it here is how `injectedFactIds`
+  // shipped as a field that was always []: this is the path the UserPromptSubmit
+  // hook takes, so every real turn logged an empty array while <recalled-facts>
+  // was delivering facts. Measured on the real store: 401 rows carried the field,
+  // 100% empty, and sync recall() logged 4 for the same query at the same moment.
+  return finishRecall(parts, renderMemories(memories, maxChars), { source, query, factIds });
 }
 
 // ── CLI ──

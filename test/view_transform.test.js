@@ -1460,3 +1460,32 @@ test("buildStoreTree: unreadable records -> a status, not an empty tree pretendi
   assert.equal(tree.totalAtoms, null);
   assert.deepEqual(tree.scenes, []);
 });
+
+// `withVector` became eligible-only when embedding coverage moved to the eligible
+// denominator, but `orphanVectors` kept subtracting it from the l1_vec row count.
+// An orphan is a vector whose RECORD is gone; every vector belonging to a live
+// episodic or persona record started counting as one.
+//
+// That is exactly the state constants.js documents as the reason the write-side
+// filter exists ("98% of vectors were episodic"), so on any store written before
+// it — or upgraded and not yet synced — doctor would report thousands of orphans
+// that do not exist and fire vectors_orphaned on a healthy store. Local stores are
+// all synced, which is why the count still read 0 and the bug shipped latent.
+test("orphanVectors counts vectors whose record is gone, not vectors of ineligible records", () => {
+  const s = T.summariseStore(storeExtract("global", {
+    records: [
+      rec("keep_semantic"),                          // eligible, embedded
+      rec("keep_episodic", { type: "episodic" }),    // NOT eligible, but embedded (pre-filter store)
+      rec("keep_persona", { type: "persona" }),      // NOT eligible, but embedded
+    ],
+    // Four vectors: three belong to live records, one to a record that is gone.
+    vectors: ["keep_semantic", "keep_episodic", "keep_persona", "deleted_record"],
+  }));
+
+  assert.equal(s.vectors.orphanVectors, 1,
+    `only the vector with no record is an orphan, got ${s.vectors.orphanVectors} ` +
+    `(vectorRows ${s.vectors.vectorRows}, eligibleRecords ${s.vectors.eligibleRecords})`);
+  // The coverage numerator stays eligible-only — the two metrics answer different
+  // questions and must not be re-collapsed into one counter.
+  assert.equal(s.vectors.eligibleRecords, 1);
+});

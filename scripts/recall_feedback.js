@@ -71,11 +71,30 @@ function summarizeRecallFeedback(entries) {
     // the relevance floor this was 0 and `injections` was everything; after it
     // the ratio inverted, and a single total would have hidden that entirely.
     factInjections,
-    uniqueAtoms: byId.size,
+    // `byId` deliberately holds BOTH populations (see the comment at the tally),
+    // so its size is not the atom count and must not be reported as one. Once the
+    // hook path started logging facts at all, facts outnumber atoms by roughly an
+    // order of magnitude — measured on 60 real prompts, 55 turns carried zero
+    // atoms and ~3 facts each — so `byId.size` labelled "distinct atoms" was off
+    // by that much. The `fact:` prefix is the discriminator the tally promised.
+    uniqueAtoms: [...byId.keys()].filter((id) => !isFactId(id)).length,
+    uniqueFacts: [...byId.keys()].filter(isFactId).length,
     emptyTurns,
     perAtom,
     injectedIds: new Set(byId.keys()),
   };
+}
+
+/** A log id minted by recall's factLogId (`fact:<scene>:<hash12>`), not a store atom id. */
+function isFactId(id) {
+  return typeof id === "string" && id.startsWith("fact:");
+}
+
+/** The scene a fact id names, for display. Returns "" for an atom id. */
+function factScene(id) {
+  if (!isFactId(id)) return "";
+  const parts = String(id).split(":");
+  return parts.length >= 3 ? parts.slice(1, -1).join(":") : "";
 }
 
 /**
@@ -99,4 +118,4 @@ function classifyStoreAtoms(storeAtoms, summary) {
   return { hot, cold, coldPct };
 }
 
-module.exports = { summarizeRecallFeedback, classifyStoreAtoms };
+module.exports = { summarizeRecallFeedback, classifyStoreAtoms, isFactId, factScene };
