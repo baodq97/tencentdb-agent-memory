@@ -354,6 +354,16 @@ function renderFactDocs(ordered, limit, maxChars) {
 //
 // Re-tune only with bench/negative_control.json in the loop; a sweep whose top
 // candidate is the incumbent cannot discover that the incumbent is too low.
+//
+// PROVISIONAL, AND FITTED TIGHT. Against the full 20-query control the off-topic
+// maximum is 0.547, so 0.55 clears it by only 0.003 (the earlier 10-query probe
+// read 0.533 and was flattering). The margin is thin because the two populations
+// barely separate at all on RAW embeddings — measured gap 0.009. That is a
+// property of embedding query and document with no EmbeddingGemma prompt prefix,
+// which is what embedding_service.js does today. Measured A/B: adding the prefix
+// widens the gap to 0.071 and moves this constant DOWN to ~0.41, while lifting
+// Recall@1 73.3% -> 83.3% and Recall@5 96.7% -> 100%. Re-derive here, not by
+// intuition — the constant moves down, not up. bench/RESULT_RECALL_PRECISION.md.
 const SEMANTIC_FACT_FLOOR = 0.55;
 
 function cosineSim(a, b) {

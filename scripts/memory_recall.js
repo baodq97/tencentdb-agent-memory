@@ -58,6 +58,14 @@ const FACT_RECALL_LIMIT = 5;
  * off-topic maximum; 0.60 keeps every rule-shaped query above and buys 0.037. With
  * a 20-query control the margin is worth more than the two borderline atoms.
  *
+ * PROVISIONAL — this constant is calibrated on vectors embedded WITHOUT the
+ * EmbeddingGemma prompt prefix (embedding_service.js embeds raw text on both
+ * sides). Measured A/B on the same control set, the prefix widens the gap between
+ * on-topic and off-topic similarity from 0.009 to 0.071 and moves the whole
+ * distribution DOWN: the fact-side floor drops 0.55 -> ~0.41. This atom floor must
+ * be re-derived the same way once the prefix lands; keeping 0.60 would drop
+ * everything. See bench/RESULT_RECALL_PRECISION.md.
+ *
  * WHAT IT DELIBERATELY DROPS: queries about project EVENTS stop pulling atoms.
  * That is the intent, not a loss — events are answered by `<recalled-facts>` from
  * distilled scene bodies. Atoms are for standing rules and durable facts.
