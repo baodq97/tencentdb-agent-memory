@@ -95,6 +95,12 @@ const {
   renderSceneNav, byHeatDesc, NAV, heatEmoji: navHeatEmoji, CHARS_PER_TOKEN: NAV_CHARS_PER_TOKEN,
 } = require("../scene_nav.js");
 
+// embed_prompt.js is a pure leaf (constants and string builders, no I/O, no
+// model), so importing it keeps this module's purity rule. It is imported for the
+// SAME reason scene_nav is: the generation a store is compared against must be the
+// one the recall path embeds with, not a copy of the string.
+const { EMBED_VERSION } = require("../embed_prompt.js");
+
 // doctor.js is pure (its persona-budget / secret / atom-count nudge rules require
 // only persona_projection.js and redact.js, both leaves, and only lazily). The
 // lens imports the SAME function `tmem doctor` prints so the two can never disagree
@@ -573,6 +579,7 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
       lowSignal: null, lowSignalUnion: null, lowSignalPrunable: null, duplicates: null,
       vectors: unmeasuredVectors(`store unreadable: ${rd.reason}`),
       vectorState: VECTOR_STATE.UNMEASURED,
+      embedVersion: null,
       scenes: summariseScenes(sr, { now, navBudgetChars, scope: ref.scope }),
       newestRecordAt: null, oldestRecordAt: null,
       missingByMonth: null,
@@ -764,6 +771,11 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
     // unknown, so this stays measured even when `vectors` above does not, and no
     // fourth state is needed to express the difference.
     vectorState: vectorStateFor(vr),
+    // Whole-store fact, like vectorState and for the same reason: which embedding
+    // generation built l1_vec does not depend on how many RECORDS the read
+    // sampled, so it stays measured even when per-record coverage above does not.
+    // null = no stamp = built before generations existed.
+    embedVersion: (vr && vr.embedVersion) || null,
     scenes: summariseScenes(sr, { now, navBudgetChars, scope: ref.scope }),
     newestRecordAt,
     oldestRecordAt,
@@ -1156,6 +1168,32 @@ function buildGaps({ stores, persona, state, config, captureState, heat }) {
         suggestion: "tmem status",
       }));
       continue;
+    }
+
+    // ---- vectors: wrong GENERATION ---------------------------------
+    //
+    // Checked before coverage, and independent of it: a stale store is fully
+    // covered by construction — that is what makes it invisible to every other
+    // vector check here. `vectorState` (a whole-store row count) is the only
+    // input besides the stamp, so this fires on a truncated record read too.
+    //
+    // CRITICAL, not warn: recall drops such a store's atoms entirely
+    // (memory_recall.isCurrentGenerationDir), so this is total loss of the atom
+    // arm for that store, not a degradation of it.
+    if (s.vectorState === VECTOR_STATE.POPULATED && s.embedVersion !== EMBED_VERSION) {
+      gaps.push(gap({
+        kind: GAP_KIND.VECTORS_STALE,
+        severity: SEVERITY.CRITICAL,
+        subject: subjectFor(s),
+        title: `${s.label}: vectors built by an older embedding generation — atoms are not recalled from this store`,
+        evidence: {
+          slug: s.slug,
+          vectors: s.vectors.status === STATUS.OK ? s.vectors.withVector : null,
+          storedGeneration: s.embedVersion || "(unstamped, pre-0.8.4)",
+          currentGeneration: EMBED_VERSION,
+        },
+        suggestion: "tmem sync --full",
+      }));
     }
 
     // ---- vectors ---------------------------------------------------

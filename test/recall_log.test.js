@@ -462,21 +462,30 @@ test("a stuck embedder cannot blow the UserPromptSubmit budget", () => {
 
     const t0 = Date.now();
     execFileSync("node", ["-e",
-      `const { recallAsync, RECALL_SOURCE } = require(${JSON.stringify(RECALL)});
+      `const assert = require("node:assert/strict");
+       const { recallAsync, RECALL_SOURCE } = require(${JSON.stringify(RECALL)});
        // Every call hangs to its own timeout, like a daemon that accepts the
        // connection and never answers.
        // The QUERY embed must SUCCEED — otherwise recallAsync fails closed and the
        // fact stage never runs, which is not the case under test. The worst case is
        // a daemon that answers the first call and then stops answering, so every
        // fact embed burns its full budget.
-       let first = true;
+       // Two stubs, because the query and the document sides are two different
+       // calls with two different signatures now: embedFn(query, opts) and
+       // embedDocFn(text, title, opts). One combined stub would still "pass" —
+       // it would read the TITLE as its options bag, find no timeoutMs, and fall
+       // back to a number of its own, which is the test measuring its own
+       // default instead of FACT_EMBED_TIMEOUT_MS.
        const unit = () => { const v = new Float32Array(8); v[0] = 1; return v; };
-       const stuck = (text, opts) => {
-         if (first) { first = false; return Promise.resolve({ vector: unit(), reason: "ok" }); }
+       const embedFn = async () => ({ vector: unit(), reason: "ok" });
+       const stuckDoc = (text, title, opts) => {
+         assert(opts && typeof opts.timeoutMs === "number",
+           "the fact stage must pass its own per-call budget as the THIRD argument");
          return new Promise((res) =>
-           setTimeout(() => res({ vector: null, reason: "stuck" }), (opts && opts.timeoutMs) || 2500));
+           setTimeout(() => res({ vector: null, reason: "stuck" }), opts.timeoutMs));
        };
-       recallAsync("where are embeddings stored", "", 280, 5, RECALL_SOURCE.HOOK, { embedFn: stuck })
+       recallAsync("where are embeddings stored", "", 280, 5, RECALL_SOURCE.HOOK,
+                   { embedFn, embedDocFn: stuckDoc })
          .then(() => process.exit(0));`],
       { env: env(home), encoding: "utf-8" });
     const ms = Date.now() - t0;

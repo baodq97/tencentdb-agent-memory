@@ -16,6 +16,7 @@ const { MemoryStore } = require("./memory_store.js");
 const { memoryBaseDir, globalDir, projectDir, readPersona, listScenes } = require("./memory_writer.js");
 const { VectorStore, rrfMerge } = require("./vector_store.js");
 const { getSceneMaxTokens } = require("./memory_auto_capture.js");
+const { EMBED_VERSION } = require("./embed_prompt.js");
 // Pure renderer + ranker, shared with view/transform.js so the block the agent
 // receives and the block the visualiser measures can never be two different
 // algorithms.
@@ -50,21 +51,32 @@ const FACT_RECALL_LIMIT = 5;
  * FTS does not save it either; 8 of the same 20 land an eligible atom through
  * generic shared tokens.
  *
- * WHY 0.60. Top-1 atom cosine, 2026-09-04:
- *   OFF-topic (n=20): min 0.434  p50 0.503  p90 0.533  max 0.563
- *   rule-shaped ON  : 0.798 (gh auth switch), 0.729 (pull main), 0.710 (merge
- *                     conflict), 0.708 (npm publish), 0.669 (per-project lock)
- * 0.58 already blocks all 20, but leaves only 0.017 of headroom over the observed
- * off-topic maximum; 0.60 keeps every rule-shaped query above and buys 0.037. With
- * a 20-query control the margin is worth more than the two borderline atoms.
+ * WHY 0.45 — RE-DERIVED ON THE POST-PREFIX INDEX (bench/atom_floor_probe.js,
+ * 2026-09-04). 13 rule-shaped queries written against standing rules that are
+ * actually in this store, against the same 20 off-topic controls, scored the way
+ * recall scores (shipped query template, l1_vec KNN, recall-eligible types only):
+ *   OFF-topic top-1: min 0.289  p50 0.340  max 0.512
+ *   ON-topic  top-1: min 0.465  p50 0.640  max 0.819
  *
- * PROVISIONAL — this constant is calibrated on vectors embedded WITHOUT the
- * EmbeddingGemma prompt prefix (embedding_service.js embeds raw text on both
- * sides). Measured A/B on the same control set, the prefix widens the gap between
- * on-topic and off-topic similarity from 0.009 to 0.071 and moves the whole
- * distribution DOWN: the fact-side floor drops 0.55 -> ~0.41. This atom floor must
- * be re-derived the same way once the prefix lands; keeping 0.60 would drop
- * everything. See bench/RESULT_RECALL_PRECISION.md.
+ *   floor   on kept   off leaked
+ *   0.40    13/13     2/20
+ *   0.45    13/13     1/20     <- shipped
+ *   0.55    11/13     0/20
+ *   0.60    11/13     0/20
+ *
+ * The predecessor 0.60 kept 7 of 13 rule-shaped queries on raw embeddings; 0.45
+ * keeps all 13. That is what the retrieval template bought on this surface.
+ *
+ * THE ONE REMAINING LEAK IS A STORE-CONTENT DEFECT, NOT A THRESHOLD ONE, and it
+ * must not be papered over by raising the floor. Nominal separation is -0.047,
+ * driven entirely by one pair: "2 lũy thừa 16 bằng bao nhiêu" scores 0.512
+ * against the atom "released v24.16.0". Drop that single atom and off-max is
+ * 0.403 — separation +0.062, in line with the fact side. Atoms of the digest
+ * shape ("released vX", "tests: N pass, 0 fail", "edited N file(s): ...") are
+ * recall-eligible semantic records that answer no question anyone asks, and
+ * low_signal.js does not classify them, so `tmem prune --low-signal` will not
+ * remove them. That is an INGEST defect. Raising this floor to hide it would
+ * cost 2 of 13 real standing rules to keep one junk atom out.
  *
  * WHAT IT DELIBERATELY DROPS: queries about project EVENTS stop pulling atoms.
  * That is the intent, not a loss — events are answered by `<recalled-facts>` from
@@ -74,7 +86,25 @@ const FACT_RECALL_LIMIT = 5;
  * skipped rather than guessed, so recall degrades to today's behaviour instead of
  * silently returning nothing; the same reason `buildFactRecallSemantic` falls back.
  */
-const ATOM_FLOOR = 0.6;
+const ATOM_FLOOR = 0.45;
+
+/**
+ * Minimum cosine a scene's BEST fact must reach for that scene to be named in
+ * `<scene-navigation>`.
+ *
+ * Lower than SEMANTIC_FACT_FLOOR (0.41) on purpose. A fact that clears the fact
+ * floor is being QUOTED into the turn and had better be about the question; a
+ * scene name plus a 60-char summary is an offer to go look, and being one topic
+ * removed is exactly when that offer is useful. Set from the same measured
+ * distribution: off-topic top-1 maxes at 0.401 on the live index, so 0.40 is the
+ * lowest value that still empties the block on the negative control, and it is
+ * where the gate stops costing on-topic scenes.
+ *
+ * Applies only when the turn produced a query vector; without one the block
+ * renders unfiltered, as it did before the gate. An index has no negative-control
+ * property to lose the way a quotation does.
+ */
+const NAV_FLOOR = 0.4;
 
 /**
  * Open an FTS MemoryStore READ-ONLY for recall, returning null (never throwing)
@@ -98,6 +128,34 @@ function openMemoryStoreRO(dbPath) {
   } catch {
     if (store) { try { store.close(); } catch {} }
     return null;
+  }
+}
+
+/**
+ * Was this store's vector index built with the embedding template this code uses?
+ *
+ * Opened READ-ONLY and closed immediately: the recall path must never create or
+ * migrate schema, and the answer is one row from `vec_meta`. A store with no
+ * `vectors.db` at all is "current" for the same reason an empty index is (see
+ * VectorStore.isCurrentGeneration) — it has no stale vectors to be wrong about,
+ * and treating it as stale would silence a fresh install that has simply never
+ * run `tmem sync`.
+ *
+ * Any surprise resolves to `true`. This gate exists to catch a KNOWN, detectable
+ * mismatch; letting an unreadable file empty the block would trade a precise
+ * failure for a broad one.
+ */
+function isCurrentGenerationDir(dir) {
+  const vecDb = path.join(dir, "vectors.db");
+  if (!fs.existsSync(vecDb)) return true;
+  let store = null;
+  try {
+    store = new VectorStore(vecDb, undefined, { readOnly: true });
+    return store.isCurrentGeneration(EMBED_VERSION);
+  } catch {
+    return true;
+  } finally {
+    if (store) { try { store.close(); } catch {} }
   }
 }
 
@@ -150,7 +208,7 @@ const PERSONA_TIER1_MAX_CHARS = DEFAULT_TIER1_MAX_CHARS;
  * the caller pushes the returned block WITHOUT charging it to atoms' `used`.
  * Returns "" when disabled (sceneMaxTokens <= 0) or no scenes exist.
  */
-function buildSceneNav(projectHash, query = "", sceneMaxTokens = getSceneMaxTokens()) {
+function buildSceneNav(projectHash, query = "", sceneMaxTokens = getSceneMaxTokens(), keepScenes = null) {
   if (!sceneMaxTokens || sceneMaxTokens <= 0) return "";
 
   // Normalised here, at the boundary: `listScenes` yields `filename`, the block
@@ -171,7 +229,18 @@ function buildSceneNav(projectHash, query = "", sceneMaxTokens = getSceneMaxToke
 
   const project = projectHash ? group(projectDir(projectHash)) : [];
   const global = group(globalDir());
-  const ordered = [...project, ...global]; // project first → global dropped first under budget
+  let ordered = [...project, ...global]; // project first → global dropped first under budget
+  // RELEVANCE GATE. `keepScenes` is the set of scenes holding at least one fact
+  // that cleared the semantic floor this turn; null means the turn could not
+  // measure relevance (no query vector) and the block renders as it always did.
+  //
+  // WHY THE BLOCK NEEDED A GATE AT ALL. Measured 2026-09-04 in hook scope over 50
+  // queries: this block bills 948 chars on EVERY turn, and on the 20 off-topic
+  // controls it was 948 of the 1,138 characters delivered — 83% of an injection
+  // whose correct size is zero. `<recalled-facts>` and `<memories>` had floors;
+  // the two always-on blocks had none, so the negative control was measuring the
+  // two surfaces that were already gated and ignoring the one that was not.
+  if (keepScenes) ordered = ordered.filter((s2) => keepScenes.has(s2.name));
   if (!ordered.length) return "";
 
   // What stays here: the I/O and the group order. What lives in scene_nav.js:
@@ -233,13 +302,50 @@ function buildFactRecall(projectHash, query, maxChars = FACT_RECALL_MAX_CHARS) {
 // every store's bullets (hash is content-unique). Embedding ~dozens of bullets on
 // a cold cache is a one-time cost; every later turn is a cheap map lookup.
 function factVecCachePath() { return path.join(memoryBaseDir(), "scene_facts_vec.json"); }
+
+/**
+ * The cache is an ENVELOPE, `{v, vecs}`, and a generation it does not recognise is
+ * an empty cache.
+ *
+ * Two things invalidated every vector this file used to hold. The documents are
+ * now embedded through the EmbeddingGemma document template rather than raw (see
+ * embed_prompt.js), so old and new vectors are not comparable at all; and the
+ * template puts the SCENE NAME in the title slot, so the same bullet text living
+ * in two scenes now has two legitimately different vectors. Both are handled by
+ * the key below; the envelope handles the third problem, which is the 23 MB of
+ * dead entries a key change alone would strand — returning `{}` on a mismatch
+ * means the first save replaces the file instead of growing a second generation
+ * beside the first.
+ *
+ * A legacy bare map (no `v`) is exactly the pre-0.8.4 case and reads as empty.
+ */
 function loadFactVecCache() {
-  try { return JSON.parse(fs.readFileSync(factVecCachePath(), "utf-8")); } catch { return {}; }
+  try {
+    const raw = JSON.parse(fs.readFileSync(factVecCachePath(), "utf-8"));
+    if (!raw || raw.v !== EMBED_VERSION || !raw.vecs) return {};
+    return raw.vecs;
+  } catch { return {}; }
 }
 function saveFactVecCache(cache) {
-  try { fs.writeFileSync(factVecCachePath(), JSON.stringify(cache)); } catch { /* cache is best-effort */ }
+  try {
+    fs.writeFileSync(factVecCachePath(), JSON.stringify({ v: EMBED_VERSION, vecs: cache }));
+  } catch { /* cache is best-effort */ }
 }
 function factHash(text) { return crypto.createHash("sha1").update(String(text)).digest("hex"); }
+
+/**
+ * Cache key for a fact's VECTOR: generation + scene + text.
+ *
+ * Deliberately not the same function as `factHash`, which keys the feedback LOG
+ * and must keep hashing the text alone — a fact id that changed with the
+ * embedding generation would make every historical `recall_log.jsonl` row
+ * incomparable across a migration, which is the one thing that log is for.
+ */
+function factVecKey(f) {
+  return crypto.createHash("sha1")
+    .update(`${EMBED_VERSION} ${(f && f.sceneName) || ""} ${(f && f.text) || ""}`)
+    .digest("hex");
+}
 
 /**
  * Log id for an injected scene fact: `fact:<scene>:<first 12 of the text hash>`.
@@ -334,25 +440,86 @@ async function embedFactsCached(facts, embedFn) {
   const cache = loadFactVecCache();
   const misses = [];
   for (const f of facts) {
-    const h = factHash(f.text);
-    if (!cache[h] && !misses.some((m) => m.h === h)) misses.push({ h, text: f.text });
+    const k = factVecKey(f);
+    if (!cache[k] && !misses.some((m) => m.k === k)) misses.push({ k, text: f.text, title: f.sceneName });
   }
   if (misses.length) {
     const batch = misses.slice(0, FACT_EMBED_MAX_PER_TURN);
     const deadline = Date.now() + FACT_EMBED_STAGE_BUDGET_MS;
     const results = await mapBounded(batch, FACT_EMBED_CONCURRENCY, async (m) => {
       try {
-        const r = await embedFn(m.text, { timeoutMs: FACT_EMBED_TIMEOUT_MS });
-        return { h: m.h, vec: r && r.vector ? Array.from(r.vector) : null };
-      } catch { return { h: m.h, vec: null }; }
+        // DOCUMENT side, titled with the scene — arm C. Measured on the live
+        // corpus, putting the scene name in the title slot rather than the
+        // model card's "none" sentinel widened on/off separation from 0.060 to
+        // 0.071 at no cost, using a value the store already had.
+        const r = await embedFn(m.text, m.title, { timeoutMs: FACT_EMBED_TIMEOUT_MS });
+        return { k: m.k, vec: r && r.vector ? Array.from(r.vector) : null };
+      } catch { return { k: m.k, vec: null }; }
     }, deadline);
     let changed = false;
     // `results` can hold undefined for slots the deadline cut — the same "not
     // embedded" state as a failed call, so the guard covers both.
-    for (const r of results) if (r && r.vec) { cache[r.h] = r.vec; changed = true; }
+    for (const r of results) if (r && r.vec) { cache[r.k] = r.vec; changed = true; }
     if (changed) saveFactVecCache(cache);
   }
-  return facts.map((f) => cache[factHash(f.text)] || null);
+  return facts.map((f) => cache[factVecKey(f)] || null);
+}
+
+/**
+ * Fill the fact-vector cache for whole store directories, in one pass.
+ *
+ * WHY THIS IS NOT OPTIONAL AFTER A GENERATION BUMP. The per-turn path is
+ * deliberately bounded to FACT_EMBED_MAX_PER_TURN misses so it converges without
+ * thrashing the serialised daemon — which is right for a handful of new bullets
+ * and hopeless for a whole corpus: at 12 a turn, this store's ~3,400 facts would
+ * take ~285 turns to come back. Between those turns `<recalled-facts>` ranks on
+ * whatever fraction has been re-embedded, so a migration that only re-embedded
+ * ATOMS would leave the store's primary per-turn surface degraded for weeks with
+ * nothing reporting it.
+ *
+ * Sequential on purpose: the daemon serialises anyway, and a bulk pass has no
+ * hook budget to race. Saves incrementally so an interrupted run keeps its work.
+ * `onProgress` is called with (done, total) for the CLI's counter.
+ *
+ * @param {string[]} dirs store directories (project and/or global)
+ * @param {(text: string, title: string) => Promise<{vector: Float32Array|null}>} embedDocFn
+ */
+async function warmFactVecCache(dirs, embedDocFn, onProgress = () => {}) {
+  const facts = [];
+  for (const dir of dirs) facts.push(...readSceneFacts(dir));
+
+  const cache = loadFactVecCache();
+  const misses = [];
+  const seen = new Set();
+  for (const f of facts) {
+    const k = factVecKey(f);
+    if (cache[k] || seen.has(k)) continue;
+    seen.add(k);
+    misses.push({ k, text: f.text, title: f.sceneName });
+  }
+
+  let done = 0;
+  let processed = 0;
+  let sinceSave = 0;
+  for (const m of misses) {
+    try {
+      const r = await embedDocFn(m.text, m.title);
+      if (r && r.vector) { cache[m.k] = Array.from(r.vector); done++; sinceSave++; }
+    } catch { /* a fact that will not embed is retried by the next run */ }
+    // Progress counts ATTEMPTS, not successes: a run where the embedder starts
+    // failing must still visibly advance, or a stalled counter and a stalled
+    // process look identical to whoever is watching.
+    processed++;
+    // Checkpoint interval, not a tuning knob: each save rewrites the WHOLE cache
+    // (~23 MB at full size on a real store), so saving every 100 would spend
+    // ~800 MB of writes over a 3,500-bullet migration to buy back at most a few
+    // seconds of re-embedding after an interrupt. 250 keeps the loss bounded at
+    // ~50 s of work for a third of the I/O.
+    if (sinceSave >= 250) { saveFactVecCache(cache); sinceSave = 0; }
+    onProgress(processed, misses.length);
+  }
+  if (sinceSave) saveFactVecCache(cache);
+  return { embedded: done, missing: misses.length, total: facts.length };
 }
 
 /**
@@ -380,7 +547,23 @@ async function buildFactRecallSemantic(projectHash, query, queryVec, embedFn, ma
     // cleared the floor) — do NOT fall back to keyword, or the negative-control
     // property is lost. Fall back only on a real embedding failure (catch below).
     const ranked = rankSceneFactsSemantic(facts, queryVec, vecs, { limit: FACT_RECALL_LIMIT, maxChars });
-    return { block: ranked.block, ids: (ranked.facts || []).map(factLogId) };
+    // The scene-nav gate rides on the SAME similarities, computed once. A scene is
+    // relevant to this turn when any of its facts clears NAV_FLOOR — which is a
+    // separate constant from the fact floor because the two answer different
+    // questions: "is this bullet worth injecting" versus "is this scene worth
+    // NAMING so the agent can open it". The second bar is legitimately lower, and
+    // tying them would make an index of the store as strict as its quotations.
+    const bestByScene = new Map();
+    for (let i = 0; i < facts.length; i++) {
+      const v = vecs[i];
+      if (!v) continue;
+      const sim = cosineSim(queryVec, v);
+      const name = facts[i].sceneName;
+      if (!(bestByScene.get(name) >= sim)) bestByScene.set(name, sim);
+    }
+    const navScenes = new Set();
+    for (const [name, sim] of bestByScene) if (sim >= NAV_FLOOR) navScenes.add(name);
+    return { block: ranked.block, ids: (ranked.facts || []).map(factLogId), navScenes };
   } catch {
     // Same reasoning as the missing-vector case above: an embedding failure means
     // we cannot rank by meaning, not that keyword ranking has become safe.
@@ -843,18 +1026,31 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   const persona = getPersona(query, PERSONA_TIER1_MAX_CHARS, projectHash);
   if (persona) parts.push(`<persona>\n${persona}\n</persona>`);
 
-  // L2 scene navigation (own budget — NOT charged to atoms' `used`)
-  const sceneNav = buildSceneNav(projectHash, query);
-  if (sceneNav) parts.push(sceneNav);
+  // L2 scene navigation is built BELOW, after the query embedding, for the same
+  // reason the facts are: its relevance gate rides on those similarities. Its
+  // position in `parts` is unchanged — persona, sceneNav, facts, memories — because
+  // this reorders the COMPUTATION, not the block order the agent reads.
+  const navSlot = parts.length;
 
   // Distilled scene facts are built AFTER the query embedding below, so they can
   // be ranked by MEANING (cosine) instead of keyword overlap. Pushed into `parts`
   // there, keeping the persona/sceneNav/facts/memories order.
 
   const dirs = recallDirs(projectHash, source);
+  // A store whose vectors were built by an earlier embedding generation cannot
+  // contribute ATOMS this turn — not through the vector arm, and not through FTS
+  // either. Dropping only the vector arm would be worse than useless: the FTS arm
+  // would still deliver that store's atoms, and `applyAtomFloor` reads an unknown
+  // similarity as KEEP, so they would arrive unfloored. That is precisely the
+  // failure the negative control measured at 20/20 before Wave 1.
+  //
+  // Scene facts are unaffected — their cache is generation-keyed and simply
+  // re-fills — so a store mid-migration still answers, just from distilled facts
+  // rather than atoms. `tmem doctor` names these stores and prints the fix.
+  const atomDirs = dirs.filter(isCurrentGenerationDir);
 
   let ftsResults = [];
-  for (const dir of dirs) {
+  for (const dir of atomDirs) {
     const db = path.join(dir, "index.db");
     if (!fs.existsSync(db)) continue;
     const store = openMemoryStoreRO(db);
@@ -875,14 +1071,23 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   // interesting behaviour is what happens AROUND the embed, and a test that needs
   // a live daemon cannot reach the semantic path at all — which is exactly how the
   // missing factIds above survived a test that asserted on it.
-  const embedViaDaemonStatus = opts.embedFn || require("./embed_client.js").embedViaDaemonStatus;
+  //
+  // TWO SIDES, ONE INJECTION POINT. The query and the documents are embedded
+  // through different templates now (embed_prompt.js), so recall holds two
+  // functions where it held one. `opts.embedFn` keeps meaning "the query embed" so
+  // existing tests inject exactly what they always did, and it stands in for the
+  // document embed too unless `opts.embedDocFn` overrides it — a stub that ignores
+  // its arguments then covers both paths, as it did before the split.
+  const client = require("./embed_client.js");
+  const embedQueryStatus = opts.embedFn || client.embedQueryStatus;
+  const embedDocStatus = opts.embedDocFn || opts.embedFn || client.embedDocStatus;
   try {
-    const status = await embedViaDaemonStatus(query);
+    const status = await embedQueryStatus(query);
     queryVec = status.vector;
     embedReason = status.reason;
     {
       if (queryVec) {
-        for (const dir of dirs) {
+        for (const dir of atomDirs) {
           const vecDb = path.join(dir, "vectors.db");
           if (!fs.existsSync(vecDb)) continue;
           const vecStore = new VectorStore(vecDb, undefined, { readOnly: true });
@@ -924,10 +1129,18 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   // reworded queries), else keyword fallback. Position matches the sync path.
   let factBlock = "";
   let factIds = [];
+  let navScenes = null;
   try {
-    const fr = await buildFactRecallSemantic(projectHash, query, queryVec, embedViaDaemonStatus);
+    const fr = await buildFactRecallSemantic(projectHash, query, queryVec, embedDocStatus);
     factBlock = fr.block; factIds = fr.ids;
+    // null (not an empty Set) when the turn could not measure relevance — the gate
+    // then renders the index unfiltered rather than empty. An empty Set is a
+    // MEASURED "no scene is about this", which is the off-topic answer.
+    navScenes = fr.navScenes || null;
   } catch {}
+
+  const sceneNav = buildSceneNav(projectHash, query, getSceneMaxTokens(), navScenes);
+  if (sceneNav) parts.splice(navSlot, 0, sceneNav);
   // FAIL CLOSED WITHOUT A QUERY VECTOR. The keyword ranker has no floor — it only
   // hard-drops facts sharing zero tokens — so on any turn that could not embed its
   // query, the negative-control property is simply gone: measured, an off-topic
@@ -1042,4 +1255,8 @@ module.exports = {
   RECALL_SOURCE, RECALL_LOG_MAX_BYTES, RECALL_LOG_FILE, readSceneFacts, buildFactRecall, keepDistilledAtoms,
   recallDirs,
   applyAtomFloor, ATOM_FLOOR,
+  // Exported for the generation tests and for doctor, which reports stale stores
+  // with the SAME predicate recall gates on — two implementations of "is this
+  // index current" would let the health check bless a store recall is ignoring.
+  isCurrentGenerationDir, factVecKey, loadFactVecCache, warmFactVecCache,
 };

@@ -3,7 +3,56 @@
 All notable changes to this plugin are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.8.4] — 2026-09-04
+
+Retrieval becomes asymmetric, and every relevance floor is re-derived on the index that
+change produces. Measured on the real store: R@1 73.3% -> 83.3%, R@5 96.7% -> 100%,
+standing-rule recall 7/13 -> 13/13, off-topic injection 1,138 -> 189 chars. The number
+that matters most is none of those: on/off-topic separation 0.009 -> 0.071, which is what
+makes a relevance floor a sound instrument rather than a constant fitted to its own sample.
+
+### Changed
+- **Retrieval is asymmetric now: EmbeddingGemma's prompt template is applied.** Until now
+  queries and documents were embedded as raw text through one symmetric path, so the
+  model's retrieval mode was never used. Queries embed as
+  `task: search result | query: {text}`; documents as `title: {scene|none} | text: {text}`
+  (`scripts/embed_prompt.js`, one definition for every call site). Measured offline on the
+  live 90-fact corpus, this widens the gap between on-topic and off-topic top-1 cosine
+  from **0.009 to 0.071** and lifts R@1 from 73.3% to 83.3%. The separation is the point:
+  at 0.009 no relevance floor can divide the two populations, so Wave 1's floors were
+  sound only on the sample they were fitted to.
+- **Both relevance floors re-derived on the new distribution.** They move DOWN, not up —
+  a prefixed corpus scores lower in absolute cosine. See
+  `bench/RESULT_RECALL_PRECISION.md` for the pre-registered bars and the measured values.
+- **`tmem sync --full` now migrates BOTH embedded populations** — atoms in `vectors.db`
+  and the scene-fact bullets in `scene_facts_vec.json`. Re-embedding only atoms would
+  leave `<recalled-facts>`, the primary per-turn surface, trickling back at 12 bullets a
+  turn (~285 turns on a real store) with nothing reporting it.
+
+### Added
+- **A relevance gate on `<scene-navigation>`.** `<recalled-facts>` and `<memories>` had
+  floors; the two always-on blocks had none, so the negative control was grading the two
+  surfaces that were already gated and ignoring the one that was not. Measured in hook
+  scope over 50 queries, scene-nav billed 948 characters on every turn — **948 of the
+  1,138 an off-topic turn received, 83%**. A scene is now named only when one of its facts
+  clears `NAV_FLOOR = 0.40` against the query, reusing similarities the fact ranking
+  already computed (no extra embed). Off-topic injection p50 **1,138 → 189 chars**;
+  on-topic 2,145 → 2,106. Without a query vector the index renders unfiltered — an index
+  has no negative-control property to lose the way a quotation does.
+- **Embedding generations.** `vec_meta.embed_version` stamps which template built a
+  store's vectors; the fact cache carries the same stamp in an envelope. A store on an
+  older generation contributes **no atoms at all** to recall until it is re-synced —
+  dropping only the vector arm would leave FTS delivering those atoms unfloored, which is
+  the exact 20/20 negative-control leak Wave 1 removed. Cosine between vectors from two
+  generations is not an approximation of anything; it is a comparison of embeddings of two
+  different strings, and every coverage check reads green while it happens.
+- **`tmem doctor` reports it**: new `vectors_stale` gap (critical), fixed by
+  `tmem sync --full`. View schema bumped to 6.
+
+### Migration
+Run **`tmem sync --full --all`** once after upgrading. Until then, affected stores answer
+from scene facts only; nothing is lost, and no partial state is ever compared. Contributor
+stores (`tmem contrib`) re-migrate via `tmem contrib sync`.
 
 ## [0.8.3] — 2026-09-04
 

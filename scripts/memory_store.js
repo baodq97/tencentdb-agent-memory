@@ -274,11 +274,28 @@ class MemoryStore {
       const { VectorStore } = require("./vector_store.js");
       const embSvc = getEmbeddingService();
       if (!embSvc.isReady()) return;
-      embSvc.embed(content).then(vec => {
+      // DOCUMENT side. An atom has no scene, so the title slot takes the model
+      // card's own sentinel ("none" — arm B). Arm C's titled win was measured on
+      // scene facts, where the scene name was already there to use; nothing
+      // equivalent has been measured for atoms and none is claimed here.
+      embSvc.embedDoc(content, null).then(vec => {
         if (!vec) return;
         const vecDbPath = path.join(path.dirname(this.dbPath), "vectors.db");
         const vecStore = new VectorStore(vecDbPath);
+        const { EMBED_VERSION } = require("./embed_prompt.js");
+        // Read the generation BEFORE inserting: this write makes an empty store
+        // non-empty, and an empty store is "current" precisely because it holds
+        // nothing to be wrong about.
+        //
+        // Stamped here, not only in the bulk sync, or a store that grew one atom
+        // at a time would hold current-generation vectors with no stamp and be
+        // ignored by recall forever. But a store that is ALREADY stale must not
+        // be stamped by a single new write — that would bless a mixed index,
+        // which is the one state the stamp exists to make impossible. It stays
+        // stale until `tmem sync --full` re-embeds all of it.
+        const wasCurrent = vecStore.isCurrentGeneration(EMBED_VERSION);
         vecStore.upsertVec(recordId, vec);
+        if (wasCurrent) vecStore.setMeta("embed_version", EMBED_VERSION);
         vecStore.close();
       }).catch(() => {});
     } catch {}

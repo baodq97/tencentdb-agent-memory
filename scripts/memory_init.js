@@ -68,12 +68,19 @@ async function main() {
           const vecStore = new VectorStore(path.join(dir, "vectors.db"));
           if (vecStore.degraded) continue;
           const { isVectorEligible } = require("./memory_store.js");
+          const { EMBED_VERSION } = require("./embed_prompt.js");
           let count = 0;
+          let eligible = 0;
           for (const r of records) {
             if (!isVectorEligible(r.type)) continue; // recall-ineligible → no vector
-            const vec = await svc.embed(r.content);
+            eligible++;
+            // DOCUMENT side, untitled — same call as capture and `tmem sync`.
+            const vec = await svc.embedDoc(r.content, null);
             if (vec) { vecStore.upsertVec(r.record_id, vec); count++; }
           }
+          // This pass covers every eligible record, so it is a full rebuild and
+          // may stamp the generation — but only if all of them actually embedded.
+          if (count === eligible) vecStore.setMeta("embed_version", EMBED_VERSION);
           vecStore.close();
           if (count) console.log("Indexed", count, "records in", dir === gDir ? "global" : "project");
         }

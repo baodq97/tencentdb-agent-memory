@@ -33,6 +33,12 @@
 const FIX_BY_KIND = {
   vectors_missing:      { tier: "auto",    command: (s) => (s === "all" ? "tmem sync --all" : "tmem sync") },
   vectors_unmeasurable: { tier: "auto",    command: (s) => (s === "all" ? "tmem sync --all" : "tmem sync") },
+  // --full, not a delta sync: the vectors are all PRESENT, they are just from the
+  // wrong generation, so a delta pass finds nothing missing and changes nothing.
+  // Only a full re-embed replaces them, and only a full re-embed re-stamps the
+  // store — a partial pass deliberately leaves the stamp alone rather than bless
+  // a half-migrated index.
+  vectors_stale:        { tier: "auto",    command: (s) => (s === "all" ? "tmem sync --full --all" : "tmem sync --full") },
   duplicate_records:    { tier: "confirm", command: () => "tmem dedup --atoms --apply" },
   low_signal_records:   { tier: "confirm", command: () => "tmem prune --low-signal --apply" },
   scene_invisible:      { tier: "manual",  command: () => "tmem config scene-max-tokens <n>" },
