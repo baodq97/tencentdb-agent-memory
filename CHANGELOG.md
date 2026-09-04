@@ -5,6 +5,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); this project adh
 
 ## [Unreleased]
 
+## [0.8.3] — 2026-09-04
+
+Recall stops injecting things it cannot justify, and starts measuring itself honestly.
+
+### Changed
+- **A relevance floor on both injection surfaces.** Neither `<recalled-facts>` (L2 scene
+  facts, the primary per-turn channel) nor `<memories>` (L1 atoms) had one, so a query
+  sharing zero tokens with the store still received a full injection of whatever ranked
+  least badly. Atom path floors at `ATOM_FLOOR = 0.6`; the scene-fact semantic floor is
+  recalibrated to `0.55`. Both are marked PROVISIONAL in source with their measured
+  hand-off values — they were calibrated on un-prefixed embeddings.
+- **The keyword fallback got a floor too.** Without one, an embed that timed out dropped
+  the turn to keyword ranking silently and lost the negative control.
+- **The automatic hook reads the project store only.** `recallDirs(projectHash, source)`
+  scopes `UserPromptSubmit` to the project; CLI and the visualiser keep global + project.
+  A per-turn injection sourced from an unrelated project is noise the user cannot trace.
+- **A latency ceiling on fact embedding.** `FACT_EMBED_TIMEOUT_MS = 800` per call and
+  `FACT_EMBED_STAGE_BUDGET_MS = 1500` for the stage, enforced by a deadline-aware
+  `mapBounded`. Measured against a daemon that answers the query embed and then hangs:
+  10,065 ms before, 1,665 ms after, against an 8 s hook budget.
+
+### Fixed
+- **`tmem doctor` reported three metrics against the wrong denominator.** Embedding
+  coverage divided by every record rather than the eligible population; low-signal counted
+  the six-class union rather than what `prune` actually deletes; consolidation dueness
+  summed across projects rather than per project.
+- **The async recall path dropped the fact ids it injected.** `injectedFactIds` shipped as
+  a field that was always `[]` on the exact path every real turn takes — measured on the
+  live store, 401 of 401 rows carried the field and 100% were empty while
+  `<recalled-facts>` was delivering facts. The feedback loop was grading a blank.
+- **`tmem feedback` printed fact ids as blank rows**, and reported `byId.size` as an atom
+  count when the map deliberately holds both populations. Split into
+  `uniqueAtoms` / `uniqueFacts`; facts render as `fact · <scene>`.
+- **`orphanVectors` counted vectors of ineligible records as orphans.** An orphan is a
+  vector whose record is gone, not a vector whose record is `episodic`.
+- **The synchronous `recall()` ignored the scope `recallDirs` enforces**, so the CLI and
+  the hook disagreed about what was visible.
+
+### Added
+- `recallAsync` accepts an injectable embedder (`opts.embedFn`), so the semantic path is
+  testable without a live daemon — the gap that let four of these bugs pass a green suite.
+
+Tests 456 pass / 0 fail, verified on a normal PATH and on a PATH with no `claude` binary.
+Pre-registered bars: negative control 0/20 and 1/20 (bar ≤1/20), held-out paraphrase
+29/30 = 96.7% (bar ≥85%), p50 injected chars 2009 (bar ≤2000 — still over by 9; the bar
+was written before the measurement and has not been moved).
+
 ## [0.8.2] — 2026-09-04
 
 Consolidation stops asking the session to do it, and runs headless instead.

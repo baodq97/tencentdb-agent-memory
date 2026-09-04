@@ -51,7 +51,7 @@ into `~/.memory-tencentdb/models/`, not at install.
 | Hook | Action |
 |------|--------|
 | `SessionStart` | Inject the tier-0 persona core once per session (`<persona-core>`) + keep the global `tmem` shim current |
-| `UserPromptSubmit` | Hybrid recall (FTS5 + vector + RRF) + L2 scene-navigation index → inject `<memory-context>` |
+| `UserPromptSubmit` | Hybrid recall (FTS5 + vector + RRF, relevance-floored) + L2 scene-navigation index -> inject `<memory-context>`. Scoped to the **project store**; `tmem recall` on the CLI still reads global + project. |
 | `Stop` | Auto-capture turn; spawn a detached headless consolidation once N new turns have accumulated |
 | `SessionEnd` | Mark session as pending for later seeding; spawn consolidation for a session that produced ≥3 new turns |
 
