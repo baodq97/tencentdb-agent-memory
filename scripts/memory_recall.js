@@ -220,8 +220,12 @@ function buildFactRecall(projectHash, query, maxChars = FACT_RECALL_MAX_CHARS) {
   const facts = [];
   if (projectHash) facts.push(...readSceneFacts(projectDir(projectHash)));
   facts.push(...readSceneFacts(globalDir()));
-  if (!facts.length) return "";
-  return rankSceneFacts(facts, query, { limit: FACT_RECALL_LIMIT, maxChars }).block;
+  if (!facts.length) return { block: "", ids: [] };
+  const ranked = rankSceneFacts(facts, query, { limit: FACT_RECALL_LIMIT, maxChars });
+  // Ids on this path too, so the feedback log describes the sync fallback as
+  // completely as the semantic path. A turn that fell back is exactly the turn
+  // worth being able to find later.
+  return { block: ranked.block, ids: (ranked.facts || []).map(factLogId) };
 }
 
 // Persisted cache of fact-bullet vectors, keyed by content hash so re-embedding
@@ -236,6 +240,20 @@ function saveFactVecCache(cache) {
   try { fs.writeFileSync(factVecCachePath(), JSON.stringify(cache)); } catch { /* cache is best-effort */ }
 }
 function factHash(text) { return crypto.createHash("sha1").update(String(text)).digest("hex"); }
+
+/**
+ * Log id for an injected scene fact: `fact:<scene>:<first 12 of the text hash>`.
+ *
+ * Content-addressed on purpose. A scene body is rewritten wholesale by every
+ * consolidation, so any positional id (line number, index) would rename every
+ * fact on each rewrite and make the feedback log uncomparable across a
+ * consolidation. Hashing the text means an unchanged fact keeps its id and an
+ * edited one becomes a new fact, which is what it is. The scene prefix keeps ids
+ * readable in the log and lets a reader attribute usage per scene without a join.
+ */
+function factLogId(f) {
+  return `fact:${(f && f.sceneName) || "?"}:${factHash((f && f.text) || "").slice(0, 12)}`;
+}
 
 /**
  * Embed each fact bullet (cached by content hash). Returns vectors parallel to
@@ -311,21 +329,22 @@ async function embedFactsCached(facts, embedFn) {
  * least-unrelated facts is the failure this floor was added to remove.
  */
 async function buildFactRecallSemantic(projectHash, query, queryVec, embedFn, maxChars = FACT_RECALL_MAX_CHARS) {
-  if (!queryVec) return "";
+  if (!queryVec) return { block: "", ids: [] };
   const facts = [];
   if (projectHash) facts.push(...readSceneFacts(projectDir(projectHash)));
   facts.push(...readSceneFacts(globalDir()));
-  if (!facts.length) return "";
+  if (!facts.length) return { block: "", ids: [] };
   try {
     const vecs = await embedFactsCached(facts, embedFn);
     // An empty block here is a CORRECT answer for an off-topic query (nothing
     // cleared the floor) — do NOT fall back to keyword, or the negative-control
     // property is lost. Fall back only on a real embedding failure (catch below).
-    return rankSceneFactsSemantic(facts, queryVec, vecs, { limit: FACT_RECALL_LIMIT, maxChars }).block;
+    const ranked = rankSceneFactsSemantic(facts, queryVec, vecs, { limit: FACT_RECALL_LIMIT, maxChars });
+    return { block: ranked.block, ids: (ranked.facts || []).map(factLogId) };
   } catch {
     // Same reasoning as the missing-vector case above: an embedding failure means
     // we cannot rank by meaning, not that keyword ranking has become safe.
-    return "";
+    return { block: "", ids: [] };
   }
 }
 
@@ -553,16 +572,28 @@ function renderMemories(memories, maxChars) {
  * copy-pasted the log schema was defined twice and free to drift. One definition
  * of what a log row contains, one definition of the wrapper.
  */
-function finishRecall(parts, rendered, { source, query }) {
+function finishRecall(parts, rendered, { source, query, factIds = [] }) {
   if (rendered.text) parts.push(rendered.text);
   const context = parts.length ? "<memory-context>\n" + parts.join("\n") + "\n</memory-context>" : "";
   // Logged on EVERY path, including the empty one: a recall that returned
   // nothing is the most interesting row in the file.
+  //
+  // `injectedFactIds` exists because `injectedIds` stopped describing the turn.
+  // It records ATOMS, and atoms are no longer most of what a turn injects: after
+  // the relevance floor and the project-scoped hook, 55 of the last 60 logged
+  // recalls carried zero atom ids while each was still injecting ~3 scene facts.
+  // `tmem feedback` and doctor's hot/cold line read this file, so without the
+  // facts they were reporting near-silence about a surface that never stopped
+  // working. Kept as a SEPARATE field rather than merged into injectedIds: the
+  // two are different populations with different lifecycles (an atom id is stable
+  // for the record's life, a fact id changes when consolidation rewrites the
+  // text), and merging them would make every historical row ambiguous.
   appendRecallLog({
     at: new Date().toISOString(),
     source,
     query,
     injectedIds: rendered.injectedIds,
+    injectedFactIds: factIds,
     droppedIds: rendered.droppedIds,
     chars: context.length,
   });
@@ -585,8 +616,9 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
 
   // Distilled scene facts (own budget) — the primary per-turn memory. Surfaces
   // what consolidation distilled into scenes instead of raw episodic echoes.
-  const factBlock = buildFactRecall(projectHash, query);
-  if (factBlock) parts.push(factBlock);
+  const factRecall = buildFactRecall(projectHash, query);
+  const factIds = factRecall.ids;
+  if (factRecall.block) parts.push(factRecall.block);
 
   let memories = [];
   const gDir = globalDir();
@@ -616,7 +648,7 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
   // (instruction/semantic). See keepDistilledAtoms.
   memories = dedupeAndRank(keepDistilledAtoms(memories), topK);
 
-  return finishRecall(parts, renderMemories(memories, maxChars), { source, query });
+  return finishRecall(parts, renderMemories(memories, maxChars), { source, query, factIds });
 }
 
 /**
@@ -853,7 +885,11 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   // when the query embedded this turn (paraphrase-robust: 48% → ~95% surfaced on
   // reworded queries), else keyword fallback. Position matches the sync path.
   let factBlock = "";
-  try { factBlock = await buildFactRecallSemantic(projectHash, query, queryVec, embedViaDaemonStatus); } catch {}
+  let factIds = [];
+  try {
+    const fr = await buildFactRecallSemantic(projectHash, query, queryVec, embedViaDaemonStatus);
+    factBlock = fr.block; factIds = fr.ids;
+  } catch {}
   // FAIL CLOSED WITHOUT A QUERY VECTOR. The keyword ranker has no floor — it only
   // hard-drops facts sharing zero tokens — so on any turn that could not embed its
   // query, the negative-control property is simply gone: measured, an off-topic

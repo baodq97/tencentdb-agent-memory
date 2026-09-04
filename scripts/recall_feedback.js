@@ -26,11 +26,28 @@ function summarizeRecallFeedback(entries) {
   const list = Array.isArray(entries) ? entries : [];
   const byId = new Map(); // id -> { id, count, lastAt }
   let injections = 0;
+  let factInjections = 0;
   let emptyTurns = 0;
 
   for (const e of list) {
     const ids = (e && Array.isArray(e.injectedIds) ? e.injectedIds : []).filter(Boolean);
-    if (!ids.length) { emptyTurns++; continue; }
+    const factIds = (e && Array.isArray(e.injectedFactIds) ? e.injectedFactIds : []).filter(Boolean);
+    // Facts are tallied in the SAME map as atoms. They are different populations
+    // with different id lifecycles, but the question this module answers -- "did
+    // anything the store holds ever reach a turn?" -- is the same question for
+    // both, and a second parallel map would mean every caller had to remember to
+    // ask twice. The `fact:` prefix keeps them distinguishable in `perAtom`.
+    for (const id of factIds) {
+      factInjections++;
+      const cur = byId.get(id);
+      if (cur) { cur.count++; if ((e.at || "") > cur.lastAt) cur.lastAt = e.at || ""; }
+      else byId.set(id, { id, count: 1, lastAt: (e && e.at) || "" });
+    }
+    // "Recalled nothing" must mean the TURN injected nothing. Counting a turn as
+    // empty because it carried no ATOMS was how this metric came to report 55 of
+    // 60 turns silent while every one of them injected scene facts.
+    if (!ids.length && !factIds.length) { emptyTurns++; continue; }
+    if (!ids.length) continue;
     const at = (e && e.at) || "";
     for (const id of ids) {
       injections++;
@@ -50,6 +67,10 @@ function summarizeRecallFeedback(entries) {
   return {
     turns: list.length,
     injections,
+    // Split out so a reader can see WHICH surface is carrying the turns. Before
+    // the relevance floor this was 0 and `injections` was everything; after it
+    // the ratio inverted, and a single total would have hidden that entirely.
+    factInjections,
     uniqueAtoms: byId.size,
     emptyTurns,
     perAtom,

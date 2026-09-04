@@ -86,9 +86,10 @@ test("recall writes one JSONL line to the memory root, beside the existing logs"
     assert.equal(rows.length, 1, "exactly one line per recall");
     const [row] = rows;
     assert.deepEqual(Object.keys(row).sort(),
-      ["at", "chars", "droppedIds", "injectedIds", "query", "source"]);
+      ["at", "chars", "droppedIds", "injectedFactIds", "injectedIds", "query", "source"]);
     assert.ok(!Number.isNaN(Date.parse(row.at)));
     assert.ok(Array.isArray(row.injectedIds));
+    assert.ok(Array.isArray(row.injectedFactIds));
     assert.ok(Array.isArray(row.droppedIds));
     assert.equal(typeof row.chars, "number");
   });
@@ -340,3 +341,41 @@ function requireRecallInternals() {
 function isRoot() {
   return typeof process.getuid === "function" && process.getuid() === 0;
 }
+
+// The log has to describe the block that was actually injected.
+//
+// It stopped doing that. `injectedIds` records ATOMS, and after the relevance
+// floor and the project-scoped hook landed, atoms are no longer most of what a
+// turn injects: 55 of the last 60 real logged recalls carried zero atom ids while
+// each still injected around three scene facts. `tmem feedback` and doctor's
+// hot/cold line read this file, so both were reporting near-silence about a
+// surface that never stopped working. This pins the fix so the log cannot go
+// blind again the next time the injected mix changes.
+test("a turn that injects scene facts records them, not just atoms", () => {
+  withFakeHome((home) => {
+    seedStore(home);
+    const gScenes = path.join(home, ".memory-tencentdb", "global", "scene_blocks");
+    fs.mkdirSync(gScenes, { recursive: true });
+    fs.writeFileSync(path.join(gScenes, "vector-index.md"), [
+      "-----META-START-----",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "summary: vector index notes",
+      "heat: 4",
+      "-----META-END-----",
+      "",
+      "## Key Facts",
+      "- sqlite-vec stores embeddings in an l1_vec virtual table keyed by record_id.",
+    ].join("\n"));
+
+    runCli(home, "where are embeddings stored");
+    const [row] = readLog(home);
+    assert.ok(row.injectedFactIds.length > 0,
+      `a turn whose block carries scene facts must log them, got ${JSON.stringify(row)}`);
+    for (const id of row.injectedFactIds) {
+      // Scene-qualified and content-addressed: a positional id would be renamed by
+      // every consolidation rewrite and make the log uncomparable across one.
+      assert.match(id, /^fact:[^:]+:[0-9a-f]{12}$/, `unexpected fact id shape: ${id}`);
+    }
+  });
+});

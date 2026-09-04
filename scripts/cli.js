@@ -1905,7 +1905,7 @@ async function cmdDoctor(rest) {
     if (summary.turns > 0) {
       const cls = classifyStoreAtoms(allStoreAtoms(), summary);
       console.log("\nRecall feedback (do stored memories ever get recalled?):");
-      console.log(`  ${summary.turns} logged turn(s) · ${summary.injections} injection(s) · ${summary.emptyTurns} recalled nothing`);
+      console.log(`  ${summary.turns} logged turn(s) · ${summary.injections} atom + ${summary.factInjections} fact injection(s) · ${summary.emptyTurns} recalled nothing`);
       console.log(`  ${cls.hot.length} hot atom(s) recalled ≥1 · ${cls.cold.length} cold (never recalled, ${cls.coldPct}%) — run \`tmem feedback\` for detail`);
     }
   } catch { /* never break doctor */ }
