@@ -719,6 +719,38 @@ function getPersona(query = "", maxChars = PERSONA_TIER1_MAX_CHARS, projectHash 
   return legacyProjection(persona);
 }
 
+/**
+ * Which stores an atom lookup reads, given who is asking.
+ *
+ * THE AUTOMATIC HOOK IS PROJECT-SCOPED. It fires on every prompt whether or not
+ * anyone wanted memory, so what it injects is a standing tax and has to earn its
+ * place. The global store cannot: it holds `instruction` (standing rules) and
+ * `persona` atoms, and the rules already reach every turn through the tier-1
+ * `<persona>` block, which reads persona.md and fired on 60 of 60 replayed real
+ * prompts. Retrieving them again as atoms is the same content billed twice.
+ *
+ * Measured by replaying 60 real prompts (2026-08-03..09-03) against an unchanged
+ * store: the global store contributed 159 of 162 injected atoms before the
+ * relevance floor and 5 of 16 after it, while global holds ZERO scene facts, so
+ * `<recalled-facts>` was already project-only by construction. Dropping global
+ * from the hook removes about 5 injections per 60 turns of content that the
+ * persona tier delivers anyway.
+ *
+ * A DELIBERATE LOOKUP KEEPS BOTH. `tmem recall` / the visualiser are someone
+ * asking a question on purpose, and cross-store answers are the point there —
+ * the same reason `tmem search --all` exists. Only the unattended path narrows.
+ *
+ * With no project (projectHash empty) there is nothing to narrow to, so global
+ * is still read: scoping to a project that does not exist would mean scoping to
+ * nothing.
+ */
+function recallDirs(projectHash, source) {
+  if (source === RECALL_SOURCE.HOOK && projectHash) return [projectDir(projectHash)];
+  const dirs = [globalDir()];
+  if (projectHash) dirs.push(projectDir(projectHash));
+  return dirs;
+}
+
 function dedupeAndRank(memories, limit) {
   const seen = new Set();
   const unique = [];
@@ -753,8 +785,7 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   // be ranked by MEANING (cosine) instead of keyword overlap. Pushed into `parts`
   // there, keeping the persona/sceneNav/facts/memories order.
 
-  const dirs = [globalDir()];
-  if (projectHash) dirs.push(projectDir(projectHash));
+  const dirs = recallDirs(projectHash, source);
 
   let ftsResults = [];
   for (const dir of dirs) {
@@ -930,5 +961,6 @@ if (require.main === module) main();
 module.exports = {
   recall, recallAsync, buildSceneNav, renderMemories, MEMORY_SEARCH_HINT, projectScopeFor,
   RECALL_SOURCE, RECALL_LOG_MAX_BYTES, RECALL_LOG_FILE, readSceneFacts, buildFactRecall, keepDistilledAtoms,
+  recallDirs,
   applyAtomFloor, ATOM_FLOOR,
 };
