@@ -159,20 +159,27 @@ function advanceWarmup(state, everyN) {
  * consolidates almost immediately instead of sitting blind until turn 10, and
  * nothing here supersedes that.
  *
+ * The predicate resolves its OWN config. Both call sites used to assemble the
+ * same `{every, sessionEndMin}` object from the same two getters before calling
+ * in, which meant the predicate owned the rule but not its inputs — a new config
+ * field would have had to be threaded through two places by hand. `cfg` remains
+ * an optional override so a test can sweep the policy without touching config.json.
+ *
  * @param {{turn_count?:number,last_consolidation_turn?:number,warmup_threshold?:number}} slot
- * @param {{every:number,sessionEndMin:number}} cfg
  * @param {{sessionEnding?:boolean}} [opts]
+ * @param {{every?:number,sessionEndMin?:number}} [cfg] test override
  * @returns {"session-end"|"counter"|null}
  */
-function consolidationTrigger(slot, cfg, opts) {
+function consolidationTrigger(slot, opts, cfg) {
   const s = slot || {};
   const delta = (s.turn_count || 0) - (s.last_consolidation_turn || 0);
   if (delta <= 0) return null;          // nothing new; never spend a run on it
 
-  const sessionEndMin = Number.isInteger(cfg && cfg.sessionEndMin) && cfg.sessionEndMin > 0
-    ? cfg.sessionEndMin : DEFAULT_CONSOLIDATE_ON_SESSION_END;
-  const every = Number.isInteger(cfg && cfg.every) && cfg.every > 0
-    ? cfg.every : DEFAULT_CONSOLIDATE_EVERY;
+  // The getters already fall back to the defaults, so there is no second copy of
+  // the defaulting rule here.
+  const c = cfg || {};
+  const sessionEndMin = c.sessionEndMin != null ? c.sessionEndMin : getConsolidateOnSessionEnd();
+  const every = c.every != null ? c.every : getConsolidateEvery();
 
   if (opts && opts.sessionEnding && delta >= sessionEndMin) return "session-end";
   if (delta >= warmupThreshold(s, every)) return "counter";
@@ -643,11 +650,7 @@ function autoCapture({ userText, assistantText, sessionId, cwd, sourceMessageIds
   // The counter arm and the session-end arm have to agree about what "due" means,
   // and two copies of the rule is how they would stop agreeing.
   const sinceLastConsolidation = slot.turn_count - (slot.last_consolidation_turn || 0);
-  const consolidationDue = consolidationTrigger(
-    slot,
-    { every: getConsolidateEvery(), sessionEndMin: getConsolidateOnSessionEnd() },
-    { sessionEnding: false },
-  ) === "counter";
+  const consolidationDue = consolidationTrigger(slot, { sessionEnding: false }) === "counter";
 
   if (consolidationDue) slot.consolidation_due = true;
 
@@ -704,6 +707,20 @@ function markConsolidated(hash) {
   saveCaptureState(state);
 }
 
+/**
+ * The persisted counter slot for a project, read-only.
+ *
+ * Exported because the SessionEnd hook needs the REAL slot to evaluate the
+ * trigger. Without this it rebuilt one by inverting the arithmetic `status()`
+ * had already done and hardcoded `warmup_threshold: 0`, which silently threw
+ * away the store's actual warmup state — the exact drift the single-predicate
+ * comment above exists to prevent.
+ */
+function getSlot(hash) {
+  try { return readSlot(loadCaptureState(), hash !== undefined ? hash : activeHash()); }
+  catch { return { turn_count: 0, last_consolidation_turn: 0, consolidation_due: false }; }
+}
+
 function status(hash) {
   const state = loadCaptureState();
   const slot = readSlot(state, hash !== undefined ? hash : activeHash());
@@ -746,7 +763,7 @@ Commands:
 
 if (require.main === module) main();
 
-module.exports = { autoCapture, checkConsolidationDue, getTurnCount, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, warmupThreshold, advanceWarmup, consolidationTrigger,
+module.exports = { autoCapture, checkConsolidationDue, getTurnCount, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, warmupThreshold, advanceWarmup, consolidationTrigger, getSlot,
   getAutoConsolidate, setAutoConsolidate, getConsolidateOnSessionEnd, setConsolidateOnSessionEnd,
   getConsolidateModel, setConsolidateModel, getConsolidateMaxRunsPerDay, setConsolidateMaxRunsPerDay,
   getConsolidateBudgetUsd, setConsolidateBudgetUsd, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, parseBoolish, loadConfig };

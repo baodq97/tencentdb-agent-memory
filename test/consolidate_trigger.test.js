@@ -19,7 +19,9 @@ const CFG = { every: 10, sessionEndMin: 3 };
 const slot = (turns, done = 0, warmup = 0) => ({
   turn_count: turns, last_consolidation_turn: done, warmup_threshold: warmup,
 });
-const mid = (s, o) => consolidationTrigger(s, CFG, o || {});
+// cfg is passed as the OVERRIDE so these cases do not depend on the developer's
+// own config.json; production callers let the predicate resolve it itself.
+const mid = (s, o) => consolidationTrigger(s, o || {}, CFG);
 
 test("counter arm fires at the threshold and not before", () => {
   assert.strictEqual(mid(slot(9)), null);
@@ -63,12 +65,25 @@ test("warmup still gates the counter arm on a fresh store", () => {
   assert.strictEqual(mid(slot(4, 0, 4)), "counter", "at the doubled threshold");
 });
 
-test("missing or malformed config falls back to the shipped defaults", () => {
-  // The predicate is called from a hook that must never throw. A config file
-  // someone hand-edited into nonsense has to degrade to the default cadence, not
-  // to "never consolidate" — silence is the failure mode this whole change exists
-  // to remove.
-  assert.strictEqual(consolidationTrigger(slot(10), {}, {}), "counter");
-  assert.strictEqual(consolidationTrigger(slot(3), { every: "x", sessionEndMin: null }, { sessionEnding: true }), "session-end");
-  assert.strictEqual(consolidationTrigger(null, CFG, {}), null, "no slot is not a trigger");
+test("with no override the predicate resolves its own config", () => {
+  // Production callers pass only (slot, opts) — the whole reason cfg stopped
+  // being assembled at every call site. Driven through the env overrides so the
+  // assertion is deterministic and does not read the developer's config.json.
+  const prevE = process.env.MEMORY_CONSOLIDATE_EVERY;
+  const prevS = process.env.MEMORY_CONSOLIDATE_ON_SESSION_END;
+  process.env.MEMORY_CONSOLIDATE_EVERY = "7";
+  process.env.MEMORY_CONSOLIDATE_ON_SESSION_END = "2";
+  try {
+    assert.strictEqual(consolidationTrigger(slot(6), {}), null, "below the resolved counter");
+    assert.strictEqual(consolidationTrigger(slot(7), {}), "counter", "at the resolved counter");
+    assert.strictEqual(consolidationTrigger(slot(2), { sessionEnding: true }), "session-end",
+      "at the resolved session minimum");
+  } finally {
+    if (prevE === undefined) delete process.env.MEMORY_CONSOLIDATE_EVERY; else process.env.MEMORY_CONSOLIDATE_EVERY = prevE;
+    if (prevS === undefined) delete process.env.MEMORY_CONSOLIDATE_ON_SESSION_END; else process.env.MEMORY_CONSOLIDATE_ON_SESSION_END = prevS;
+  }
+});
+
+test("no slot is not a trigger", () => {
+  assert.strictEqual(consolidationTrigger(null, {}, CFG), null);
 });

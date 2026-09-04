@@ -105,24 +105,49 @@ function findClaude(env) {
   return null;
 }
 
-/** Runs recorded in the last 24h, machine-wide. The cap and the audit trail read
- *  the same file so they cannot disagree about what happened. */
-function runsInLastDay() {
+/**
+ * The tail of the runs log, parsed. ONE reader, used by the daily cap here and by
+ * `tmem status` — a second copy would let the two disagree about malformed lines.
+ *
+ * TAIL, not the whole file. This log is append-only and never rotated: every run
+ * AND every declined run writes a line, so on a busy multi-project machine it
+ * grows without bound while every reader only ever wants the last day or week.
+ * 256 KiB is ~1,300 records at the observed line size, far more than either
+ * caller's window, and it makes the read cost constant instead of proportional
+ * to the machine's entire history.
+ */
+function readRuns(bytes = 256 * 1024) {
+  let text = "";
   try {
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    let n = 0;
-    for (const line of fs.readFileSync(RUNS_LOG(), "utf-8").split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const r = JSON.parse(line);
-        // Only ATTEMPTS count against the cap. A run skipped because the cap was
-        // already hit must not itself consume a slot, or one busy hour would
-        // lock the machine out for the rest of the day.
-        if (r.verdict !== "skipped" && Date.parse(r.at) >= cutoff) n++;
-      } catch { /* skip malformed */ }
-    }
-    return n;
-  } catch { return 0; }
+    const p = RUNS_LOG();
+    const size = fs.statSync(p).size;
+    const start = Math.max(0, size - bytes);
+    const fd = fs.openSync(p, "r");
+    try {
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      text = buf.toString("utf-8");
+    } finally { fs.closeSync(fd); }
+    // A non-zero offset almost certainly lands mid-record; drop the partial line
+    // rather than letting it fail to parse and look like corruption.
+    if (start > 0) text = text.slice(text.indexOf("\n") + 1);
+  } catch { return []; }
+
+  const out = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try { out.push(JSON.parse(line)); } catch { /* skip malformed */ }
+  }
+  return out;
+}
+
+/** Runs recorded in the last 24h, machine-wide. */
+function runsInLastDay() {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  // Only ATTEMPTS count against the cap. A run skipped because the cap was
+  // already hit must not itself consume a slot, or one busy hour would lock the
+  // machine out for the rest of the day.
+  return readRuns().filter((r) => r.verdict !== "skipped" && Date.parse(r.at) >= cutoff).length;
 }
 
 function record(rec) {
@@ -215,6 +240,10 @@ function runConsolidation(opts) {
   const baseEnv = o.env || process.env;
   const spawnSyncFn = o.spawnSyncFn || spawnSync;
   const cap = require("./memory_auto_capture.js");
+  // Resolved once. Each accessor re-reads config.json, and this function used to
+  // call five of them — including getConsolidateModel() twice, once for the child
+  // command and once for the record it writes afterwards.
+  const model = cap.getConsolidateModel();
 
   const skip = (reason) => {
     const rec = { project: hash, trigger, verdict: "skipped", reason };
@@ -246,7 +275,7 @@ function runConsolidation(opts) {
 
   try {
     const res = spawnSyncFn(claudeBin, buildArgs({
-      model: cap.getConsolidateModel(),
+      model,
       budgetUsd: cap.getConsolidateBudgetUsd(),
     }), {
       cwd: projectPath,                 // there is no --cwd for `claude -p`
@@ -277,7 +306,7 @@ function runConsolidation(opts) {
   const rec = {
     project: hash,
     trigger,
-    model: cap.getConsolidateModel(),
+    model,
     exit: exitCode,
     verdict,
     reason: spawnError || (out && out.subtype) || null,
@@ -308,6 +337,10 @@ function spawnDetachedRunner(opts) {
   const spawnFn = o.spawnFn || spawn;
   const baseEnv = o.env || process.env;
   if (String(baseEnv[GUARD_ENV] || "")) return false;   // never recurse
+  // Check the switch HERE too, not only in the child. Spawning a node process on
+  // every Stop just so it can read a config file and exit is the kind of cost
+  // that is invisible until it is measured.
+  try { if (!require("./memory_auto_capture.js").getAutoConsolidate()) return false; } catch {}
   try {
     const child = spawnFn(process.execPath, [
       __filename,
@@ -349,6 +382,7 @@ if (require.main === module) {
 
 module.exports = {
   runConsolidation,
+  readRuns,
   spawnDetachedRunner,
   buildArgs,
   buildEnv,

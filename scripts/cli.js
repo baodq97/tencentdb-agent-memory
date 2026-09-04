@@ -41,10 +41,8 @@ function storeRecordCount(dir) {
   try { const { MemoryStore } = req("memory_store.js"); const s = new MemoryStore(db); const n = s.allRecords("", 100000).length; s.close(); return n; }
   catch { return 0; }
 }
-function storeSceneCount(dir) {
-  try { return fs.readdirSync(path.join(dir, "scene_blocks")).filter(f => f.endsWith(".md")).length; }
-  catch { return 0; }
-}
+// Delegated to memory_writer, which owns the storage layout.
+const storeSceneCount = (dir) => req("memory_writer.js").sceneCount(dir);
 // True iff `child` is the same path as, or nested under, `parent` (symlink-safe-ish via resolve).
 function isInside(child, parent) {
   const c = path.resolve(child), p = path.resolve(parent);

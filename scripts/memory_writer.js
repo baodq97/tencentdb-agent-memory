@@ -40,6 +40,18 @@ function memoryBaseDir() {
   return path.join(os.homedir(), ".memory-tencentdb");
 }
 
+/**
+ * How many scene blocks a store directory holds. Lives here because "what counts
+ * as a scene file" is a fact about the storage LAYOUT, and two callers needed it:
+ * `tmem status`/`projects` and the consolidation runner's before/after snapshot.
+ * A second copy would let a change to the naming convention be applied to one and
+ * not the other, and the two would disagree silently.
+ */
+function sceneCount(dir) {
+  try { return fs.readdirSync(path.join(dir, "scene_blocks")).filter((f) => f.endsWith(".md")).length; }
+  catch { return 0; }
+}
+
 function globalDir() {
   return path.join(memoryBaseDir(), "global");
 }
@@ -333,7 +345,7 @@ Commands:
 if (require.main === module) main();
 
 module.exports = {
-  memoryBaseDir, globalDir, projectDir, listProjectHashes,
+  memoryBaseDir, sceneCount, globalDir, projectDir, listProjectHashes,
   generateMemoryId, writeL1Record, writeL1Batch,
   writeSceneBlock, writePersona, readPersona,
   updateState, readState, setConsolidatedWatermark, setRecallEnabled, getRecallEnabled, listScenes, parseSceneMeta,

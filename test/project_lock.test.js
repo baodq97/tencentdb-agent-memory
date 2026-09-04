@@ -21,6 +21,11 @@ const SCRIPT = path.join(__dirname, "..", "scripts", "memory_pipeline.js");
 const { projectHashForCwd } = require("../scripts/memory_reader.js");
 const lock = require("../scripts/memory_pipeline.js");
 
+/** Put an env var back exactly as it was, including "was not set". */
+function restore(key, value) {
+  if (value === undefined) delete process.env[key]; else process.env[key] = value;
+}
+
 function withHome(fn) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-lock-"));
   const prevHome = process.env.HOME;
@@ -128,7 +133,12 @@ test("Bar 2: same project — a due project is a target, a locked one is not", (
   // skips an already-locked project, and the runner refuses to start on one.
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-lock-hook-"));
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), "tmem-lock-proj-"));
-  const prev = { h: process.env.HOME, u: process.env.USERPROFILE, d: process.env.CLAUDE_PROJECT_DIR };
+  // SAVE the previous values, including MEMORY_AUTO_CONSOLIDATE. Deleting it in
+  // the finally instead of restoring it removed the suite-wide `off` switch for
+  // every later test in this file, and their hook subprocesses then spawned REAL
+  // `claude -p` runs — which is what made the completion-loop test flaky and slow.
+  const prev = { h: process.env.HOME, u: process.env.USERPROFILE, d: process.env.CLAUDE_PROJECT_DIR,
+                 a: process.env.MEMORY_AUTO_CONSOLIDATE, c: process.env.MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY };
   try {
     const hash = projectHashForCwd(proj);
     seedDue(home, hash);
@@ -163,8 +173,8 @@ test("Bar 2: same project — a due project is a target, a locked one is not", (
     assert.strictEqual(runHook(home, proj), 0, "and the hook never signals the session");
   } finally {
     process.env.HOME = prev.h; process.env.USERPROFILE = prev.u;
-    delete process.env.MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY;
-    delete process.env.MEMORY_AUTO_CONSOLIDATE;
+    restore("MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY", prev.c);
+    restore("MEMORY_AUTO_CONSOLIDATE", prev.a);
     if (prev.d === undefined) delete process.env.CLAUDE_PROJECT_DIR; else process.env.CLAUDE_PROJECT_DIR = prev.d;
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(proj, { recursive: true, force: true });
@@ -244,7 +254,8 @@ test("Bar 3: two different projects both dispatch (parallel allowed)", () => {
     // observed through the runner, which acquires per project. A holds a lock and
     // B must still be able to take its own.
     const runner = require("../scripts/consolidate_runner.js");
-    const prev = { h: process.env.HOME, u: process.env.USERPROFILE };
+    const prev = { h: process.env.HOME, u: process.env.USERPROFILE,
+                   a: process.env.MEMORY_AUTO_CONSOLIDATE, c: process.env.MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY };
     process.env.HOME = home; process.env.USERPROFILE = home;
     try {
       process.env.MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY = "12";
@@ -262,8 +273,8 @@ test("Bar 3: two different projects both dispatch (parallel allowed)", () => {
       assert.strictEqual(lock.isLocked(hashB), false, "B released its own lock when it finished");
     } finally {
       process.env.HOME = prev.h; process.env.USERPROFILE = prev.u;
-      delete process.env.MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY;
-      delete process.env.MEMORY_AUTO_CONSOLIDATE;
+      restore("MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY", prev.c);
+      restore("MEMORY_AUTO_CONSOLIDATE", prev.a);
     }
     // Deliberately no runHook() here. This test's subject is cross-project
     // parallelism, and "the hook exits 0" is already pinned by cascade_skip.

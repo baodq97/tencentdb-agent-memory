@@ -234,13 +234,32 @@ test("the lock is released on the happy path too", () => {
 
 /* ── the detached spawn ──────────────────────────────────────────────── */
 
-test("the hook-side spawn is detached and unref'd, so a hook returns at once", () => {
-  let opts = null, unrefd = false;
+test("the switch is checked before spawning, not only inside the child", () => {
+  // Otherwise every Stop starts a node process whose only job is to read a
+  // config file and exit. The suite runs with MEMORY_AUTO_CONSOLIDATE=off, so
+  // this is the ambient state.
   const ok = runner.spawnDetachedRunner({
-    hash: HASH, projectDir: "/tmp/p", trigger: "session-end",
+    hash: HASH, projectDir: "/tmp/p", trigger: "counter",
     env: { PATH: "/usr/bin" },
-    spawnFn: (_bin, _args, o) => { opts = o; return { unref: () => { unrefd = true; } }; },
+    spawnFn: () => { throw new Error("must not spawn when auto-consolidation is off"); },
   });
+  assert.strictEqual(ok, false);
+});
+
+test("the hook-side spawn is detached and unref'd, so a hook returns at once", () => {
+  const prev = process.env.MEMORY_AUTO_CONSOLIDATE;
+  process.env.MEMORY_AUTO_CONSOLIDATE = "on";
+  let opts = null, unrefd = false;
+  let ok;
+  try {
+    ok = runner.spawnDetachedRunner({
+      hash: HASH, projectDir: "/tmp/p", trigger: "session-end",
+      env: { PATH: "/usr/bin" },
+      spawnFn: (_bin, _args, o) => { opts = o; return { unref: () => { unrefd = true; } }; },
+    });
+  } finally {
+    if (prev === undefined) delete process.env.MEMORY_AUTO_CONSOLIDATE; else process.env.MEMORY_AUTO_CONSOLIDATE = prev;
+  }
   assert.strictEqual(ok, true);
   assert.strictEqual(opts.detached, true);
   assert.strictEqual(opts.stdio, "ignore", "a hook must not hold the child's pipes open");

@@ -36,17 +36,10 @@ function maybeConsolidate(projectHash, cwd) {
     const cap = require(nodePath.join(scriptsDir, "memory_auto_capture.js"));
     if (!cap.getAutoConsolidate()) return;
 
-    const state = cap.status(projectHash);
-    const slot = {
-      turn_count: state.total_turns || 0,
-      last_consolidation_turn: (state.total_turns || 0) - (state.turns_since_consolidation || 0),
-      warmup_threshold: 0,
-    };
-    const trigger = cap.consolidationTrigger(
-      slot,
-      { every: cap.getConsolidateEvery(), sessionEndMin: cap.getConsolidateOnSessionEnd() },
-      { sessionEnding: true },
-    );
+    // The REAL slot, not one reconstructed from status()'s derived numbers: that
+    // version had to invert arithmetic status() had already done and hardcoded
+    // warmup_threshold, discarding the store's actual warmup state.
+    const trigger = cap.consolidationTrigger(cap.getSlot(projectHash), { sessionEnding: true });
     if (!trigger) return;
 
     const { spawnDetachedRunner } = require(nodePath.join(scriptsDir, "consolidate_runner.js"));
