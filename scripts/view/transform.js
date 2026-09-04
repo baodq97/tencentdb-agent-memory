@@ -165,11 +165,36 @@ function vectorStateFor(vectors) {
  * Re-exported below so existing consumers (and `buildRecordRows`) keep reading
  * one definition rather than acquiring a second one.
  */
-const { classifyLowSignal } = require("../low_signal.js");
+const { classifyLowSignal, NOISE_GATE_CLASSES } = require("../low_signal.js");
+// From constants.js, the leaf that requires nothing — NOT from memory_store.js,
+// which loads node:sqlite and would break this module's no-I/O purity tests.
+const { isVectorEligible } = require("../constants.js");
 
 /** True when any matched class is in the pinned union set. */
 function isLowSignalUnion(classes) {
   for (const c of classes) if (LOW_SIGNAL_UNION_CLASSES.includes(c)) return true;
+  return false;
+}
+
+/**
+ * True when `tmem prune --low-signal` would actually DELETE this record.
+ *
+ * Deliberately a different predicate from isLowSignalUnion. The union spans six
+ * classes and is the corpus-level lens metric ("how much of the store is
+ * low-signal"), pinned against an audit baseline. The prune gate spans three
+ * (NOISE_GATE_CLASSES) and is the only population the fix command touches;
+ * pasteDump, slashOrTag and continuation are reported but never deleted, with the
+ * rationale in low_signal.js.
+ *
+ * Reporting the union next to a "fix: tmem prune --low-signal --apply" suggestion
+ * promised 765 deletable records where a dry run matched zero across all 86
+ * stores. Worse, the three gate classes are also the WRITE gate, so on a store
+ * captured by the current version they are removed on the way in and the retro
+ * count is ~0 by construction. A finding that carries a fix must count what that
+ * fix can move.
+ */
+function isPrunable(classes) {
+  for (const c of classes) if (NOISE_GATE_CLASSES.includes(c)) return true;
   return false;
 }
 
@@ -545,7 +570,7 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
       status: STATUS.ERROR,
       reason: rd.reason,
       records: null, byType: null, byWritePath: null, contentLength: null,
-      lowSignal: null, lowSignalUnion: null, duplicates: null,
+      lowSignal: null, lowSignalUnion: null, lowSignalPrunable: null, duplicates: null,
       vectors: unmeasuredVectors(`store unreadable: ${rd.reason}`),
       vectorState: VECTOR_STATE.UNMEASURED,
       scenes: summariseScenes(sr, { now, navBudgetChars, scope: ref.scope }),
@@ -573,6 +598,7 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
   const lowSignal = zeroMap(LOW_SIGNAL_CLASSES);
   const lengths = [];
   let lowSignalUnion = 0;
+  let lowSignalPrunable = 0;
   let newestRecordAt = null;
   let oldestRecordAt = null;
 
@@ -582,6 +608,11 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
   const wpTotals = zeroMap(WRITE_PATHS);
   const wpCovered = zeroMap(WRITE_PATHS);
   let withVector = 0;
+  // Vectors matched to ANY record, eligible or not. Separate from `withVector`
+  // (eligible-only, the coverage numerator) because the orphan question is a
+  // different one: does this vector's record still exist?
+  let vectorsWithRecord = 0;
+  let eligibleRecords = 0;
 
   for (const r of records) {
     const type = RECORD_TYPES.includes(r.type) ? r.type : RECORD_TYPE_OTHER;
@@ -596,11 +627,22 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
     const classes = classifyLowSignal(content);
     for (const c of classes) lowSignal[c] += 1;
     if (isLowSignalUnion(classes)) lowSignalUnion += 1;
+    if (isPrunable(classes)) lowSignalPrunable += 1;
 
     if (r.updated_time && (!newestRecordAt || r.updated_time > newestRecordAt)) newestRecordAt = r.updated_time;
     if (r.created_time && (!oldestRecordAt || r.created_time < oldestRecordAt)) oldestRecordAt = r.created_time;
 
-    if (vecIds) {
+    // The population embedding coverage is ABOUT. `records` counts every row,
+    // but the writer never embeds episodic/persona by design, so dividing by it
+    // measured a number no fix command could ever move: on the real store the
+    // 5,459 "missing" vectors were exactly episodic 5,420 + persona 39, and
+    // `tmem sync` correctly reported "all vectors in sync" while doctor showed 2%.
+    const eligible = isVectorEligible(r.type);
+    if (eligible) eligibleRecords += 1;
+
+    if (vecIds && vecIds.has(r.record_id)) vectorsWithRecord += 1;
+
+    if (vecIds && eligible) {
       wpTotals[wp] += 1;
       if (vecIds.has(r.record_id)) {
         withVector += 1;
@@ -673,13 +715,24 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
       status: STATUS.OK,
       reason: null,
       withVector,
-      withoutVector: records.length - withVector,
-      ratio: records.length > 0 ? withVector / records.length : 0,
+      withoutVector: eligibleRecords - withVector,
+      ratio: eligibleRecords > 0 ? withVector / eligibleRecords : 0,
+      // Surfaced so a reader can see WHICH population the ratio divides by, and
+      // how many rows were excluded as never-embedded-by-design. Without this the
+      // ratio and the neighbouring `records` count invite the same misreading the
+      // ratio itself used to make.
+      eligibleRecords,
+      ineligibleRecords: records.length - eligibleRecords,
       byWritePath: byPath,
       missingByMonth,
-      // A vector whose record is gone. Never negative: `count` is the row count of
-      // l1_vec and `withVector` counts a subset of it.
-      orphanVectors: Math.max(0, (vr.count || 0) - withVector),
+      // A vector whose record is GONE — measured against every record, not just
+      // the eligible ones. Subtracting `withVector` (eligible-only since coverage
+      // moved to the eligible denominator) counted every episodic/persona vector
+      // as an orphan. On a store written before the write-side eligibility filter
+      // — the state constants.js documents as "98% of vectors were episodic" —
+      // that reports thousands of orphans that do not exist, and fires the
+      // vectors_orphaned finding on a healthy store.
+      orphanVectors: Math.max(0, (vr.count || 0) - vectorsWithRecord),
       dimensions: vr.dimensions ?? null,
       vectorRows: vr.count || 0,
     };
@@ -702,6 +755,7 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
     contentLength: quantiles(lengths),
     lowSignal,
     lowSignalUnion,
+    lowSignalPrunable,
     duplicates: { exact: exact.records, normalised: normalised.records },
     duplicateGroups: { exact: exact.groups, normalised: normalised.groups },
     vectors,
@@ -1047,16 +1101,23 @@ const subjectFor = (s) => ({ scope: s.scope, slug: s.slug, id: null, label: s.la
  */
 function vectorsMissingGap(s, { severity, withVector, withoutVector, ratio, extra = {} }) {
   const empty = s.vectorState === VECTOR_STATE.EMPTY;
+  // Eligible population when it was measurable, else the row count (a truncated or
+  // errored store carries no per-record types to count).
+  const pop = typeof s.vectors.eligibleRecords === "number" ? s.vectors.eligibleRecords : s.records;
   return gap({
     kind: GAP_KIND.VECTORS_MISSING,
     severity,
     subject: subjectFor(s),
     title: empty
-      ? `${s.label}: l1_vec is present and empty — all ${s.records} records are FTS-only`
-      : `${s.label}: ${withoutVector} of ${s.records} records without embeddings`,
+      ? `${s.label}: l1_vec is present and empty — all ${pop} recall-eligible records are FTS-only`
+      : `${s.label}: ${withoutVector} of ${pop} recall-eligible records without embeddings`,
     evidence: {
       slug: s.slug,
       records: s.records,
+      // The denominator the ratio and `withoutVector` actually use. Printed
+      // beside `records` so the two can never be confused again: they differ by
+      // the episodic/persona rows nothing ever embeds.
+      eligibleRecords: pop,
       withVector,
       withoutVector,
       ratio: round(ratio, 4),
@@ -1111,7 +1172,7 @@ function buildGaps({ stores, persona, state, config, captureState, heat }) {
         gaps.push(vectorsMissingGap(s, {
           severity: SEVERITY.CRITICAL,
           withVector: 0,
-          withoutVector: s.records,
+          withoutVector: typeof s.vectors.eligibleRecords === "number" ? s.vectors.eligibleRecords : s.records,
           ratio: 0,
           extra: { recordsMeasured: s.recordsMeasured, reason: s.vectors.reason },
         }));
@@ -1268,21 +1329,29 @@ function buildGaps({ stores, persona, state, config, captureState, heat }) {
   }
 
   // ---- low signal (root level, union only) -------------------------
-  if (heat.lowSignal && heat.lowSignal.records > 0) {
+  // Gated on PRUNABLE, not on the union: this finding carries
+  // "fix: tmem prune --low-signal --apply", and a finding whose fix matches zero
+  // records is noise dressed as a defect. The union stays in the evidence as the
+  // corpus-level datum it is.
+  if (heat.lowSignal && heat.lowSignal.records > 0 && heat.lowSignal.prunableRecords > 0) {
     const ls = heat.lowSignal;
+    const prunableRatio = ls.records > 0 ? ls.prunableRecords / ls.records : 0;
     gaps.push(gap({
       kind: GAP_KIND.LOW_SIGNAL_RECORDS,
-      severity: ls.ratio >= 0.25 ? SEVERITY.WARN : SEVERITY.INFO,
+      severity: prunableRatio >= 0.25 ? SEVERITY.WARN : SEVERITY.INFO,
       subject: { scope: "root", slug: null, id: null, label: "all stores" },
       // `ls.records` is the read population; when a store truncated, the unread
       // remainder is named in the title instead of being folded into the share.
-      title: `${ls.unionRecords} of ${ls.records} records (${pct(ls.ratio)}) are low-signal` +
+      title: `${ls.prunableRecords} of ${ls.records} records (${pct(prunableRatio)}) are prunable low-signal` +
+        ` — ${ls.unionRecords} match a low-signal class, but prune deletes only ${NOISE_GATE_CLASSES.join("/")}` +
         (ls.recordsUnread > 0 ? ` — ${ls.recordsUnread} further records were not read` : ""),
       evidence: {
         records: ls.records,
         recordsUnread: ls.recordsUnread,
         unionRecords: ls.unionRecords,
+        prunableRecords: ls.prunableRecords,
         ratio: round(ls.ratio, 4),
+        prunableRatio: round(prunableRatio, 4),
         ...ls.perClass,
         pinnedRatio: round(LOW_SIGNAL_BASELINE.ratio, 4),
         withinBaselineTolerance: ls.baseline.withinTolerance,
@@ -1361,18 +1430,58 @@ function buildGaps({ stores, persona, state, config, captureState, heat }) {
 
   // ---- capture backlog --------------------------------------------
   if (captureState.status === STATUS.OK && config.status === STATUS.OK && config.consolidateEvery > 0) {
-    const behind = (captureState.turnCount || 0) - (captureState.lastConsolidationTurn || 0);
-    if (behind >= config.consolidateEvery) {
+    const every = config.consolidateEvery;
+    const slots = Array.isArray(captureState.projects) ? captureState.projects : null;
+
+    // DUENESS IS PER PROJECT. Each slot is compared against the threshold on its
+    // own, exactly as memory_pipeline does. The previous version compared the SUM
+    // of every project's backlog against a single project's threshold, so 47
+    // projects a few turns behind each cleared a bar none of them had reached —
+    // doctor reported a backlog in the same breath as `tmem status` reporting
+    // consolidation_due: false. A sum is not the answer to an "any" question.
+    //
+    // Same warmup rule as memory_auto_capture.warmupThreshold: 0 = graduated to
+    // the full threshold, a positive integer is a lower warmup bar, absent = fresh.
+    const thresholdFor = (slot) => {
+      const wt = slot && slot.warmupThreshold;
+      if (wt === 0) return every;
+      if (!Number.isInteger(wt) || wt < 1) return Math.min(1, every);
+      return Math.min(wt, every);
+    };
+
+    const due = slots
+      ? slots.filter((sl) => sl.behind >= thresholdFor(sl)).sort((a, b) => b.behind - a.behind)
+      : (() => {
+          // Legacy capture_state with no per-project slots: the root scalars are
+          // the only reading available, and for a single-project store they mean
+          // what they used to.
+          const behind = (captureState.turnCount || 0) - (captureState.lastConsolidationTurn || 0);
+          return behind >= every ? [{ slug: null, behind, turnCount: captureState.turnCount, lastConsolidationTurn: captureState.lastConsolidationTurn, warmupThreshold: null }] : [];
+        })();
+
+    if (due.length > 0) {
+      const worst = due[0];
       gaps.push(gap({
         kind: GAP_KIND.CAPTURE_BACKLOG,
-        severity: behind >= config.consolidateEvery * 2 ? SEVERITY.WARN : SEVERITY.INFO,
+        severity: worst.behind >= every * 2 ? SEVERITY.WARN : SEVERITY.INFO,
         subject: { scope: "root", slug: null, id: null, label: "consolidation" },
-        title: `${behind} turns captured since the last consolidation (threshold ${config.consolidateEvery})`,
+        title: due.length === 1 && worst.slug
+          ? `${worst.slug}: ${worst.behind} turns captured since its last consolidation (threshold ${thresholdFor(worst)})`
+          : `${due.length} project(s) due for consolidation — worst ${worst.slug || "store"} at ${worst.behind} turns (threshold ${every})`,
         evidence: {
-          turnCount: captureState.turnCount,
-          lastConsolidationTurn: captureState.lastConsolidationTurn,
-          behind,
-          consolidateEvery: config.consolidateEvery,
+          projectsDue: due.length,
+          projectsTracked: slots ? slots.length : null,
+          worstSlug: worst.slug,
+          // `behind` keeps its original name and meaning -- turns behind for the
+          // project this finding is about -- so existing consumers keep working.
+          // It is the WORST project's backlog now, never a cross-project sum.
+          behind: worst.behind,
+          worstBehind: worst.behind,
+          consolidateEvery: every,
+          // The store-wide sums stay available, clearly labelled as sums so they
+          // are never mistaken for a dueness signal again.
+          sumTurnCount: captureState.turnCount,
+          sumLastConsolidationTurn: captureState.lastConsolidationTurn,
         },
         suggestion: "/memory-consolidate",
       }));
@@ -1498,6 +1607,7 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
   let scenes = 0, sizeBytes = 0;
   let readableStores = 0, erroredStores = 0;
   let lowSignalUnion = 0;
+  let lowSignalPrunable = 0;
   let scenesReachableInSomeNav = 0, scenesUnreachableInEveryNav = 0, staleHot = 0;
   let scenesNavUnmeasured = 0;
   // One string, not a set: every unmeasured store's reason comes out of the same
@@ -1535,6 +1645,7 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     for (const k of WRITE_PATHS) byWritePath[k] += s.byWritePath[k];
     for (const k of LOW_SIGNAL_CLASSES) lowSignalPerClass[k] += s.lowSignal[k];
     lowSignalUnion += s.lowSignalUnion;
+    lowSignalPrunable += s.lowSignalPrunable;
     for (const k of DUPLICATE_TIERS) {
       duplicates[k] += s.duplicates[k];
       duplicateGroupCount[k] += s.duplicateGroups[k];
@@ -1545,7 +1656,11 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     vectorStateRecords[s.vectorState] += s.records;
 
     if (s.vectors.status === STATUS.OK) {
-      covEntries.push({ status: STATUS.OK, records: s.records, covered: s.vectors.withVector });
+      // `eligibleRecords`, not `records`: the denominator has to be the population
+      // the numerator could ever come from. `tmem sync` embeds only eligible types,
+      // so dividing by every row made store-wide coverage read 2% on a store that
+      // sync correctly called fully in sync.
+      covEntries.push({ status: STATUS.OK, records: s.vectors.eligibleRecords, covered: s.vectors.withVector });
       for (const wp of WRITE_PATHS) {
         const p = s.vectors.byWritePath[wp];
         covEntriesByPath[wp].push({
@@ -1565,8 +1680,13 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
       // it stays in the denominator rather than being demoted to unknown. The
       // per-write-path split below cannot follow it there, because that one does
       // need the slice.
+      // An empty l1_vec is a whole-store fact, but the population it is empty OF
+      // is still the eligible one. `eligibleRecords` is null on an unmeasured
+      // envelope (contract.source forbids numbers there), so fall back to the row
+      // count — an over-estimate, never an under-report of the gap.
+      const emptyPop = typeof s.vectors.eligibleRecords === "number" ? s.vectors.eligibleRecords : s.records;
       const entry = s.vectorState === VECTOR_STATE.EMPTY
-        ? { status: STATUS.OK, records: s.records, covered: 0 }
+        ? { status: STATUS.OK, records: emptyPop, covered: 0 }
         : { status: s.vectors.status, reason: s.vectors.reason, records: s.records };
       covEntries.push(entry);
       for (const wp of WRITE_PATHS) {
@@ -1623,6 +1743,8 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     records: recordsMeasured,
     recordsUnread: Math.max(0, records - recordsMeasured),
     unionRecords: lowSignalUnion,
+    // What `tmem prune --low-signal` can actually delete. Always <= unionRecords.
+    prunableRecords: lowSignalPrunable,
     ratio: lowSignalRatio,
     unionClasses: [...LOW_SIGNAL_UNION_CLASSES],
     perClass: lowSignalPerClass,

@@ -83,7 +83,9 @@ test("buildPlan: groups gaps by kind, counts stores, splits fix tiers, extracts 
     totals: {
       stores: 3, records: 100, scenes: 4,
       coverage: { vectors: { covered: 40, measuredRecords: 90, ratio: 0.4444 } },
-      lowSignal: { unionRecords: 12 },
+      // Both are carried: the header reads `prunableRecords` (what the fix it
+      // suggests can delete), while `unionRecords` stays the corpus-level datum.
+      lowSignal: { unionRecords: 12, prunableRecords: 5 },
       duplicates: { exact: 3 },
     },
   };
@@ -91,7 +93,7 @@ test("buildPlan: groups gaps by kind, counts stores, splits fix tiers, extracts 
   const plan = buildPlan(snapshot, { scope: "all", currentSlug: "" });
   assert.equal(plan.verdict, "critical");
   assert.equal(plan.totals.vectorsMissing, 50); // 90 measured - 40 covered
-  assert.equal(plan.totals.lowSignal, 12);
+  assert.equal(plan.totals.lowSignal, 5, "header must count what prune can delete, not the 6-class union");
   assert.equal(plan.totals.duplicates, 3);
 
   const vm = plan.findings.find((f) => f.kind === "vectors_missing");

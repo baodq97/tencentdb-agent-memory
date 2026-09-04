@@ -86,9 +86,10 @@ test("recall writes one JSONL line to the memory root, beside the existing logs"
     assert.equal(rows.length, 1, "exactly one line per recall");
     const [row] = rows;
     assert.deepEqual(Object.keys(row).sort(),
-      ["at", "chars", "droppedIds", "injectedIds", "query", "source"]);
+      ["at", "chars", "droppedIds", "injectedFactIds", "injectedIds", "query", "source"]);
     assert.ok(!Number.isNaN(Date.parse(row.at)));
     assert.ok(Array.isArray(row.injectedIds));
+    assert.ok(Array.isArray(row.injectedFactIds));
     assert.ok(Array.isArray(row.droppedIds));
     assert.equal(typeof row.chars, "number");
   });
@@ -340,3 +341,147 @@ function requireRecallInternals() {
 function isRoot() {
   return typeof process.getuid === "function" && process.getuid() === 0;
 }
+
+// The log has to describe the block that was actually injected.
+//
+// It stopped doing that. `injectedIds` records ATOMS, and after the relevance
+// floor and the project-scoped hook landed, atoms are no longer most of what a
+// turn injects: 55 of the last 60 real logged recalls carried zero atom ids while
+// each still injected around three scene facts. `tmem feedback` and doctor's
+// hot/cold line read this file, so both were reporting near-silence about a
+// surface that never stopped working. This pins the fix so the log cannot go
+// blind again the next time the injected mix changes.
+test("a turn that injects scene facts records them, not just atoms", () => {
+  withFakeHome((home) => {
+    seedStore(home);
+    const gScenes = path.join(home, ".memory-tencentdb", "global", "scene_blocks");
+    fs.mkdirSync(gScenes, { recursive: true });
+    fs.writeFileSync(path.join(gScenes, "vector-index.md"), [
+      "-----META-START-----",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "summary: vector index notes",
+      "heat: 4",
+      "-----META-END-----",
+      "",
+      "## Key Facts",
+      "- sqlite-vec stores embeddings in an l1_vec virtual table keyed by record_id.",
+    ].join("\n"));
+
+    runCli(home, "where are embeddings stored");
+    const [row] = readLog(home);
+    assert.ok(row.injectedFactIds.length > 0,
+      `a turn whose block carries scene facts must log them, got ${JSON.stringify(row)}`);
+    for (const id of row.injectedFactIds) {
+      // Scene-qualified and content-addressed: a positional id would be renamed by
+      // every consolidation rewrite and make the log uncomparable across one.
+      assert.match(id, /^fact:[^:]+:[0-9a-f]{12}$/, `unexpected fact id shape: ${id}`);
+    }
+  });
+});
+
+// The bug this pins shipped INSIDE the commit that added `injectedFactIds`:
+// recallAsync computed factIds and then called finishRecall without them, so
+// `finishRecall`'s `factIds = []` default logged an empty array on every
+// hook-driven turn. Measured on the real store before the fix: 401 rows carried
+// the field, 100% empty, while <recalled-facts> was delivering 4 facts a turn —
+// and sync recall() logged 4 for the same query at the same moment.
+//
+// The existing coverage above could not catch it, and passed throughout. It drives
+// the CLI in a fake HOME with no embed daemon, so recallAsync throws, cmdRecall
+// falls back to sync recall(), and the assertion lands on the one path that was
+// never broken. A test whose outcome is decided by whether a daemon happens to be
+// reachable is not grading the code.
+//
+// So this drives recallAsync DIRECTLY with an injected embedder: the semantic path
+// — the one hooks/scripts/on_user_prompt.js takes — with no daemon involved. Every
+// text embeds to the same unit vector, so cosine is 1.0 and the floor is cleared
+// deterministically rather than by timing.
+test("recallAsync logs the facts it injected, not only its atoms", () => {
+  withFakeHome((home) => {
+    seedStore(home);
+    const gScenes = path.join(home, ".memory-tencentdb", "global", "scene_blocks");
+    fs.mkdirSync(gScenes, { recursive: true });
+    fs.writeFileSync(path.join(gScenes, "vector-index.md"), [
+      "-----META-START-----",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "summary: vector index notes",
+      "heat: 4",
+      "-----META-END-----",
+      "",
+      "## Key Facts",
+      "- sqlite-vec stores embeddings in an l1_vec virtual table keyed by record_id.",
+    ].join("\n"));
+
+    const out = execFileSync("node", ["-e",
+      `const { recallAsync, RECALL_SOURCE } = require(${JSON.stringify(RECALL)});
+       const unit = () => { const v = new Float32Array(8); v[0] = 1; return v; };
+       const embedFn = async () => ({ vector: unit(), reason: "ok" });
+       recallAsync("where are embeddings stored", "", 280, 5, RECALL_SOURCE.HOOK, { embedFn })
+         .then((ctx) => { process.stdout.write(ctx || ""); process.exit(0); });`],
+      { env: env(home), encoding: "utf-8" });
+
+    assert.ok(out.includes("<recalled-facts>"),
+      `precondition: the turn must inject facts, got:\n${out}`);
+    const [row] = readLog(home);
+    assert.ok(row.injectedFactIds.length > 0,
+      `recallAsync must log the facts it injected, got ${JSON.stringify(row)}`);
+    for (const id of row.injectedFactIds) {
+      assert.match(id, /^fact:[^:]+:[0-9a-f]{12}$/, `unexpected fact id shape: ${id}`);
+    }
+  });
+});
+
+// A wall-clock bound on the whole recall, driven through the real entry point.
+//
+// The query embed budget went 500 -> 2500ms so a slow daemon stops silently
+// costing the turn its semantic ranking. That is right for the query, but the
+// fact stage runs FACT_EMBED_MAX_PER_TURN misses at FACT_EMBED_CONCURRENCY — four
+// sequential waves — so at the same per-call budget a connected-but-stuck daemon
+// (the `stuck` reason resolves only at the full timeout) would cost 4 x 2500ms
+// there plus 2500ms for the query. hooks/hooks.json gives UserPromptSubmit 8s, and
+// nothing carried an overall deadline, so the hook would be killed and the turn
+// would get NO memory context — worse than the keyword fallback the raise removed.
+//
+// Facts get a tighter per-call budget and the stage a hard deadline, because the
+// two are not the same question: the query embed is the critical path, a fact
+// embed is a cache fill that converges over later turns.
+test("a stuck embedder cannot blow the UserPromptSubmit budget", () => {
+  withFakeHome((home) => {
+    seedStore(home);
+    const gScenes = path.join(home, ".memory-tencentdb", "global", "scene_blocks");
+    fs.mkdirSync(gScenes, { recursive: true });
+    // Enough distinct bullets to fill the per-turn miss batch several times over.
+    fs.writeFileSync(path.join(gScenes, "many.md"), [
+      "-----META-START-----", "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z", "summary: many facts", "heat: 4",
+      "-----META-END-----", "", "## Key Facts",
+      ...Array.from({ length: 20 }, (_, i) => `- distinct durable fact number ${i} about the store and its behaviour.`),
+    ].join("\n"));
+
+    const t0 = Date.now();
+    execFileSync("node", ["-e",
+      `const { recallAsync, RECALL_SOURCE } = require(${JSON.stringify(RECALL)});
+       // Every call hangs to its own timeout, like a daemon that accepts the
+       // connection and never answers.
+       // The QUERY embed must SUCCEED — otherwise recallAsync fails closed and the
+       // fact stage never runs, which is not the case under test. The worst case is
+       // a daemon that answers the first call and then stops answering, so every
+       // fact embed burns its full budget.
+       let first = true;
+       const unit = () => { const v = new Float32Array(8); v[0] = 1; return v; };
+       const stuck = (text, opts) => {
+         if (first) { first = false; return Promise.resolve({ vector: unit(), reason: "ok" }); }
+         return new Promise((res) =>
+           setTimeout(() => res({ vector: null, reason: "stuck" }), (opts && opts.timeoutMs) || 2500));
+       };
+       recallAsync("where are embeddings stored", "", 280, 5, RECALL_SOURCE.HOOK, { embedFn: stuck })
+         .then(() => process.exit(0));`],
+      { env: env(home), encoding: "utf-8" });
+    const ms = Date.now() - t0;
+
+    // 8000 is the hook timeout; assert with margin so this fails before production does.
+    assert.ok(ms < 6000, `recall must stay inside the 8s hook budget, took ${ms}ms`);
+  });
+});

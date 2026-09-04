@@ -1329,6 +1329,11 @@ function unmeasuredVectors(reason) {
     byWritePath: null,
     missingByMonth: null,
     orphanVectors: null,
+    // The eligible population the ratio would have divided by. Null here for the
+    // same reason every other figure is: an unmeasured store counted no record
+    // types, and a number on this envelope is how unmeasured becomes zero.
+    eligibleRecords: null,
+    ineligibleRecords: null,
   };
 }
 

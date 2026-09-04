@@ -26,11 +26,28 @@ function summarizeRecallFeedback(entries) {
   const list = Array.isArray(entries) ? entries : [];
   const byId = new Map(); // id -> { id, count, lastAt }
   let injections = 0;
+  let factInjections = 0;
   let emptyTurns = 0;
 
   for (const e of list) {
     const ids = (e && Array.isArray(e.injectedIds) ? e.injectedIds : []).filter(Boolean);
-    if (!ids.length) { emptyTurns++; continue; }
+    const factIds = (e && Array.isArray(e.injectedFactIds) ? e.injectedFactIds : []).filter(Boolean);
+    // Facts are tallied in the SAME map as atoms. They are different populations
+    // with different id lifecycles, but the question this module answers -- "did
+    // anything the store holds ever reach a turn?" -- is the same question for
+    // both, and a second parallel map would mean every caller had to remember to
+    // ask twice. The `fact:` prefix keeps them distinguishable in `perAtom`.
+    for (const id of factIds) {
+      factInjections++;
+      const cur = byId.get(id);
+      if (cur) { cur.count++; if ((e.at || "") > cur.lastAt) cur.lastAt = e.at || ""; }
+      else byId.set(id, { id, count: 1, lastAt: (e && e.at) || "" });
+    }
+    // "Recalled nothing" must mean the TURN injected nothing. Counting a turn as
+    // empty because it carried no ATOMS was how this metric came to report 55 of
+    // 60 turns silent while every one of them injected scene facts.
+    if (!ids.length && !factIds.length) { emptyTurns++; continue; }
+    if (!ids.length) continue;
     const at = (e && e.at) || "";
     for (const id of ids) {
       injections++;
@@ -50,11 +67,34 @@ function summarizeRecallFeedback(entries) {
   return {
     turns: list.length,
     injections,
-    uniqueAtoms: byId.size,
+    // Split out so a reader can see WHICH surface is carrying the turns. Before
+    // the relevance floor this was 0 and `injections` was everything; after it
+    // the ratio inverted, and a single total would have hidden that entirely.
+    factInjections,
+    // `byId` deliberately holds BOTH populations (see the comment at the tally),
+    // so its size is not the atom count and must not be reported as one. Once the
+    // hook path started logging facts at all, facts outnumber atoms by roughly an
+    // order of magnitude — measured on 60 real prompts, 55 turns carried zero
+    // atoms and ~3 facts each — so `byId.size` labelled "distinct atoms" was off
+    // by that much. The `fact:` prefix is the discriminator the tally promised.
+    uniqueAtoms: [...byId.keys()].filter((id) => !isFactId(id)).length,
+    uniqueFacts: [...byId.keys()].filter(isFactId).length,
     emptyTurns,
     perAtom,
     injectedIds: new Set(byId.keys()),
   };
+}
+
+/** A log id minted by recall's factLogId (`fact:<scene>:<hash12>`), not a store atom id. */
+function isFactId(id) {
+  return typeof id === "string" && id.startsWith("fact:");
+}
+
+/** The scene a fact id names, for display. Returns "" for an atom id. */
+function factScene(id) {
+  if (!isFactId(id)) return "";
+  const parts = String(id).split(":");
+  return parts.length >= 3 ? parts.slice(1, -1).join(":") : "";
 }
 
 /**
@@ -78,4 +118,4 @@ function classifyStoreAtoms(storeAtoms, summary) {
   return { hot, cold, coldPct };
 }
 
-module.exports = { summarizeRecallFeedback, classifyStoreAtoms };
+module.exports = { summarizeRecallFeedback, classifyStoreAtoms, isFactId, factScene };

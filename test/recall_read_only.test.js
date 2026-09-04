@@ -19,7 +19,7 @@ const crypto = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
 const { MemoryStore } = require("../scripts/memory_store.js");
 const { VectorStore } = require("../scripts/vector_store.js");
-const { recall, recallAsync } = require("../scripts/memory_recall.js");
+const { recall, recallAsync, RECALL_SOURCE } = require("../scripts/memory_recall.js");
 
 function tmpdir(tag) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `recall-ro-${tag}-`));
@@ -130,7 +130,11 @@ test("recall against a missing project store returns global results, creates no 
     const projectHash = "P--nonexistent--proj";
     const projDir = path.join(home, ".memory-tencentdb", "projects", projectHash);
 
-    const out = recall("alpha", projectHash);
+    // A DELIBERATE lookup, stated rather than inherited: the automatic hook now
+    // reads the project store only (recallDirs), so under the default source the
+    // global marker would legitimately not appear and this test would be asserting
+    // scope instead of the read-only degradation it exists to pin.
+    const out = recall("alpha", projectHash, undefined, undefined, RECALL_SOURCE.CLI);
     assert.match(out, /global recall marker alpha/, "global store must still contribute");
     assert.ok(!fs.existsSync(projDir), "missing project store must not be created by recall");
   });
@@ -153,7 +157,8 @@ test("recall against a schemaless index.db does not throw and does not create l1
     f.close();
 
     let out;
-    assert.doesNotThrow(() => { out = recall("beta", projectHash); }, "recall must never throw");
+    // Deliberate lookup — see the note in the previous test.
+    assert.doesNotThrow(() => { out = recall("beta", projectHash, undefined, undefined, RECALL_SOURCE.CLI); }, "recall must never throw");
     assert.match(out, /global recall marker beta/, "sibling global store must still answer");
     assert.ok(!tableNames(pDb).includes("l1_fts"), "read path must not create l1_fts on a schemaless store");
   });

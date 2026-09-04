@@ -101,7 +101,29 @@ const CHARS_PER_TOKEN = 4;
  */
 const DEFAULT_TIER0_MAX_TOKENS = 1200;
 
+/* ------------------------------------------------------------------ *
+ * Vector eligibility — shared by the WRITE side, the READ side, and the LENS.
+ *
+ * `memory_store.js` owns the MEANING and re-exports both (its docblock carries
+ * the measurement that produced the set: 98% of vectors were episodic, so every
+ * KNN returned 10/10 neighbours that the read filter then dropped). The values
+ * live HERE because a third consumer needs them and cannot reach that module:
+ * `view/transform.js` computes embedding coverage, and two tests assert it
+ * performs no I/O and loads no sqlite — which importing memory_store.js would
+ * break. Without this, transform had to divide by ALL records, and reported 2%
+ * coverage on a fully-synced store because 5,459 of 5,559 records are types the
+ * writer deliberately never embeds. A denominator the fix command cannot move is
+ * not a health metric.
+ * ------------------------------------------------------------------ */
+
+/** Types recall drops per-turn, and therefore types nothing should embed. */
+const NON_RECALL_TYPES = new Set(["episodic", "persona"]);
+
+/** Untyped records are eligible: absence of a type is not a decision to exclude. */
+function isVectorEligible(type) { return !NON_RECALL_TYPES.has(String(type || "")); }
+
 module.exports = {
   LOW_SIGNAL, LOW_SIGNAL_CLASSES,
   CHARS_PER_TOKEN, DEFAULT_TIER0_MAX_TOKENS,
+  NON_RECALL_TYPES, isVectorEligible,
 };

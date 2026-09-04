@@ -760,7 +760,7 @@ function readConfigDoc(rootDir) {
   return ok({ config: r.value || {}, consolidateEvery, sceneNavBudgetTokens, personaBudgetTokens });
 }
 
-const NO_CAPTURE = { turnCount: null, lastConsolidationTurn: null, sessions: null };
+const NO_CAPTURE = { turnCount: null, lastConsolidationTurn: null, sessions: null, projects: null };
 
 /**
  * `capture_state.json` — the auto-capture turn counter.
@@ -783,12 +783,35 @@ function readCaptureStateDoc(rootDir) {
   const projects = r.value.projects && typeof r.value.projects === "object" ? r.value.projects : null;
   let turnCount;
   let lastConsolidationTurn;
+  // PER-PROJECT SLOTS, not just their sum.
+  //
+  // The sum alone cannot answer "is a consolidation due?", because dueness is a
+  // per-project predicate: each slot is compared against the threshold on its own.
+  // Summing 47 projects that are each a handful of turns behind produces a total
+  // far above a threshold no single project has reached, which is exactly how
+  // doctor came to report a backlog while `tmem status` reported
+  // consolidation_due: false for the current project. Both were reading the same
+  // file; only one was asking a question the file can answer.
+  //
+  // `warmupThreshold` is carried through so the reader can apply the same rule the
+  // pipeline does (memory_auto_capture.warmupThreshold): 0 means graduated to the
+  // full threshold, a positive integer is a lower warmup bar, absent means fresh.
+  const slots = [];
   if (projects && Object.keys(projects).length > 0) {
     turnCount = 0;
     lastConsolidationTurn = 0;
-    for (const slot of Object.values(projects)) {
-      turnCount += toFiniteNumber(slot && slot.turn_count, 0);
-      lastConsolidationTurn += toFiniteNumber(slot && slot.last_consolidation_turn, 0);
+    for (const [slug, slot] of Object.entries(projects)) {
+      const tc = toFiniteNumber(slot && slot.turn_count, 0);
+      const lc = toFiniteNumber(slot && slot.last_consolidation_turn, 0);
+      turnCount += tc;
+      lastConsolidationTurn += lc;
+      slots.push({
+        slug,
+        turnCount: tc,
+        lastConsolidationTurn: lc,
+        behind: tc - lc,
+        warmupThreshold: slot && Number.isInteger(slot.warmup_threshold) ? slot.warmup_threshold : null,
+      });
     }
   } else {
     turnCount = toFiniteNumber(r.value.turn_count, 0);
@@ -797,6 +820,7 @@ function readCaptureStateDoc(rootDir) {
   return ok({
     turnCount,
     lastConsolidationTurn,
+    projects: slots,
     sessions: r.value.sessions && typeof r.value.sessions === "object" ? r.value.sessions : {},
   });
 }

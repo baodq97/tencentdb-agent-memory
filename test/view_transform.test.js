@@ -28,10 +28,16 @@ const {
 
 // ── Fixtures (hand-built; transform never reads a byte) ─────────────────────
 
+// Vector-eligible BY DEFAULT ("semantic", not "episodic"). Embedding coverage now
+// divides by the eligible population, so an episodic default made every coverage
+// fixture describe a state the writer cannot produce: an episodic record WITH a
+// vector, when `tmem sync` never embeds that type. The fixtures were pinning the
+// bug — a denominator no fix command could move. Tests that care about a specific
+// type still pass one explicitly.
 const rec = (id, over = {}) => ({
   record_id: id,
   content: over.content ?? `content of ${id}`,
-  type: "episodic",
+  type: "semantic",
   priority: 50,
   scene_name: "",
   session_key: "",
@@ -1121,6 +1127,48 @@ test("gaps: capture backlog fires only against a known threshold", () => {
   assert.equal(gapKinds(unknown).includes(GAP_KIND.CAPTURE_BACKLOG), false);
 });
 
+test("gaps: capture backlog is per-project, never a cross-project sum", () => {
+  // The live shape of the bug: many projects, each a few turns behind, none of
+  // them due. Summed they are 60 turns behind a threshold of 20 -- which is how
+  // doctor reported a backlog while `tmem status` reported consolidation_due:
+  // false for the current project. Dueness is an ANY over slots, not a SUM.
+  const many = Array.from({ length: 12 }, (_, i) => ({
+    slug: `p${i}`, turnCount: 5, lastConsolidationTurn: 0, behind: 5, warmupThreshold: 0,
+  }));
+  const notDue = T.transformRoot(rootExtract([storeExtract("s", { records: [rec("m_1")] })], {
+    captureState: C.ok({ turnCount: 60, lastConsolidationTurn: 0, sessions: {}, projects: many }),
+    config: C.ok({ config: {}, consolidateEvery: 20, sceneNavBudgetTokens: 200 }),
+  }));
+  assert.equal(gapKinds(notDue).includes(GAP_KIND.CAPTURE_BACKLOG), false,
+    "12 projects 5 turns behind a threshold of 20 is no backlog, whatever they sum to");
+
+  // One project over its own threshold IS a backlog, and the finding names it.
+  const oneDue = T.transformRoot(rootExtract([storeExtract("s", { records: [rec("m_1")] })], {
+    captureState: C.ok({
+      turnCount: 85, lastConsolidationTurn: 0, sessions: {},
+      projects: [...many, { slug: "busy", turnCount: 25, lastConsolidationTurn: 0, behind: 25, warmupThreshold: 0 }],
+    }),
+    config: C.ok({ config: {}, consolidateEvery: 20, sceneNavBudgetTokens: 200 }),
+  }));
+  const g2 = oneDue.gaps.find((x) => x.kind === GAP_KIND.CAPTURE_BACKLOG);
+  assert.ok(g2, "a project past its own threshold must still be reported");
+  assert.equal(g2.evidence.projectsDue, 1);
+  assert.equal(g2.evidence.worstSlug, "busy");
+  assert.equal(g2.evidence.behind, 25, "behind is the worst project's backlog, not the 85-turn sum");
+  assert.match(g2.title, /busy/);
+
+  // A warmup slot graduates later: a fresh project is due almost immediately.
+  const fresh = T.transformRoot(rootExtract([storeExtract("s", { records: [rec("m_1")] })], {
+    captureState: C.ok({
+      turnCount: 2, lastConsolidationTurn: 0, sessions: {},
+      projects: [{ slug: "new", turnCount: 2, lastConsolidationTurn: 0, behind: 2, warmupThreshold: 2 }],
+    }),
+    config: C.ok({ config: {}, consolidateEvery: 20, sceneNavBudgetTokens: 200 }),
+  }));
+  assert.ok(fresh.gaps.find((x) => x.kind === GAP_KIND.CAPTURE_BACKLOG),
+    "warmup threshold must be honoured, as memory_auto_capture.warmupThreshold does");
+});
+
 test("gaps: a corrupt root document is reported, an absent one is not a defect", () => {
   const broken = T.transformRoot(rootExtract([storeExtract("s", { records: [] })], {
     state: C.errored("state.json unreadable (/fixture/state.json): bad json", { sessions: null, projects: null, pendingSessions: null, recallDisabledSlugs: null }),
@@ -1411,4 +1459,33 @@ test("buildStoreTree: unreadable records -> a status, not an empty tree pretendi
   assert.equal(tree.status, STATUS.ERROR);
   assert.equal(tree.totalAtoms, null);
   assert.deepEqual(tree.scenes, []);
+});
+
+// `withVector` became eligible-only when embedding coverage moved to the eligible
+// denominator, but `orphanVectors` kept subtracting it from the l1_vec row count.
+// An orphan is a vector whose RECORD is gone; every vector belonging to a live
+// episodic or persona record started counting as one.
+//
+// That is exactly the state constants.js documents as the reason the write-side
+// filter exists ("98% of vectors were episodic"), so on any store written before
+// it — or upgraded and not yet synced — doctor would report thousands of orphans
+// that do not exist and fire vectors_orphaned on a healthy store. Local stores are
+// all synced, which is why the count still read 0 and the bug shipped latent.
+test("orphanVectors counts vectors whose record is gone, not vectors of ineligible records", () => {
+  const s = T.summariseStore(storeExtract("global", {
+    records: [
+      rec("keep_semantic"),                          // eligible, embedded
+      rec("keep_episodic", { type: "episodic" }),    // NOT eligible, but embedded (pre-filter store)
+      rec("keep_persona", { type: "persona" }),      // NOT eligible, but embedded
+    ],
+    // Four vectors: three belong to live records, one to a record that is gone.
+    vectors: ["keep_semantic", "keep_episodic", "keep_persona", "deleted_record"],
+  }));
+
+  assert.equal(s.vectors.orphanVectors, 1,
+    `only the vector with no record is an orphan, got ${s.vectors.orphanVectors} ` +
+    `(vectorRows ${s.vectors.vectorRows}, eligibleRecords ${s.vectors.eligibleRecords})`);
+  // The coverage numerator stays eligible-only — the two metrics answer different
+  // questions and must not be re-collapsed into one counter.
+  assert.equal(s.vectors.eligibleRecords, 1);
 });

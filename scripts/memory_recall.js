@@ -19,7 +19,7 @@ const { getSceneMaxTokens } = require("./memory_auto_capture.js");
 // Pure renderer + ranker, shared with view/transform.js so the block the agent
 // receives and the block the visualiser measures can never be two different
 // algorithms.
-const { renderSceneNav, rankScenes, byHeatDesc, rankSceneFacts, rankSceneFactsSemantic } = require("./scene_nav.js");
+const { renderSceneNav, rankScenes, byHeatDesc, rankSceneFacts, rankSceneFactsSemantic, cosineSim } = require("./scene_nav.js");
 const crypto = require("node:crypto");
 const {
   parsePersona,
@@ -38,6 +38,43 @@ const DEFAULT_MAX_TOKENS = 280;
 // residual atom pool. ~175 tok is room for ~4-5 one-line facts.
 const FACT_RECALL_MAX_CHARS = 700;
 const FACT_RECALL_LIMIT = 5;
+
+/**
+ * Minimum cosine an atom must reach to enter `<memories>`.
+ *
+ * WHY THIS EXISTS AT ALL. `<recalled-facts>` has had a floor since 0.7.5; the atom
+ * path never did, and the vector arm returns its k nearest neighbours no matter how
+ * far away they are. With a small eligible pool the nearest is therefore ALWAYS
+ * "close enough": measured 2026-09-04 on 20 off-topic control queries, 16 of 20
+ * produced a non-empty `<memories>` block — "hôm nay ăn gì" reliably returned Law 0.
+ * FTS does not save it either; 8 of the same 20 land an eligible atom through
+ * generic shared tokens.
+ *
+ * WHY 0.60. Top-1 atom cosine, 2026-09-04:
+ *   OFF-topic (n=20): min 0.434  p50 0.503  p90 0.533  max 0.563
+ *   rule-shaped ON  : 0.798 (gh auth switch), 0.729 (pull main), 0.710 (merge
+ *                     conflict), 0.708 (npm publish), 0.669 (per-project lock)
+ * 0.58 already blocks all 20, but leaves only 0.017 of headroom over the observed
+ * off-topic maximum; 0.60 keeps every rule-shaped query above and buys 0.037. With
+ * a 20-query control the margin is worth more than the two borderline atoms.
+ *
+ * PROVISIONAL — this constant is calibrated on vectors embedded WITHOUT the
+ * EmbeddingGemma prompt prefix (embedding_service.js embeds raw text on both
+ * sides). Measured A/B on the same control set, the prefix widens the gap between
+ * on-topic and off-topic similarity from 0.009 to 0.071 and moves the whole
+ * distribution DOWN: the fact-side floor drops 0.55 -> ~0.41. This atom floor must
+ * be re-derived the same way once the prefix lands; keeping 0.60 would drop
+ * everything. See bench/RESULT_RECALL_PRECISION.md.
+ *
+ * WHAT IT DELIBERATELY DROPS: queries about project EVENTS stop pulling atoms.
+ * That is the intent, not a loss — events are answered by `<recalled-facts>` from
+ * distilled scene bodies. Atoms are for standing rules and durable facts.
+ *
+ * Applies only when the turn produced a query vector. On a cold daemon the gate is
+ * skipped rather than guessed, so recall degrades to today's behaviour instead of
+ * silently returning nothing; the same reason `buildFactRecallSemantic` falls back.
+ */
+const ATOM_FLOOR = 0.6;
 
 /**
  * Open an FTS MemoryStore READ-ONLY for recall, returning null (never throwing)
@@ -183,8 +220,12 @@ function buildFactRecall(projectHash, query, maxChars = FACT_RECALL_MAX_CHARS) {
   const facts = [];
   if (projectHash) facts.push(...readSceneFacts(projectDir(projectHash)));
   facts.push(...readSceneFacts(globalDir()));
-  if (!facts.length) return "";
-  return rankSceneFacts(facts, query, { limit: FACT_RECALL_LIMIT, maxChars }).block;
+  if (!facts.length) return { block: "", ids: [] };
+  const ranked = rankSceneFacts(facts, query, { limit: FACT_RECALL_LIMIT, maxChars });
+  // Ids on this path too, so the feedback log describes the sync fallback as
+  // completely as the semantic path. A turn that fell back is exactly the turn
+  // worth being able to find later.
+  return { block: ranked.block, ids: (ranked.facts || []).map(factLogId) };
 }
 
 // Persisted cache of fact-bullet vectors, keyed by content hash so re-embedding
@@ -201,24 +242,114 @@ function saveFactVecCache(cache) {
 function factHash(text) { return crypto.createHash("sha1").update(String(text)).digest("hex"); }
 
 /**
+ * Log id for an injected scene fact: `fact:<scene>:<first 12 of the text hash>`.
+ *
+ * Content-addressed on purpose. A scene body is rewritten wholesale by every
+ * consolidation, so any positional id (line number, index) would rename every
+ * fact on each rewrite and make the feedback log uncomparable across a
+ * consolidation. Hashing the text means an unchanged fact keeps its id and an
+ * edited one becomes a new fact, which is what it is. The scene prefix keeps ids
+ * readable in the log and lets a reader attribute usage per scene without a join.
+ */
+function factLogId(f) {
+  return `fact:${(f && f.sceneName) || "?"}:${factHash((f && f.text) || "").slice(0, 12)}`;
+}
+
+/**
  * Embed each fact bullet (cached by content hash). Returns vectors parallel to
  * `facts`; a null slot means that bullet could not be embedded (ranker skips it).
  * Only cache misses hit the daemon, in parallel.
  */
+/**
+ * Per-turn ceiling on cache-miss embeds, and how many run at once.
+ *
+ * WHY BOUNDED. This used to be `Promise.all(misses.map(...))` — every miss fired
+ * at the daemon simultaneously. The daemon serialises requests, so on a store
+ * this process has not warmed, the Nth request waits N x ~120ms before it is even
+ * started: at 90 misses the tail is ~10s and times out no matter how generous the
+ * per-call budget is. Only SUCCESSES are cached, so the losers are retried from
+ * scratch next turn and lose again. That is not a hypothetical — store-wide the
+ * fact-vector cache covers 1358 of 3415 scene facts (39.8%), and the missing share
+ * is not random, it is whatever kept losing the race.
+ *
+ * A bounded slice converges instead of thrashing: each attempt gets the daemon
+ * mostly to itself and succeeds, and the cache fills over a few turns. Slightly
+ * fewer facts rank semantically on the first turns in a new project — but they
+ * rank on fewer facts today anyway, and today they do not converge.
+ */
+const FACT_EMBED_MAX_PER_TURN = 12;
+const FACT_EMBED_CONCURRENCY = 3;
+
+/**
+ * Wall-clock ceiling on the whole fact-embed stage, and a shorter per-call budget
+ * than the query embed gets.
+ *
+ * WHY BOTH. The query timeout went 500 -> 2500ms to stop a slow embed silently
+ * costing the turn its semantic ranking. But the fact stage runs 12 misses at
+ * concurrency 3 — four sequential waves — so against a daemon that is connected
+ * but never answers (the `stuck` reason, which only resolves at the full timeout)
+ * the stage alone would cost 4 x 2500 = 10s, plus 2.5s for the query embed. The
+ * UserPromptSubmit hook budget is 8s (hooks/hooks.json), and neither recallAsync
+ * nor the hook carries an overall deadline, so the hook would be KILLED and the
+ * turn would get no memory context at all — strictly worse than the keyword
+ * degradation the timeout raise was meant to remove.
+ *
+ * The two budgets are not the same question. The query embed is the critical
+ * path: without it the turn falls back or fails closed, so it is worth waiting
+ * for. A fact embed is a cache fill — a miss just means that bullet does not rank
+ * semantically THIS turn, and the cache converges over the next few. So facts get
+ * a tighter per-call budget and the stage gets a hard deadline.
+ *
+ * Worst case now: 2500 (query) + 1500 (stage deadline) + 800 (one in-flight call
+ * that started just under the deadline) = ~4.8s, inside the 8s hook budget with
+ * room for the FTS, persona and scene-nav work around it.
+ */
+const FACT_EMBED_TIMEOUT_MS = 800;
+const FACT_EMBED_STAGE_BUDGET_MS = 1500;
+
+/**
+ * Map with bounded concurrency, preserving input order.
+ *
+ * `deadline` is an absolute timestamp: a worker stops CLAIMING new items once it
+ * is past, so the stage is bounded by the deadline plus at most one in-flight
+ * call. Unclaimed slots stay undefined, which every caller here already treats as
+ * "not embedded" — the same state as a failed embed.
+ */
+async function mapBounded(items, limit, fn, deadline = Infinity) {
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      if (Date.now() >= deadline) return;
+      out[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
 async function embedFactsCached(facts, embedFn) {
   const cache = loadFactVecCache();
   const misses = [];
   for (const f of facts) {
     const h = factHash(f.text);
-    if (!cache[h]) misses.push({ h, text: f.text });
+    if (!cache[h] && !misses.some((m) => m.h === h)) misses.push({ h, text: f.text });
   }
   if (misses.length) {
-    const results = await Promise.all(misses.map(async (m) => {
-      try { const r = await embedFn(m.text); return { h: m.h, vec: r && r.vector ? Array.from(r.vector) : null }; }
-      catch { return { h: m.h, vec: null }; }
-    }));
+    const batch = misses.slice(0, FACT_EMBED_MAX_PER_TURN);
+    const deadline = Date.now() + FACT_EMBED_STAGE_BUDGET_MS;
+    const results = await mapBounded(batch, FACT_EMBED_CONCURRENCY, async (m) => {
+      try {
+        const r = await embedFn(m.text, { timeoutMs: FACT_EMBED_TIMEOUT_MS });
+        return { h: m.h, vec: r && r.vector ? Array.from(r.vector) : null };
+      } catch { return { h: m.h, vec: null }; }
+    }, deadline);
     let changed = false;
-    for (const r of results) if (r.vec) { cache[r.h] = r.vec; changed = true; }
+    // `results` can hold undefined for slots the deadline cut — the same "not
+    // embedded" state as a failed call, so the guard covers both.
+    for (const r of results) if (r && r.vec) { cache[r.h] = r.vec; changed = true; }
     if (changed) saveFactVecCache(cache);
   }
   return facts.map((f) => cache[factHash(f.text)] || null);
@@ -226,23 +357,34 @@ async function embedFactsCached(facts, embedFn) {
 
 /**
  * Semantic `<recalled-facts>`: rank distilled facts by embedding cosine against
- * the (already-computed) query vector. Falls back to the keyword builder when no
- * query vector, no facts, or any embedding error — recall must never break.
+ * the (already-computed) query vector.
+ *
+ * NO KEYWORD FALLBACK. It used to fall back to `buildFactRecall` whenever the
+ * query vector was missing or embedding threw, on the principle that recall must
+ * never break. But the keyword ranker has no floor — it only hard-drops facts
+ * sharing zero tokens with the query — so every fallback turn silently gave up
+ * the negative-control property. Measured on 20 off-topic controls: the semantic
+ * path leaked on 0, the fallback path on 8. Returning nothing IS the working
+ * behaviour for a turn that cannot rank by meaning; returning the
+ * least-unrelated facts is the failure this floor was added to remove.
  */
 async function buildFactRecallSemantic(projectHash, query, queryVec, embedFn, maxChars = FACT_RECALL_MAX_CHARS) {
-  if (!queryVec) return buildFactRecall(projectHash, query, maxChars);
+  if (!queryVec) return { block: "", ids: [] };
   const facts = [];
   if (projectHash) facts.push(...readSceneFacts(projectDir(projectHash)));
   facts.push(...readSceneFacts(globalDir()));
-  if (!facts.length) return "";
+  if (!facts.length) return { block: "", ids: [] };
   try {
     const vecs = await embedFactsCached(facts, embedFn);
     // An empty block here is a CORRECT answer for an off-topic query (nothing
     // cleared the floor) — do NOT fall back to keyword, or the negative-control
     // property is lost. Fall back only on a real embedding failure (catch below).
-    return rankSceneFactsSemantic(facts, queryVec, vecs, { limit: FACT_RECALL_LIMIT, maxChars }).block;
+    const ranked = rankSceneFactsSemantic(facts, queryVec, vecs, { limit: FACT_RECALL_LIMIT, maxChars });
+    return { block: ranked.block, ids: (ranked.facts || []).map(factLogId) };
   } catch {
-    return buildFactRecall(projectHash, query, maxChars);
+    // Same reasoning as the missing-vector case above: an embedding failure means
+    // we cannot rank by meaning, not that keyword ranking has become safe.
+    return { block: "", ids: [] };
   }
 }
 
@@ -380,6 +522,30 @@ function dropPersonaAtoms(memories) {
  * episodic (echoes), keeping only distilled standing atoms — `instruction` and
  * any future `semantic` type. Defensive on shape: an atom with no `type` is kept.
  */
+/**
+ * Drop atoms whose cosine to the query is below `floor`. Pure: the caller owns
+ * both the similarity map and the decision to apply it at all.
+ *
+ * An atom with NO entry in `simById` is KEPT. That case means the vector store
+ * could not score it (degraded vec0, a record embedded after the last sync, a
+ * store with no vectors.db at all), and a missing measurement is not evidence of
+ * irrelevance. Treating unknown as zero would let one degraded store silently
+ * empty the block — the same failure the read-path degradation gate in
+ * openMemoryStoreRO exists to prevent.
+ *
+ * @param {Array} memories
+ * @param {Map<string, number>} simById
+ * @param {number} floor
+ */
+function applyAtomFloor(memories, simById, floor = ATOM_FLOOR) {
+  if (!Array.isArray(memories) || !simById || !simById.size) return memories || [];
+  return memories.filter((m) => {
+    if (!m) return true;
+    const sim = simById.get(memoryId(m));
+    return typeof sim !== "number" || Number.isNaN(sim) ? true : sim >= floor;
+  });
+}
+
 function keepDistilledAtoms(memories) {
   // Same predicate the WRITE side uses to decide what to embed (memory_store's
   // isVectorEligible) — imported, not re-spelled, so the read filter and the
@@ -446,16 +612,28 @@ function renderMemories(memories, maxChars) {
  * copy-pasted the log schema was defined twice and free to drift. One definition
  * of what a log row contains, one definition of the wrapper.
  */
-function finishRecall(parts, rendered, { source, query }) {
+function finishRecall(parts, rendered, { source, query, factIds = [] }) {
   if (rendered.text) parts.push(rendered.text);
   const context = parts.length ? "<memory-context>\n" + parts.join("\n") + "\n</memory-context>" : "";
   // Logged on EVERY path, including the empty one: a recall that returned
   // nothing is the most interesting row in the file.
+  //
+  // `injectedFactIds` exists because `injectedIds` stopped describing the turn.
+  // It records ATOMS, and atoms are no longer most of what a turn injects: after
+  // the relevance floor and the project-scoped hook, 55 of the last 60 logged
+  // recalls carried zero atom ids while each was still injecting ~3 scene facts.
+  // `tmem feedback` and doctor's hot/cold line read this file, so without the
+  // facts they were reporting near-silence about a surface that never stopped
+  // working. Kept as a SEPARATE field rather than merged into injectedIds: the
+  // two are different populations with different lifecycles (an atom id is stable
+  // for the record's life, a fact id changes when consolidation rewrites the
+  // text), and merging them would make every historical row ambiguous.
   appendRecallLog({
     at: new Date().toISOString(),
     source,
     query,
     injectedIds: rendered.injectedIds,
+    injectedFactIds: factIds,
     droppedIds: rendered.droppedIds,
     chars: context.length,
   });
@@ -478,30 +656,25 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
 
   // Distilled scene facts (own budget) — the primary per-turn memory. Surfaces
   // what consolidation distilled into scenes instead of raw episodic echoes.
-  const factBlock = buildFactRecall(projectHash, query);
-  if (factBlock) parts.push(factBlock);
+  const factRecall = buildFactRecall(projectHash, query);
+  const factIds = factRecall.ids;
+  if (factRecall.block) parts.push(factRecall.block);
 
+  // SAME scope rule as recallAsync. This path hardcoded global-then-project, so
+  // the property test/recall_scope.test.js pins — "the automatic hook reads the
+  // project store only" — held on the async path and silently did not hold here.
+  // on_user_prompt.js falls back to recall() whenever recallAsync throws, so a
+  // hook turn taking that route still injected unfloored global atoms: the exact
+  // double-billing (a standing rule delivered once as <persona> and again as a
+  // search hit) that scoping the hook exists to stop.
   let memories = [];
-  const gDir = globalDir();
-  const gDb = path.join(gDir, "index.db");
-  if (fs.existsSync(gDb)) {
-    const store = openMemoryStoreRO(gDb);
-    if (store) {
-      memories.push(...store.search(query, topK));
-      store.close();
-    }
-  }
-
-  if (projectHash) {
-    const pDir = projectDir(projectHash);
-    const pDb = path.join(pDir, "index.db");
-    if (fs.existsSync(pDb)) {
-      const store = openMemoryStoreRO(pDb);
-      if (store) {
-        memories.push(...store.search(query, topK));
-        store.close();
-      }
-    }
+  for (const dir of recallDirs(projectHash, source)) {
+    const db = path.join(dir, "index.db");
+    if (!fs.existsSync(db)) continue;
+    const store = openMemoryStoreRO(db);
+    if (!store) continue;
+    memories.push(...store.search(query, topK));
+    store.close();
   }
 
   // Drop persona (session clock) AND raw episodic (echoes); the distilled facts
@@ -509,7 +682,7 @@ function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 
   // (instruction/semantic). See keepDistilledAtoms.
   memories = dedupeAndRank(keepDistilledAtoms(memories), topK);
 
-  return finishRecall(parts, renderMemories(memories, maxChars), { source, query });
+  return finishRecall(parts, renderMemories(memories, maxChars), { source, query, factIds });
 }
 
 /**
@@ -612,6 +785,38 @@ function getPersona(query = "", maxChars = PERSONA_TIER1_MAX_CHARS, projectHash 
   return legacyProjection(persona);
 }
 
+/**
+ * Which stores an atom lookup reads, given who is asking.
+ *
+ * THE AUTOMATIC HOOK IS PROJECT-SCOPED. It fires on every prompt whether or not
+ * anyone wanted memory, so what it injects is a standing tax and has to earn its
+ * place. The global store cannot: it holds `instruction` (standing rules) and
+ * `persona` atoms, and the rules already reach every turn through the tier-1
+ * `<persona>` block, which reads persona.md and fired on 60 of 60 replayed real
+ * prompts. Retrieving them again as atoms is the same content billed twice.
+ *
+ * Measured by replaying 60 real prompts (2026-08-03..09-03) against an unchanged
+ * store: the global store contributed 159 of 162 injected atoms before the
+ * relevance floor and 5 of 16 after it, while global holds ZERO scene facts, so
+ * `<recalled-facts>` was already project-only by construction. Dropping global
+ * from the hook removes about 5 injections per 60 turns of content that the
+ * persona tier delivers anyway.
+ *
+ * A DELIBERATE LOOKUP KEEPS BOTH. `tmem recall` / the visualiser are someone
+ * asking a question on purpose, and cross-store answers are the point there —
+ * the same reason `tmem search --all` exists. Only the unattended path narrows.
+ *
+ * With no project (projectHash empty) there is nothing to narrow to, so global
+ * is still read: scoping to a project that does not exist would mean scoping to
+ * nothing.
+ */
+function recallDirs(projectHash, source) {
+  if (source === RECALL_SOURCE.HOOK && projectHash) return [projectDir(projectHash)];
+  const dirs = [globalDir()];
+  if (projectHash) dirs.push(projectDir(projectHash));
+  return dirs;
+}
+
 function dedupeAndRank(memories, limit) {
   const seen = new Set();
   const unique = [];
@@ -628,7 +833,7 @@ function dedupeAndRank(memories, limit) {
 /* `truncate()` moved to scene_nav.js: the scene-nav summary cut was its only
  * caller, and the renderer that needs it now lives there. */
 
-async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 5, source = RECALL_SOURCE.HOOK) {
+async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 5, source = RECALL_SOURCE.HOOK, opts = {}) {
   const maxChars = maxTokens * CHARS_PER_TOKEN;
   const parts = [];
 
@@ -646,8 +851,7 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   // be ranked by MEANING (cosine) instead of keyword overlap. Pushed into `parts`
   // there, keeping the persona/sceneNav/facts/memories order.
 
-  const dirs = [globalDir()];
-  if (projectHash) dirs.push(projectDir(projectHash));
+  const dirs = recallDirs(projectHash, source);
 
   let ftsResults = [];
   for (const dir of dirs) {
@@ -662,7 +866,16 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   let vecResults = [];
   let embedReason = null;
   let queryVec = null;
-  const { embedViaDaemonStatus } = require("./embed_client.js");
+  // record_id -> cosine(query, atom). Filled from the KNN distance where the
+  // vector arm already scored a record, and from stored vectors for FTS-only
+  // candidates. An id ABSENT from this map means "similarity unknown", which the
+  // floor treats as keep — never as zero.
+  const simById = new Map();
+  // Injectable for the same reason consolidate_runner injects its spawn: the
+  // interesting behaviour is what happens AROUND the embed, and a test that needs
+  // a live daemon cannot reach the semantic path at all — which is exactly how the
+  // missing factIds above survived a test that asserted on it.
+  const embedViaDaemonStatus = opts.embedFn || require("./embed_client.js").embedViaDaemonStatus;
   try {
     const status = await embedViaDaemonStatus(query);
     queryVec = status.vector;
@@ -686,6 +899,19 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
                 ftsStore.close();
               }
             }
+            // l1_vec is created with distance_metric=cosine, so the distance the
+            // KNN returns IS 1 - cosine. Recording it here means the floor never
+            // re-embeds anything the search already scored.
+            for (const hit of hits) simById.set(hit.record_id, 1 - hit.distance);
+            // FTS-only candidates carry a bm25 rank, not a distance. Their vectors
+            // are already stored (eligible-record coverage is 100%), so read them
+            // back rather than paying an embed per candidate inside the hook budget.
+            const ungraded = ftsResults.map(memoryId).filter((id) => id && !simById.has(id));
+            if (ungraded.length) {
+              for (const [id, vec] of vecStore.getVecs(ungraded)) {
+                simById.set(id, cosineSim(queryVec, vec));
+              }
+            }
           }
           vecStore.close();
         }
@@ -697,8 +923,27 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   // when the query embedded this turn (paraphrase-robust: 48% → ~95% surfaced on
   // reworded queries), else keyword fallback. Position matches the sync path.
   let factBlock = "";
-  try { factBlock = await buildFactRecallSemantic(projectHash, query, queryVec, embedViaDaemonStatus); } catch {}
-  if (!factBlock && !queryVec) factBlock = buildFactRecall(projectHash, query);
+  let factIds = [];
+  try {
+    const fr = await buildFactRecallSemantic(projectHash, query, queryVec, embedViaDaemonStatus);
+    factBlock = fr.block; factIds = fr.ids;
+  } catch {}
+  // FAIL CLOSED WITHOUT A QUERY VECTOR. The keyword ranker has no floor — it only
+  // hard-drops facts sharing zero tokens — so on any turn that could not embed its
+  // query, the negative-control property is simply gone: measured, an off-topic
+  // control set leaked facts on 8 of 20 queries through the fallback while the
+  // semantic path leaked on 0.
+  //
+  // That is a correctness hole, not a latency symptom. Raising the embed timeout
+  // makes the fallback rarer but cannot make it safe, and the rate moves with
+  // whatever else is using the daemon — so B1 was reproducible only as long as the
+  // machine was quiet. Ranking by meaning is what earns this block the right to
+  // speak; with no measurement there is no claim to make, and injecting the
+  // least-unrelated facts is exactly the failure Wave 1 removed.
+  //
+  // The turn still gets <persona> and <scene-navigation>, and SessionStart prewarms
+  // the daemon, so this should be rare rather than routine. If it stops being rare,
+  // that is a daemon problem to fix at the daemon, not a reason to lower the bar.
   if (factBlock) parts.push(factBlock);
 
   // Drop persona (session clock) AND raw episodic (echoes) from BOTH retrieval
@@ -706,6 +951,15 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
   // See keepDistilledAtoms.
   ftsResults = keepDistilledAtoms(ftsResults);
   vecResults = keepDistilledAtoms(vecResults);
+
+  // Relevance floor, BEFORE the merge — rrfMerge scores by rank position only, so
+  // an off-topic atom that is merely the least-unrelated candidate would otherwise
+  // arrive at rank 1 and be rendered with full confidence. Gated on queryVec: with
+  // a cold daemon there is nothing to measure and the turn keeps today's behaviour.
+  if (queryVec) {
+    ftsResults = applyAtomFloor(ftsResults, simById);
+    vecResults = applyAtomFloor(vecResults, simById);
+  }
 
   // Surface (never silently swallow) the FTS-only degradation. When the embed
   // daemon didn't return a vector but a vector store exists, this recall ran
@@ -733,7 +987,12 @@ async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKE
     memories = dedupeAndRank([...ftsResults, ...vecResults], topK);
   }
 
-  return finishRecall(parts, renderMemories(memories, maxChars), { source, query });
+  // factIds, not just injectedIds. Omitting it here is how `injectedFactIds`
+  // shipped as a field that was always []: this is the path the UserPromptSubmit
+  // hook takes, so every real turn logged an empty array while <recalled-facts>
+  // was delivering facts. Measured on the real store: 401 rows carried the field,
+  // 100% empty, and sync recall() logged 4 for the same query at the same moment.
+  return finishRecall(parts, renderMemories(memories, maxChars), { source, query, factIds });
 }
 
 // ── CLI ──
@@ -781,4 +1040,6 @@ if (require.main === module) main();
 module.exports = {
   recall, recallAsync, buildSceneNav, renderMemories, MEMORY_SEARCH_HINT, projectScopeFor,
   RECALL_SOURCE, RECALL_LOG_MAX_BYTES, RECALL_LOG_FILE, readSceneFacts, buildFactRecall, keepDistilledAtoms,
+  recallDirs,
+  applyAtomFloor, ATOM_FLOOR,
 };

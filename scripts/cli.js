@@ -1054,7 +1054,8 @@ function cmdFeedback(args) {
 
   if (asJson) {
     console.log(JSON.stringify({
-      turns: summary.turns, injections: summary.injections, uniqueAtoms: summary.uniqueAtoms,
+      turns: summary.turns, injections: summary.injections, factInjections: summary.factInjections,
+      uniqueAtoms: summary.uniqueAtoms, uniqueFacts: summary.uniqueFacts,
       emptyTurns: summary.emptyTurns, coldAtoms: cls.cold.length, hotAtoms: cls.hot.length, coldPct: cls.coldPct,
       hot: summary.perAtom.slice(0, 10),
     }, null, 2));
@@ -1063,14 +1064,22 @@ function cmdFeedback(args) {
 
   console.log("Recall feedback (which memories actually get recalled?):");
   console.log(`  ${summary.turns} logged turn(s) · ${summary.injections} injection(s) · ${summary.emptyTurns} turn(s) recalled nothing`);
-  console.log(`  distinct atoms ever injected: ${summary.uniqueAtoms}`);
+  console.log(`  distinct injected: ${summary.uniqueAtoms} atom(s) · ${summary.uniqueFacts} scene fact(s)`);
   console.log(`  store: ${cls.hot.length} hot (recalled ≥1) · ${cls.cold.length} cold (never recalled, ${cls.coldPct}%) — prune candidates`);
   if (summary.perAtom.length) {
-    console.log("\n  most-recalled atoms:");
+    console.log("\n  most-recalled:");
+    // `perAtom` carries BOTH populations. Resolving every id against the store's
+    // atom contents printed an empty line for each `fact:` id, and facts dominate
+    // injections — so the list rendered as blank rows exactly when it mattered
+    // most. A fact's id already names its scene; that is what a reader can act on
+    // (`tmem scene <name>`), so show it rather than a lookup that cannot succeed.
+    const { isFactId, factScene } = req("recall_feedback.js");
     const idToContent = new Map(atoms.map((a) => [a.id, a.content]));
     for (const a of summary.perAtom.slice(0, 8)) {
-      const c = (idToContent.get(a.id) || "").slice(0, 70);
-      console.log(`    ${String(a.count).padStart(3)}×  ${c}`);
+      const label = isFactId(a.id)
+        ? `fact · ${factScene(a.id)}`
+        : (idToContent.get(a.id) || "(atom no longer in the store)").slice(0, 70);
+      console.log(`    ${String(a.count).padStart(3)}×  ${label}`);
     }
   }
 }
@@ -1971,7 +1980,7 @@ async function cmdDoctor(rest) {
     if (summary.turns > 0) {
       const cls = classifyStoreAtoms(allStoreAtoms(), summary);
       console.log("\nRecall feedback (do stored memories ever get recalled?):");
-      console.log(`  ${summary.turns} logged turn(s) · ${summary.injections} injection(s) · ${summary.emptyTurns} recalled nothing`);
+      console.log(`  ${summary.turns} logged turn(s) · ${summary.injections} atom + ${summary.factInjections} fact injection(s) · ${summary.emptyTurns} recalled nothing`);
       console.log(`  ${cls.hot.length} hot atom(s) recalled ≥1 · ${cls.cold.length} cold (never recalled, ${cls.coldPct}%) — run \`tmem feedback\` for detail`);
     }
   } catch { /* never break doctor */ }
