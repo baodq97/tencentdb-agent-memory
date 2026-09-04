@@ -53,9 +53,9 @@ const DEFAULT_SCENE_MAX_TOKENS = 200;
 const MAX_CONTENT_LENGTH = 500;
 const DEFAULT_NOISE_GATE = true;
 
-function memoryBaseDir() {
-  return path.join(os.homedir(), ".memory-tencentdb");
-}
+// Delegated, not re-derived: this module already requires memory_writer, and a
+// second copy of the root is how the override came to be missing in seven places.
+const { memoryBaseDir } = require("./memory_writer.js");
 
 function captureStatePath() {
   return path.join(memoryBaseDir(), "capture_state.json");

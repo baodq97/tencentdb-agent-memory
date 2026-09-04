@@ -15,7 +15,28 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 
+/**
+ * The store root. THE definition — every other module delegates here.
+ *
+ * WHY THE ENV OVERRIDE EXISTS. The root was hardcoded to the home directory in
+ * seven independent places, so there was no way to point the pipeline at a copy
+ * of the store. That made this project's own doctrine — "pilot on a sandbox:
+ * clone the store, re-run ingest against it, check recall there before trusting
+ * the change" — unimplementable, and it meant any experiment on consolidation
+ * wrote to the user's real memory. A read-only `--root` flag already existed for
+ * `tmem view` (cli.js), which is the same need answered for one command only.
+ *
+ * `MEMORY_TENCENTDB_HOME` is read fresh on every call, not cached at module
+ * load: a test or a spike sets it after requiring the module, and a cached value
+ * would silently ignore it and write to the real store — the exact failure this
+ * is here to prevent. The cost is one env read per path construction.
+ *
+ * Empty or whitespace-only is treated as unset. An empty string would otherwise
+ * resolve to the process cwd and scatter a store into whatever repo is open.
+ */
 function memoryBaseDir() {
+  const override = String(process.env.MEMORY_TENCENTDB_HOME || "").trim();
+  if (override) return path.resolve(override);
   return path.join(os.homedir(), ".memory-tencentdb");
 }
 

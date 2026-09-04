@@ -69,7 +69,7 @@ function projectHashForCwd(cwd) {
 function isRecallDisabled(projectHash) {
   if (!projectHash) return false;
   try {
-    const statePath = path.join(os.homedir(), ".memory-tencentdb", "state.json");
+    const statePath = path.join(require("./memory_writer.js").memoryBaseDir(), "state.json");
     const state = JSON.parse(fs.readFileSync(statePath, "utf-8"));
     const p = state.projects && state.projects[projectHash];
     return !!(p && p.recall === false);

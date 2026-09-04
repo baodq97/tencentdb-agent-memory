@@ -22,7 +22,7 @@ function getDirs() {
 
 // Per-project consolidation lock — must match memory_pipeline.js lockPath().
 function projectLockPath(pHash) {
-  return path.join(os.homedir(), ".memory-tencentdb", "projects", pHash || "global", "consolidation.lock");
+  return path.join(req("memory_writer.js").memoryBaseDir(), "projects", pHash || "global", "consolidation.lock");
 }
 
 // Resolve a `--scope global|project` flag to its store dir. One definition shared
@@ -1841,7 +1841,7 @@ async function cmdDoctor(rest) {
   let buildPlan, renderPlanText, snapshot;
   try {
     ({ buildPlan, renderPlanText } = req("doctor.js"));
-    ({ snapshot } = loadSnapshot(path.join(os.homedir(), ".memory-tencentdb")));
+    ({ snapshot } = loadSnapshot(req("memory_writer.js").memoryBaseDir()));
   } catch (e) {
     console.error(`tmem doctor: ${e.message}`);
     process.exit(1);
@@ -1999,8 +1999,7 @@ async function applyDoctorFixes(plan, { apply = false } = {}) {
 }
 
 function cmdViewSnapshot(opts) {
-  const os_ = require("node:os");
-  const rootDir = opts.root ? path.resolve(opts.root) : path.join(os_.homedir(), ".memory-tencentdb");
+  const rootDir = opts.root ? path.resolve(opts.root) : req("memory_writer.js").memoryBaseDir();
 
   const t0 = process.hrtime.bigint();
   let root, snapshot;

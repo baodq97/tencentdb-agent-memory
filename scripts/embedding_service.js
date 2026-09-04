@@ -26,7 +26,14 @@ function sanitizeAndNormalize(vec) {
 class EmbeddingService {
   constructor(opts = {}) {
     this.modelPath = opts.modelPath || DEFAULT_MODEL;
-    this.modelCacheDir = opts.modelCacheDir || path.join(os.homedir(), ".memory-tencentdb", "models");
+    // Read the env var directly rather than importing memory_writer. This module is
+    // loaded by the resident embed daemon, whose whole point is a small, dependency-free
+    // start; pulling in the writer (and through it memory_store + sqlite) to compute one
+    // path would spend the budget the daemon exists to protect. Kept in sync by
+    // test/store_root.test.js, which asserts both resolvers agree.
+    const memRoot = String(process.env.MEMORY_TENCENTDB_HOME || "").trim();
+    this.modelCacheDir = opts.modelCacheDir
+      || path.join(memRoot ? path.resolve(memRoot) : path.join(os.homedir(), ".memory-tencentdb"), "models");
     this.state = "idle";
     this.initPromise = null;
     this.initError = null;

@@ -16,9 +16,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 
-function memoryBaseDir() {
-  return path.join(os.homedir(), ".memory-tencentdb");
-}
+const { memoryBaseDir } = require("./memory_writer.js");
 
 // ── per-project single-flight lock ──
 //
