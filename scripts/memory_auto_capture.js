@@ -48,14 +48,26 @@ const crypto = require("node:crypto");
 // which is the drift the import exists to prevent.
 const { DEFAULT_TIER0_MAX_TOKENS: DEFAULT_PERSONA_MAX_TOKENS } = require("./constants.js");
 
-const DEFAULT_CONSOLIDATE_EVERY = 20;
+// Counter arm of the trigger. Lowered from 20 on measurement, not taste: at 20
+// the median turn waited 1.86 h and 15.2% of turns were never consolidated at
+// all; at 10 that is 0.63 h and 10.5%. See consolidationTrigger below for the
+// full curve and the cost it buys.
+const DEFAULT_CONSOLIDATE_EVERY = 10;
+/** Session arm: below 3 new turns a session has produced too little to distil. */
+const DEFAULT_CONSOLIDATE_ON_SESSION_END = 3;
+/** The only model whose consolidation output has been measured end to end. */
+const DEFAULT_CONSOLIDATE_MODEL = "sonnet";
+/** Measured 7.2 runs/day on real traffic; 12 leaves headroom and bounds a runaway. */
+const DEFAULT_CONSOLIDATE_MAX_RUNS_PER_DAY = 12;
+/** ~3x the measured $0.4538 of one run, so a pathological run is capped, not free. */
+const DEFAULT_CONSOLIDATE_BUDGET_USD = 1.5;
 const DEFAULT_SCENE_MAX_TOKENS = 200;
 const MAX_CONTENT_LENGTH = 500;
 const DEFAULT_NOISE_GATE = true;
 
-function memoryBaseDir() {
-  return path.join(os.homedir(), ".memory-tencentdb");
-}
+// Delegated, not re-derived: this module already requires memory_writer, and a
+// second copy of the root is how the override came to be missing in seven places.
+const { memoryBaseDir } = require("./memory_writer.js");
 
 function captureStatePath() {
   return path.join(memoryBaseDir(), "capture_state.json");
@@ -115,6 +127,63 @@ function advanceWarmup(state, everyN) {
     ? state.warmup_threshold : 1;
   const next = wt * 2;
   state.warmup_threshold = next >= everyN ? 0 : next;
+}
+
+/**
+ * Should this project consolidate now, and which arm decided?
+ *
+ * Pure: slot and config in, a label or null out. No I/O, so the policy can be
+ * tested exhaustively without a store — which matters because this predicate is
+ * the thing that decides how stale the whole memory system is allowed to get.
+ *
+ * TWO ARMS, AND THE `OR` IS THE POINT. Measured over 14 days of real traffic
+ * (838 injected turns, 17 projects), a counter alone cannot serve short-lived
+ * projects: the median session is 4 turns, so a project whose sessions are short
+ * never accumulates enough to fire at ANY threshold. 33.5% of turns were never
+ * consolidated under a counter of 40, and still 3.8% under a counter of 5 — at
+ * three times the cost. A session-boundary arm alone has the opposite hole: a
+ * long session accrues knowledge for hours with nothing distilled until it ends.
+ *
+ * Simulated on that same turn stream, `(session end AND delta>=3) OR delta>=10`
+ * gives p50 lag 0.58 h and p90 4.21 h with 1.9% never served, against 4.37 h /
+ * 105 h / 33.5% for the counter-only policy that shipped before it. The
+ * simulation reproduces the independently measured lag of the old policy
+ * (4.37 h simulated vs 4.15 h from the changelogs), which is what makes the rest
+ * of the curve usable rather than a guess.
+ *
+ * The session arm is checked FIRST so its label wins when both fire: it is the
+ * more specific fact about why this run happened, and the runs log is the only
+ * evidence available afterwards for whether the policy is behaving.
+ *
+ * `warmupThreshold` still gates the counter arm. It exists so a brand-new store
+ * consolidates almost immediately instead of sitting blind until turn 10, and
+ * nothing here supersedes that.
+ *
+ * The predicate resolves its OWN config. Both call sites used to assemble the
+ * same `{every, sessionEndMin}` object from the same two getters before calling
+ * in, which meant the predicate owned the rule but not its inputs — a new config
+ * field would have had to be threaded through two places by hand. `cfg` remains
+ * an optional override so a test can sweep the policy without touching config.json.
+ *
+ * @param {{turn_count?:number,last_consolidation_turn?:number,warmup_threshold?:number}} slot
+ * @param {{sessionEnding?:boolean}} [opts]
+ * @param {{every?:number,sessionEndMin?:number}} [cfg] test override
+ * @returns {"session-end"|"counter"|null}
+ */
+function consolidationTrigger(slot, opts, cfg) {
+  const s = slot || {};
+  const delta = (s.turn_count || 0) - (s.last_consolidation_turn || 0);
+  if (delta <= 0) return null;          // nothing new; never spend a run on it
+
+  // The getters already fall back to the defaults, so there is no second copy of
+  // the defaulting rule here.
+  const c = cfg || {};
+  const sessionEndMin = c.sessionEndMin != null ? c.sessionEndMin : getConsolidateOnSessionEnd();
+  const every = c.every != null ? c.every : getConsolidateEvery();
+
+  if (opts && opts.sessionEnding && delta >= sessionEndMin) return "session-end";
+  if (delta >= warmupThreshold(s, every)) return "counter";
+  return null;
 }
 
 // ── per-project counter slots (GAP-5 fix) ──
@@ -210,6 +279,121 @@ function getSceneMaxTokens() {
   const stored = parseInt(loadConfig().scene_max_tokens, 10);
   if (Number.isInteger(stored) && stored >= 0) return stored;
   return DEFAULT_SCENE_MAX_TOKENS;
+}
+
+/* ── headless auto-consolidation settings ──────────────────────────────────
+ *
+ * One generic reader instead of five near-identical ones. The existing explicit
+ * accessors above are left alone: rewriting working config paths is not what
+ * this change is for, and a half-converted set of readers would be worse than
+ * either convention on its own.
+ *
+ * Precedence matches every other setting here — env override > persisted
+ * config > default — so a run can be redirected for one invocation without
+ * mutating the user's config.json.
+ */
+function numSetting(envKey, cfgKey, dflt, min) {
+  const floor = min === undefined ? 1 : min;
+  const env = Number(process.env[envKey]);
+  if (Number.isFinite(env) && env >= floor) return env;
+  const stored = Number(loadConfig()[cfgKey]);
+  if (Number.isFinite(stored) && stored >= floor) return stored;
+  return dflt;
+}
+
+/**
+ * Is unattended headless consolidation allowed at all?
+ *
+ * Defaults ON. The measured failure it fixes is not marginal: 74% of sessions
+ * had no consolidation while they were running and 19% of turns still have none,
+ * so shipping it off by default would leave every existing store in the state
+ * the measurement condemned. It is still a switch, because it spends the user's
+ * model quota — roughly 4.3M tokens a day at the measured cadence, on the same
+ * rate-limit pool as their interactive work.
+ */
+function getAutoConsolidate() {
+  const env = parseBoolish(process.env.MEMORY_AUTO_CONSOLIDATE);
+  if (env !== null) return env;
+  const stored = parseBoolish(loadConfig().auto_consolidate);
+  if (stored !== null) return stored;
+  return true;
+}
+
+function setAutoConsolidate(v) {
+  const parsed = parseBoolish(v);
+  if (parsed === null) throw new Error("auto-consolidate must be on or off (also accepts 1/0, true/false, yes/no)");
+  const cfg = loadConfig();
+  cfg.auto_consolidate = parsed ? "on" : "off";
+  saveConfig(cfg);
+  return parsed;
+}
+
+/** Session arm of the trigger: minimum new turns for an ending session to be worth a run. */
+function getConsolidateOnSessionEnd() {
+  return numSetting("MEMORY_CONSOLIDATE_ON_SESSION_END", "consolidate_on_session_end",
+    DEFAULT_CONSOLIDATE_ON_SESSION_END, 1);
+}
+
+function setConsolidateOnSessionEnd(n) {
+  const v = parseInt(n, 10);
+  if (!Number.isInteger(v) || v < 1) throw new Error("consolidate-on-session-end must be a positive integer");
+  const cfg = loadConfig();
+  cfg.consolidate_on_session_end = v;
+  saveConfig(cfg);
+  return v;
+}
+
+/**
+ * Model for the headless run. Configurable but defaulted to the only one with a
+ * measured result: distilling atoms into scene facts is a judgement task, and a
+ * wrong fact written into memory is worse than no fact — it is then retrieved
+ * and believed. A cheaper model may well be fine; nobody has measured it.
+ */
+function getConsolidateModel() {
+  const env = String(process.env.MEMORY_CONSOLIDATE_MODEL || "").trim();
+  if (env) return env;
+  const stored = String(loadConfig().consolidate_model || "").trim();
+  if (stored) return stored;
+  return DEFAULT_CONSOLIDATE_MODEL;
+}
+
+function setConsolidateModel(v) {
+  const s = String(v == null ? "" : v).trim();
+  if (!s) throw new Error("consolidate-model must be a non-empty model name");
+  const cfg = loadConfig();
+  cfg.consolidate_model = s;
+  saveConfig(cfg);
+  return s;
+}
+
+/** Hard ceiling on unattended runs per day, machine-wide. */
+function getConsolidateMaxRunsPerDay() {
+  return numSetting("MEMORY_CONSOLIDATE_MAX_RUNS_PER_DAY", "consolidate_max_runs_per_day",
+    DEFAULT_CONSOLIDATE_MAX_RUNS_PER_DAY, 0);
+}
+
+function setConsolidateMaxRunsPerDay(n) {
+  const v = parseInt(n, 10);
+  if (!Number.isInteger(v) || v < 0) throw new Error("consolidate-max-runs-per-day must be a non-negative integer (0 disables auto runs)");
+  const cfg = loadConfig();
+  cfg.consolidate_max_runs_per_day = v;
+  saveConfig(cfg);
+  return v;
+}
+
+/** Per-run spend ceiling handed to `claude -p --max-budget-usd`. */
+function getConsolidateBudgetUsd() {
+  return numSetting("MEMORY_CONSOLIDATE_BUDGET_USD", "consolidate_budget_usd",
+    DEFAULT_CONSOLIDATE_BUDGET_USD, 0.01);
+}
+
+function setConsolidateBudgetUsd(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v < 0.01) throw new Error("consolidate-budget-usd must be a number >= 0.01");
+  const cfg = loadConfig();
+  cfg.consolidate_budget_usd = v;
+  saveConfig(cfg);
+  return v;
 }
 
 /** Persist the scene-navigation token budget. 0 = disable scene-nav; throws on negative/non-int. */
@@ -462,9 +646,11 @@ function autoCapture({ userText, assistantText, sessionId, cwd, sourceMessageIds
   const slot = ensureSlot(state, projectHash);
   slot.turn_count = (slot.turn_count || 0) + 1;
 
-  const threshold = warmupThreshold(slot, getConsolidateEvery());
+  // Routed through the ONE predicate rather than re-deriving the comparison here.
+  // The counter arm and the session-end arm have to agree about what "due" means,
+  // and two copies of the rule is how they would stop agreeing.
   const sinceLastConsolidation = slot.turn_count - (slot.last_consolidation_turn || 0);
-  const consolidationDue = sinceLastConsolidation >= threshold;
+  const consolidationDue = consolidationTrigger(slot, { sessionEnding: false }) === "counter";
 
   if (consolidationDue) slot.consolidation_due = true;
 
@@ -521,6 +707,20 @@ function markConsolidated(hash) {
   saveCaptureState(state);
 }
 
+/**
+ * The persisted counter slot for a project, read-only.
+ *
+ * Exported because the SessionEnd hook needs the REAL slot to evaluate the
+ * trigger. Without this it rebuilt one by inverting the arithmetic `status()`
+ * had already done and hardcoded `warmup_threshold: 0`, which silently threw
+ * away the store's actual warmup state — the exact drift the single-predicate
+ * comment above exists to prevent.
+ */
+function getSlot(hash) {
+  try { return readSlot(loadCaptureState(), hash !== undefined ? hash : activeHash()); }
+  catch { return { turn_count: 0, last_consolidation_turn: 0, consolidation_due: false }; }
+}
+
 function status(hash) {
   const state = loadCaptureState();
   const slot = readSlot(state, hash !== undefined ? hash : activeHash());
@@ -563,4 +763,7 @@ Commands:
 
 if (require.main === module) main();
 
-module.exports = { autoCapture, checkConsolidationDue, getTurnCount, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, warmupThreshold, advanceWarmup, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, parseBoolish, loadConfig };
+module.exports = { autoCapture, checkConsolidationDue, getTurnCount, markConsolidated, status, getConsolidateEvery, setConsolidateEvery, warmupThreshold, advanceWarmup, consolidationTrigger, getSlot,
+  getAutoConsolidate, setAutoConsolidate, getConsolidateOnSessionEnd, setConsolidateOnSessionEnd,
+  getConsolidateModel, setConsolidateModel, getConsolidateMaxRunsPerDay, setConsolidateMaxRunsPerDay,
+  getConsolidateBudgetUsd, setConsolidateBudgetUsd, getSceneMaxTokens, setSceneMaxTokens, getPersonaMaxTokens, setPersonaMaxTokens, getNoiseGateEnabled, setNoiseGateEnabled, parseBoolish, loadConfig };

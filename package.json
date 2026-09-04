@@ -6,7 +6,7 @@
     "tmem": "./scripts/tmem.js"
   },
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "MEMORY_AUTO_CONSOLIDATE=off node --test --import ./test/_tmp_cleanup.js test/*.test.js"
   },
   "files": [
     "scripts/",

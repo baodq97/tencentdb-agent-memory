@@ -17,7 +17,7 @@ Branch: `feat/self-consolidation-memory` (JS port + self-consolidation memory sy
 | Baseline (no plugin)                      | **0%**     | Model cannot know personal facts a priori |
 | **Absolute lift, top-K**                  | **+100pp** | 0% → 100%                                |
 | Token budget                              | **PASS**   | 77/300 tokens max                         |
-| Auto-capture + consolidation              | ✓          | 8/8 checks, asyncRewake pipeline          |
+| Auto-capture + consolidation              | ✓          | 8/8 checks, headless consolidation runner |
 | Total checks passed                       | **87/87**  | All sections green                        |
 
 > The recall numbers above are on the **local FTS5 keyword-only** path with zero paid services.
@@ -187,8 +187,15 @@ writing, recall, real transcripts, and auto-capture.
 ✅ **Offline-capable.** The local FTS5 path works entirely without the Gateway, giving users
 memory recall even when the sidecar isn't running.
 
-✅ **Auto-consolidation.** The asyncRewake Stop hook triggers LLM-quality consolidation (L1→L2→L3)
+✅ **Auto-consolidation.** The Stop and SessionEnd hooks spawn a detached headless run (L1→L2→L3)
 in the background after every N turns, without polluting the user's conversation context.
+Measured on the real store 2026-09-04, six project scopes with backlogs of 152/32/32/32/29/22
+pending turns: **6/6 runs returned `verdict: changed`**, 7-12 turns each, 50-164 s, $0.41-1.11
+($4.07 total). They produced 5 new scene files (98→103), +51 scene-fact bullets (961→1012),
+5 project-doctrine writes and 18 changelog rows. The recall-eligible L1 pool was unchanged
+(104→103, the −1 a duplicate the child's own dedup removed) — expected, because consolidation's
+write surface is L2/L3 by design and the scene-fact bullet, not the L1 atom, is the per-turn
+recall surface.
 
 🟡 **For best results, run `/memory-seed`** to extract L1 atoms from past conversations. Without
 seeding, only auto-captured turns are available. After seeding, run `/memory-consolidate` for L2
