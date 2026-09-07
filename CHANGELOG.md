@@ -3,7 +3,14 @@
 All notable changes to this plugin are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.9.0] — 2026-09-07
+
+A MINOR bump, not a patch, and deliberately so: `tmem mark-done` no longer releases the
+consolidation lock, the lock file gains fields, the view schema moves 6 -> 7, and
+`tmem feedback --json`'s `coldAtoms`/`coldPct` keep their names while changing what they
+count (recall-eligible atoms, not every record). A consumer of that JSON gets a different
+number with no signal that anything moved, which is a breaking change however small the
+diff that causes it.
 
 Independent fixes: recall stops firing on the harness's own noise, `tmem doctor` denominates
 reachability over the population that can actually be recalled instead of over everything
