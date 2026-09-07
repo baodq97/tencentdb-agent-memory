@@ -3,6 +3,18 @@
 All notable changes to this plugin are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.1] — 2026-09-07
+
+Republishes 0.9.0, which never reached npm. `test/consolidate_lock_queue.test.js` stubbed
+`spawnSyncFn` but not the PATH lookup, so `consolidate_runner`'s preflight short-circuited
+to `skipped/no-claude-binary` before the lock check — every assertion in that file was
+testing the preflight, green on a machine with Claude Code installed and red on a clean
+runner. It failed the release workflow's `npm test`. `test/_fake_claude.js` exists for
+exactly this failure and was written the last time it shipped (445 green locally, 7 CI
+failures); the new file did not use it. Verified this time by running the whole suite with
+every PATH entry containing a `claude` executable removed: 519 pass, 0 fail. No behaviour
+below changed — v0.9.0 is a git tag with no npm artifact behind it.
+
 ## [0.9.0] — 2026-09-07
 
 A MINOR bump, not a patch, and deliberately so: `tmem mark-done` no longer releases the
