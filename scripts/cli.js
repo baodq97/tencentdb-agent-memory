@@ -20,9 +20,33 @@ function getDirs() {
   return { gDir: globalDir(), pDir: projectDir(pHash), pHash };
 }
 
-// Per-project consolidation lock — must match memory_pipeline.js lockPath().
-function projectLockPath(pHash) {
-  return path.join(req("memory_writer.js").memoryBaseDir(), "projects", pHash || "global", "consolidation.lock");
+// ── the consolidation window, for whichever path is asking ──
+//
+// The UPPER bound on every consolidation read. Software cuts it before the run
+// reads anything and credits exactly it afterwards, so "what was read" and "what
+// was marked folded" are the same set by construction. Two carriers, one meaning:
+//
+//   • automatic: consolidate_runner.js cuts the cursor before it spawns the
+//     child and passes it in CURSOR_ENV; the runner advances the watermark.
+//   • manual: `tmem consolidate-context` cuts it, parks it in state.json
+//     (pending_read_cursor) and takes a lease on the store; `tmem mark-done`
+//     consumes it. Before this there was no cut at all on this path — mark-done
+//     recomputed MAX(updated_time) live, i.e. "now", crediting every atom another
+//     session had captured while the agent was folding.
+//
+// "" means no bound, which is only correct where there is nothing to bound (an
+// empty or unreadable store) — never "advance to now".
+function consolidateCursor(pHash) {
+  try {
+    const env = process.env[req("consolidate_runner.js").CURSOR_ENV];
+    if (env) return env;
+    return pHash ? req("memory_writer.js").pendingReadCursor(pHash) : "";
+  } catch { return ""; }
+}
+
+/** True when this `tmem` process is running INSIDE an automatic run's child. */
+function insideRunnerChild() {
+  try { return !!process.env[req("consolidate_runner.js").GUARD_ENV]; } catch { return false; }
 }
 
 // Resolve a `--scope global|project` flag to its store dir. One definition shared
@@ -919,7 +943,7 @@ function cmdAtoms(args) {
   const { MemoryStore } = req("memory_store.js");
   const { gDir, pDir, pHash } = getDirs();
   const typeFilter = "";
-  const limit = 500;
+  const limit = req("constants.js").CONSOLIDATE_READ_LIMIT;
   const scope = args.find((a) => ["global", "project", "all"].includes(a)) || "all";
 
   // Incremental read (upstream last_extraction_updated_time parity): scope the
@@ -933,11 +957,12 @@ function cmdAtoms(args) {
     const st = req("memory_writer.js").readState();
     since = (st.projects && st.projects[pHash] && st.projects[pHash].last_consolidated) || "";
   }
+  const until = consolidateCursor(pHash);
 
   const load = (db) => {
     if (!fs.existsSync(db)) return [];
     const store = new MemoryStore(db);
-    const rows = store.recordsSince(since, typeFilter, limit); // "" ⇒ allRecords
+    const rows = store.recordsSince(since, typeFilter, limit, until); // no bounds ⇒ allRecords
     store.close();
     return rows;
   };
@@ -956,12 +981,57 @@ function cmdAtoms(args) {
 function cmdConsolidateContext(args) {
   const rest = Array.isArray(args) ? args : [String(args || "")];
   const { MemoryStore } = req("memory_store.js");
-  const { readState, listScenes, readPersona } = req("memory_writer.js");
+  const { listScenes, readPersona } = req("memory_writer.js");
   const { gDir, pDir, pHash } = getDirs();
 
   const arg = (name, dflt) => { const i = rest.indexOf(name); return i !== -1 && rest[i + 1] ? rest[i + 1] : dflt; };
-  const atomLimit = parseInt(arg("--limit", "500"), 10) || 500;
+  const READ_LIMIT = req("constants.js").CONSOLIDATE_READ_LIMIT;
   const changelogLast = parseInt(arg("--last", "30"), 10) || 30;
+
+  // THE MANUAL PATH'S RUN BOUNDARY.
+  //
+  // This command is the read phase of an interactive consolidation, so it is
+  // where that path — which has no supervising process anywhere — gets the two
+  // things the automatic path gets from its runner: a lock, and a cut cursor.
+  //
+  // Neither existed before. A `/memory-seed` dispatched while a background run
+  // was mid-flight (p50 79s) read the store unbounded and wrote scenes and
+  // persona over the same files the runner's child was writing; the later writer
+  // won and the earlier one's merge was lost, with neither ever observing the
+  // other. The lease closes that in both directions: this refuses to start on a
+  // store a runner holds, and `runConsolidation` refuses to start on a store this
+  // holds. It is a LEASE, not a mutex handed to a model — no `tmem` process
+  // outlives its own command, so it expires on a TTL of its own
+  // (MANUAL_LEASE_TTL_MS) and `tmem mark-done` ends it early.
+  //
+  // Inside an automatic run's child none of this applies: the runner already
+  // holds the lock and already cut the cursor, and taking a second lease here
+  // would deadlock the run against itself.
+  const runnerChild = insideRunnerChild();
+  const pipeline = req("memory_pipeline.js");
+  const writer = req("memory_writer.js");
+  if (!runnerChild && pHash) {
+    // A lease already held by the manual path is OURS: an agent may read twice
+    // (a re-read is still one run) and refusing that would break the skill for
+    // the sake of a case that cannot happen — a second interactive
+    // consolidation of the same project at the same moment needs the user to
+    // dispatch /memory-seed twice concurrently. A RUNNER's lock is never joined.
+    const held = pipeline.lockInfo(pHash);
+    const mine = held && held.owner === "manual";
+    if (mine) pipeline.touchLock(pHash);
+    else if (!pipeline.acquireLock(pHash, { owner: "manual" })) {
+      console.log(JSON.stringify({
+        busy: true,
+        project: pHash,
+        message: "Another consolidation is running on this project's store. Stop here — do not read, fold or write anything. Try again once it finishes (`tmem unlock` is the escape hatch if a run died).",
+      }, null, 2));
+      return;
+    }
+    // Cut the window this interactive run is allowed to fold, and park it for
+    // `tmem mark-done` to credit. Re-cut on every read: an agent that reads
+    // twice is still one run, and the later cut is the one it actually saw.
+    try { writer.setPendingReadCursor(pHash, writer.projectCursor(pHash)); } catch {}
+  }
 
   // status: totals + counts by the types consolidation reasons over. Read-only.
   const counts = (db) => {
@@ -978,14 +1048,16 @@ function cmdConsolidateContext(args) {
 
   // atoms DELTA since the per-project watermark — same cursor as `tmem atoms
   // --since-last` (cli cmdAtoms): read only what arrived since the last run.
-  let since = arg("--since", "");
-  if (!since) {
-    const st = readState();
-    since = (st.projects && st.projects[pHash] && st.projects[pHash].last_consolidated) || "";
-  }
+  let since = arg("--since", "") || writer.consolidatedWatermark(pHash);
+  // The read is bounded by the cut and capped at the SAME limit the cut was
+  // computed against (constants.CONSOLIDATE_READ_LIMIT). `--limit` may only
+  // narrow it for hand inspection; a wider one would read past the window the
+  // watermark is going to credit.
+  const atomLimit = Math.min(parseInt(arg("--limit", String(READ_LIMIT)), 10) || READ_LIMIT, READ_LIMIT);
+  const until = consolidateCursor(pHash);
   const delta = (db) => {
     if (!fs.existsSync(db)) return [];
-    try { const s = new MemoryStore(db); const r = s.recordsSince(since, "", atomLimit); s.close(); return r; }
+    try { const s = new MemoryStore(db); const r = s.recordsSince(since, "", atomLimit, until); s.close(); return r; }
     catch { return []; }
   };
 
@@ -1103,16 +1175,28 @@ function allStoreAtoms() {
 function cmdFeedback(args) {
   const rest = Array.isArray(args) ? args : [String(args || "")];
   const asJson = rest.includes("--json");
-  const { summarizeRecallFeedback, classifyStoreAtoms } = req("recall_feedback.js");
+  const { summarizeRecallFeedback } = req("recall_feedback.js");
+  const { summarizeEligibleReachability } = req("memory_reachability.js");
   const summary = summarizeRecallFeedback(loadRecallLogRows());
   const atoms = allStoreAtoms();               // scan once, reuse for classify + labels
-  const cls = classifyStoreAtoms(atoms, summary);
+  // Eligible-scoped, and the wording below depends on it: this line used to call
+  // every cold atom a "prune candidate" over a denominator that included the
+  // 5,598 records NON_RECALL_TYPES excludes from recall by design. Acting on
+  // that advice would delete the entire episodic capture layer to fix a
+  // percentage that was never measuring recall. Cold-BY-DESIGN and
+  // cold-DESPITE-being-eligible are different populations and only the second
+  // is a prune candidate.
+  const e = summarizeEligibleReachability(atoms, summary.injectedIds);
 
   if (asJson) {
     console.log(JSON.stringify({
       turns: summary.turns, injections: summary.injections, factInjections: summary.factInjections,
       uniqueAtoms: summary.uniqueAtoms, uniqueFacts: summary.uniqueFacts,
-      emptyTurns: summary.emptyTurns, coldAtoms: cls.cold.length, hotAtoms: cls.hot.length, coldPct: cls.coldPct,
+      emptyTurns: summary.emptyTurns,
+      // coldAtoms/coldPct are RECALL-ELIGIBLE-scoped as of the denominator fix;
+      // ineligibleAtoms carries the by-design population that used to inflate them.
+      eligibleAtoms: e.eligible, hotAtoms: e.hot, coldAtoms: e.cold, coldPct: 100 - e.hotPct,
+      ineligibleAtoms: e.ineligible,
       hot: summary.perAtom.slice(0, 10),
     }, null, 2));
     return;
@@ -1121,7 +1205,8 @@ function cmdFeedback(args) {
   console.log("Recall feedback (which memories actually get recalled?):");
   console.log(`  ${summary.turns} logged turn(s) · ${summary.injections} injection(s) · ${summary.emptyTurns} turn(s) recalled nothing`);
   console.log(`  distinct injected: ${summary.uniqueAtoms} atom(s) · ${summary.uniqueFacts} scene fact(s)`);
-  console.log(`  store: ${cls.hot.length} hot (recalled ≥1) · ${cls.cold.length} cold (never recalled, ${cls.coldPct}%) — prune candidates`);
+  console.log(`  recallable store: ${e.hot} hot (recalled ≥1) · ${e.cold} cold (${100 - e.hotPct}%) — prune candidates`);
+  console.log(`  out of recall scope by design: ${e.ineligible} episodic/persona atom(s) — NOT prune candidates`);
   if (summary.perAtom.length) {
     console.log("\n  most-recalled:");
     // `perAtom` carries BOTH populations. Resolving every id against the store's
@@ -1321,42 +1406,81 @@ function cmdWritePersona(args = []) {
 }
 
 // ── mark-done ──
+// WHAT THIS COMMAND NO LONGER DOES: decide how far consolidation got.
+//
+// It used to do two lifecycle jobs on a model's say-so. It released the LOCK —
+// so the mutex over the store opened when the child said it was finished, and a
+// child that called mark-done early freed the store for the REST of its own run,
+// which is exactly the concurrent-consolidation race the move to `claude -p` was
+// made to kill. And it advanced the WATERMARK to MAX(updated_time) as of the
+// moment it ran, i.e. to "now" rather than to the window anybody had read, so
+// every atom captured while the run was folding was marked consolidated without
+// ever being read.
+//
+// Both are now derived from a cursor cut by software BEFORE the read, and which
+// software cut it depends on the path:
+//   • automatic (inside the runner's child, GUARD_ENV set): consolidate_runner.js
+//     cut the cursor before this process existed, holds the lock across the whole
+//     run, and advances the watermark itself — but only on a clean exit.
+//     Advancing here too would credit a window whose run may still fail after
+//     this call, so this path touches neither.
+//   • manual (`/memory-seed` → memory-consolidator agent → the consolidate
+//     skill): `tmem consolidate-context` cut the window and parked it in
+//     state.json; this consumes it, and ends the lease that read took out.
+//
+// GUARD_ENV — not the cursor's presence — is what tells the two apart. The cursor
+// can legitimately be "" (an empty or unreadable store has no window to offer),
+// and reading absence-of-cursor as "no runner" is how the old advance-to-now
+// behaviour survived in that branch: a store whose index.db was missing or
+// unopenable at cut time silently fell back to crediting every atom captured
+// during the run. GUARD_ENV is set on every child unconditionally.
 function cmdMarkDone() {
   const { markConsolidated } = req("memory_auto_capture.js");
-  const { pDir, pHash } = getDirs();
+  const { pHash } = getDirs();
   markConsolidated(pHash); // reset THIS project's counter only
-  // Advance the per-project read cursor to the newest atom folded this run, so
-  // the next `atoms --since-last` sees only what arrived after now. Best-effort:
-  // a failure here must not block releasing the lock.
-  try {
-    const { MemoryStore } = req("memory_store.js");
-    const { setConsolidatedWatermark } = req("memory_writer.js");
-    const db = path.join(pDir, "index.db");
-    if (pHash && fs.existsSync(db)) {
-      const store = new MemoryStore(db);
-      const maxTs = store.maxUpdatedTime();
-      store.close();
-      if (maxTs) setConsolidatedWatermark(pHash, maxTs);
-    }
-  } catch {}
+  const runnerOwnsRun = insideRunnerChild();
+  let credited = "";
+  if (!runnerOwnsRun) {
+    // Manual path. Credit exactly the window the read cut — never a fresh
+    // MAX(updated_time). No cut parked means no tracked read happened, and then
+    // the watermark does not move at all: re-reading atoms is free, crediting
+    // unread ones is not. Best-effort; a failure here must not block the rest.
+    try {
+      const { takePendingReadCursor, setConsolidatedWatermark } = req("memory_writer.js");
+      credited = takePendingReadCursor(pHash);
+      if (credited) setConsolidatedWatermark(pHash, credited);
+    } catch {}
+    // End the lease `tmem consolidate-context` took out. Ownership-checked: this
+    // can only release a MANUAL lease, so a human running mark-done while a
+    // background runner holds the store can no longer open that runner's mutex.
+    try { req("memory_pipeline.js").releaseLock(pHash, { expectOwner: "manual" }); } catch {}
+  }
   // Record the cascade marker at this project's current L1 count so the next Stop
-  // skips instead of re-dispatching over material already folded. This is the real
-  // completion path (the agent runs `tmem mark-done`, not the pipeline --unlock),
-  // so the marker must be advanced here too. Best-effort — never block the unlock.
+  // skips instead of re-dispatching over material already folded. Out of scope for
+  // the cursor change and unchanged in both paths. Best-effort — never throw.
   try {
     const { markCascadeConsolidated, currentL1Count } = req("memory_pipeline.js");
     markCascadeConsolidated(pHash, currentL1Count(pHash));
   } catch {}
-  const lockFile = projectLockPath(pHash);
-  try { fs.unlinkSync(lockFile); } catch {}
-  console.log("Consolidation marked complete, lock released.");
+  if (runnerOwnsRun) console.log("Consolidation marked complete (the runner owns the watermark and the lock for this run).");
+  else if (credited) console.log(`Consolidation marked complete; folded up to ${credited}.`);
+  else console.log("Consolidation marked complete. The watermark did not move: no read window was cut for this run (run `tmem consolidate-context` first).");
 }
 
 // ── unlock ──
+// The human escape hatch, and the ONLY ownership-blind release left: it deletes
+// whatever is there, including a live runner's lock. That is the point of an
+// escape hatch, so it says what it just did rather than doing it silently.
 function cmdUnlock() {
   const { pHash } = getDirs();
-  const lockFile = projectLockPath(pHash);
-  try { fs.unlinkSync(lockFile); console.log("Lock released."); } catch { console.log("No lock file."); }
+  const pipeline = req("memory_pipeline.js");
+  const held = pipeline.lockInfo(pHash);
+  if (!pipeline.releaseLock(pHash, { force: true })) { console.log("No lock file."); return; }
+  if (held && held.owner === "runner" && held.pid) {
+    console.log(`Lock released — it was held by a live run (pid ${held.pid}, since ${held.startedAt || "?"}). If that run is still going, it is now unguarded.`);
+  } else {
+    console.log("Lock released.");
+  }
 }
 
 // ── config ──
@@ -2027,7 +2151,14 @@ async function cmdDoctor(rest) {
     if (r.storesWithEpisodic) {
       console.log("\nRecall reachability (can captured memory actually be recalled?):");
       console.log(`  reachable stores: ${r.reachableStores}/${r.storesWithEpisodic} (${r.reachablePct}%) · blind stores: ${r.blindStores} · blind atoms: ${r.blindAtoms}`);
-      console.log(`  capture signal: ${r.outcomeAtoms}/${r.totalEpisodic} atoms carry an outcome (${r.signalPct}%) — the rest are prompt echoes`);
+      // Named for the population it measures. This ratio is EPISODIC-only, and
+      // NON_RECALL_TYPES (constants.js) excludes episodic from recall entirely —
+      // so it says nothing about recall health, however much "capture signal:
+      // 29%" reads like it does. It stays because capture quality is a real
+      // signal worth watching; it is labelled so nobody spends a wave fixing
+      // recall over it. The recall-health number is the header's
+      // "atoms that can be recalled" line (doctor.js renderPlanText).
+      console.log(`  capture quality (episodic — not recallable by design): ${r.outcomeAtoms}/${r.totalEpisodic} carry an outcome (${r.signalPct}%) — the rest are prompt echoes`);
       if (r.blindStores > 0) {
         const top = r.blind.slice(0, 3).map((s) => `${s.episodicCount} atoms`).join(", ");
         console.log(`  → ${r.blindStores} store(s) captured memory but have no scenes (unrecallable): ${top}${r.blind.length > 3 ? " …" : ""}`);
@@ -2039,13 +2170,19 @@ async function cmdDoctor(rest) {
   // have EVER been injected into a turn's <memories>? Cold atoms (never recalled)
   // are the honest prune target. Read-only; degrades silently on an empty log.
   try {
-    const { summarizeRecallFeedback, classifyStoreAtoms } = req("recall_feedback.js");
+    const { summarizeRecallFeedback } = req("recall_feedback.js");
+    const { summarizeEligibleReachability } = req("memory_reachability.js");
     const summary = summarizeRecallFeedback(loadRecallLogRows());
     if (summary.turns > 0) {
-      const cls = classifyStoreAtoms(allStoreAtoms(), summary);
+      // Denominated on the RECALL-ELIGIBLE population, not on every stored
+      // record. Over all records the cold share reads 99%, but 5,598 of those
+      // are cold because NON_RECALL_TYPES never lets them be read — a designed
+      // exclusion rendered as a failure. On the eligible population the same
+      // store reads 57/117 (49%), which is a number someone can act on.
+      const e = summarizeEligibleReachability(allStoreAtoms(), summary.injectedIds);
       console.log("\nRecall feedback (do stored memories ever get recalled?):");
       console.log(`  ${summary.turns} logged turn(s) · ${summary.injections} atom + ${summary.factInjections} fact injection(s) · ${summary.emptyTurns} recalled nothing`);
-      console.log(`  ${cls.hot.length} hot atom(s) recalled ≥1 · ${cls.cold.length} cold (never recalled, ${cls.coldPct}%) — run \`tmem feedback\` for detail`);
+      console.log(`  ${e.hot}/${e.eligible} recallable atom(s) recalled ≥1 (${e.hotPct}%) · ${e.cold} cold — run \`tmem feedback\` for detail`);
     }
   } catch { /* never break doctor */ }
 
@@ -2411,12 +2548,13 @@ CONSOLIDATE — atoms → scenes + persona  (invoked by the memory-seed / memory
   sessions                   List pending sessions for seeding
   read-session <path>        Format a session transcript for extraction
   atoms [global|project|all] [--since <iso> | --since-last]  Dump L1 atoms as JSON (--since-last = only new since last consolidation)
-  consolidate-context [--limit N] [--last N]  One-shot read bundle for the consolidator: status + scenes + atoms delta + persona + doctrine + changelog (JSON)
+  consolidate-context [--limit N] [--last N]  One-shot read bundle for the consolidator: status + scenes + atoms delta + persona + doctrine + changelog (JSON).
+                             Outside a background run this also CUTS the run's fold window and LEASES the project store (ended by mark-done, or by its own TTL); returns {busy:true} if another consolidation holds it
   write-l1 [--session id]    Write L1 atoms from stdin JSON
   write-scene --name --summary --heat  Write a scene block (body from stdin)
   write-scenes               Write many scenes from one JSON array on stdin [{name,summary,heat,body}]
   write-persona [--scope global|project] [--force]  Write global persona / project doctrine from stdin (budget gate; --force to override)
-  mark-done                  Mark consolidation complete + release the lock
+  mark-done                  Mark consolidation complete: counter + cascade marker, plus the watermark for the window consolidate-context cut (a background run's watermark and lock stay the runner's)
 
 MAINTAIN — keep the store healthy  (doctor is the front door)
   doctor [--all] [--json] [--fix] [--apply]  Health verdict + ranked fix plan (reachability, capture signal, recall feedback); --fix runs the auto set
@@ -2426,7 +2564,7 @@ MAINTAIN — keep the store healthy  (doctor is the front door)
   prune --low-signal [--all] [--apply]   Remove low-signal noise atoms (front door: doctor --fix; dry-run unless --apply, archived)
   dedup --atoms [--all] [--apply]        Remove exact-duplicate atoms (front door: doctor --fix; dry-run unless --apply, archived)
   migrate-fragments [--apply]  Merge legacy cwd-keyed fragment stores into their project root (dry-run by default)
-  unlock                     Release a stale consolidation lock
+  unlock                     Release this project's consolidation lock, whoever holds it (escape hatch)
 
 OBSERVE / CONFIGURE
   status                     Memory stats for the current store

@@ -13,6 +13,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { MemoryStore } = require("./memory_store.js");
+const { isMachineTurn } = require("./low_signal.js");
 const { memoryBaseDir, globalDir, projectDir, readPersona, listScenes } = require("./memory_writer.js");
 const { VectorStore, rrfMerge } = require("./vector_store.js");
 const { getSceneMaxTokens } = require("./memory_auto_capture.js");
@@ -824,6 +825,17 @@ function finishRecall(parts, rendered, { source, query, factIds = [] }) {
 }
 
 function recall(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 5, source = RECALL_SOURCE.HOOK) {
+  // QUERY-side gate: a machine-generated turn (the harness talking to itself —
+  // <task-notification>, <cross-session-message>, ...) injects nothing. This is
+  // the read-side twin of `NOISE_GATE_CLASSES` (write-side, what the auto-
+  // capture pipeline refuses to store) — see isMachineTurn's own doc comment in
+  // low_signal.js for the measured 293/2658 machine-turn count and its near-2x
+  // hit rate versus real user turns. Still logged (factIds: []), so the effect
+  // stays measurable in recall_log.jsonl rather than becoming an invisible no-op.
+  if (isMachineTurn(query)) {
+    return finishRecall([], { text: "", injectedIds: [], droppedIds: [] }, { source, query, factIds: [] });
+  }
+
   const maxChars = maxTokens * CHARS_PER_TOKEN;
   const parts = [];
 
@@ -1017,6 +1029,14 @@ function dedupeAndRank(memories, limit) {
  * caller, and the renderer that needs it now lives there. */
 
 async function recallAsync(query, projectHash = "", maxTokens = DEFAULT_MAX_TOKENS, topK = 5, source = RECALL_SOURCE.HOOK, opts = {}) {
+  // QUERY-side gate — identical to recall()'s guard above, and required on
+  // BOTH paths: on_user_prompt.js falls back to recall() whenever recallAsync
+  // throws, so gating only one still leaves the other reachable. See recall()
+  // for the measured numbers.
+  if (isMachineTurn(query)) {
+    return finishRecall([], { text: "", injectedIds: [], droppedIds: [] }, { source, query, factIds: [] });
+  }
+
   const maxChars = maxTokens * CHARS_PER_TOKEN;
   const parts = [];
 

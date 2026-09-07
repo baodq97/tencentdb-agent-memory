@@ -81,14 +81,76 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 
-const { memoryBaseDir, projectDir } = require("./memory_writer.js");
+const { memoryBaseDir, projectDir, projectCursor, setConsolidatedWatermark } = require("./memory_writer.js");
 const pipeline = require("./memory_pipeline.js");
+
+/*
+ * A LOCK-LOSING TRIGGER SURVIVES BY NOT BEING CONSUMED, NOT BY BEING QUEUED.
+ * -------------------------------------------------------------------------
+ * Two designs were on the table for "a trigger that loses the lock race must
+ * not be discarded":
+ *   (a) do not consume the trigger — leave the backlog counter alone so the
+ *       next natural trigger retries.
+ *   (b) a durable single-slot pending marker, drained by the lock holder on
+ *       release.
+ * (a) was chosen because it is already true at the state layer and needs no
+ * new persistent state: capture_state.json's per-project counters
+ * (slot.turn_count, slot.last_consolidation_turn) are reset ONLY by
+ * markConsolidated() in memory_auto_capture.js, which fires ONLY from `tmem
+ * mark-done` on a genuinely completed run. A lock miss here never calls it, so
+ * the backlog that armed this trigger is still there for the next Stop or
+ * counter tick to pick up. Verified against production log evidence: project
+ * -home-bd-projects-nag-pilot-req-01 in consolidation_runs.jsonl shows four
+ * session-end/locked skips (2026-09-05, 13:07-13:51) followed at 14:36 by a
+ * counter-triggered run that landed `changed` — the backlog those four skips
+ * represented, absorbed by the very next successful run, not lost.
+ * (b) was rejected: it would duplicate bookkeeping the counter already does,
+ * need its own drain-on-release step, and could itself go stale or wedge. The
+ * actual gap this task closes is narrower than "the work is lost" — it is (1)
+ * a lock-collision record that reads identically to a true loss in the runs
+ * log, and (2) the session-end dispatcher spawning a doomed `claude` process on
+ * every collision instead of checking cheaply first, the way the counter arm's
+ * dispatcher already does. Both are fixed below without a new state file.
+ */
 
 const RUNS_LOG = () => path.join(memoryBaseDir(), "consolidation_runs.jsonl");
 
 /** Guard env var. Set on the child; every tmem hook checks it and stands down. */
 const GUARD_ENV = "TMEM_CONSOLIDATING";
 
+/**
+ * Cursor env var: the exact `updated_time` this run is allowed to fold up to,
+ * cut by SOFTWARE before the child starts.
+ *
+ * Deliberately NOT folded into GUARD_ENV, which answers a different question
+ * ("am I inside a run?", a re-entrancy guard read by every hook). This one
+ * carries a value and only the consolidation child and the `tmem` calls it makes
+ * ever read it. Its presence is also the signal to `tmem mark-done` that the
+ * runner — not the model — owns the watermark and the lock for this run.
+ */
+const CURSOR_ENV = "TMEM_CONSOLIDATE_CURSOR";
+
+/**
+ * A CLOCK on the guarded work, derived from the lock's TTL.
+ *
+ * The lock now refuses to reclaim a provably-live holder — a TTL that can steal
+ * the mutex from a running consolidation is a second concurrent run, which is
+ * the failure this whole mechanism exists to prevent. That is only safe if a run
+ * cannot outlive the TTL in the first place, and until now nothing bounded it:
+ * `--max-turns` and `--max-budget-usd` are caps on work, not on time, and a child
+ * stalled in a network call satisfies both forever.
+ *
+ * So spawnSync gets a timeout, and it is derived from LOCK_TTL_MS rather than
+ * configured beside it — two independently-set numbers would eventually be set
+ * in the wrong order, and "the run may outlive its lock" is exactly the state
+ * that must be unreachable. A minute of headroom leaves the killed run time to
+ * reach its finally and release the lock itself.
+ */
+function childTimeoutMs() {
+  const ttl = pipeline.LOCK_TTL_MS;
+  const want = parseInt(process.env.TMEM_CONSOLIDATE_TIMEOUT_MS || "", 10) || 20 * 60 * 1000;
+  return Math.max(60 * 1000, Math.min(want, ttl - 60 * 1000));
+}
 /**
  * Cap on the child's own turns. The consolidate skill's scope boundary keeps a
  * run to a handful of `tmem` calls; 40 is generous enough that a legitimate run
@@ -228,12 +290,16 @@ function buildArgs({ model, budgetUsd }) {
  * trusted. MEMORY_TENCENTDB_HOME is passed through deliberately: it is what lets
  * an e2e test point a real run at a sandbox store instead of the user's memory.
  */
-function buildEnv({ projectPath, baseEnv }) {
+function buildEnv({ projectPath, baseEnv, cursor }) {
   const env = { ...(baseEnv || process.env) };
   delete env.CLAUDE_CODE_MESSAGING_SOCKET;
   delete env.CLAUDE_CODE_MESSAGING_TOKEN;
   env[GUARD_ENV] = "1";
   env.CLAUDE_PROJECT_DIR = projectPath;
+  // The read window this run is bounded to. Absent when the store is empty (a
+  // cold start has nothing to bound), and then the child reads the whole pool
+  // exactly as before.
+  if (cursor) env[CURSOR_ENV] = String(cursor);
   return env;
 }
 
@@ -261,8 +327,8 @@ function runConsolidation(opts) {
   // command and once for the record it writes afterwards.
   const model = cap.getConsolidateModel();
 
-  const skip = (reason) => {
-    const rec = { project: hash, trigger, verdict: "skipped", reason };
+  const skip = (reason, extra) => {
+    const rec = { project: hash, trigger, verdict: "skipped", reason, ...(extra || {}) };
     record(rec);
     return rec;
   };
@@ -283,7 +349,52 @@ function runConsolidation(opts) {
   // (O_EXCL), so two hooks racing to spawn resolve correctly, and a spawn that
   // never happens cannot leak a lock that would wedge the project for the full
   // 30-minute TTL.
-  if (!pipeline.acquireLock(hash)) return skip("locked");
+  //
+  // `retryable: true` and `turns_since_consolidation` distinguish this from a
+  // real loss: the backlog counter this trigger read (slot.turn_count /
+  // last_consolidation_turn in memory_auto_capture.js) is untouched by a lock
+  // miss — only `markConsolidated()`, called from `tmem mark-done` on a genuinely
+  // completed run, ever resets it — so the very next natural trigger (another
+  // Stop, another counter tick) recomputes the same-or-larger delta and fires
+  // again. Verified against production log evidence (project
+  // -home-bd-projects-nag-pilot-req-01, 2026-09-05): four session-end/locked
+  // skips between 13:07-13:51 were followed at 14:36 by a counter-triggered run
+  // that landed `changed`, absorbing exactly the backlog those four skips
+  // represented. Nothing was discarded at the state layer; the only real gap was
+  // that this record looked identical to a true loss. getSlot(hash) is read-only
+  // (readSlot never mutates state) so logging it here is side-effect-free.
+  if (!pipeline.acquireLock(hash)) {
+    const slot = cap.getSlot(hash);
+    const turnsSinceConsolidation = (slot.turn_count || 0) - (slot.last_consolidation_turn || 0);
+    return skip("locked", { retryable: true, turns_since_consolidation: turnsSinceConsolidation });
+  }
+
+  // THE CURSOR IS CUT HERE, BEFORE THE CHILD EXISTS.
+  //
+  // The watermark used to be set by `tmem mark-done` from inside the child, to
+  // MAX(updated_time) as of THAT moment — i.e. after the child had already read
+  // its atoms. A run takes a median 69.0s and up to 164.3s (the 17 runs carrying
+  // duration_ms in consolidation_runs.jsonl, 2026-09-04 -> 2026-09-07), and an
+  // active session keeps capturing atoms the whole time, so every atom written
+  // between the child's `atoms --since-last` and its `mark-done` was marked
+  // consolidated without ever being read. Measured in that same window: 2 atoms
+  // across those 17 runs (both episodic, both on 2026-09-04, in runs that exited 0
+  // with verdict "changed"). Small, but silent, permanent and unlogged.
+  //
+  // Cutting it here makes the advance DERIVED rather than judged: the child folds
+  // a closed window and software credits exactly that window. Anything captured
+  // during the run stays behind the watermark and is picked up by the next run.
+  //
+  // The cursor is also BOUNDED by how much one run can read: a run reads at most
+  // constants.CONSOLIDATE_READ_LIMIT rows, and crediting MAX(updated_time) over a
+  // larger backlog marked the remainder consolidated without anyone reading it.
+  // Reproduced: 600 atoms, no watermark — the child read m_0000..m_0499 and the
+  // watermark jumped to m_0599, permanently orphaning 100 atoms. Exactly one live
+  // store is over the limit today (-home-bd-projects-aiquinta-platform: 1,967
+  // records, no watermark), where the first run under the unbounded rule would
+  // have credited 1,467 atoms nobody read. memory_writer.projectCursor
+  // owns that computation; here it is simply the window this run may credit.
+  const cursor = projectCursor(hash);
 
   const before = snapshot(hash);
   const started = Date.now();
@@ -295,9 +406,11 @@ function runConsolidation(opts) {
       budgetUsd: cap.getConsolidateBudgetUsd(),
     }), {
       cwd: projectPath,                 // there is no --cwd for `claude -p`
-      env: buildEnv({ projectPath, baseEnv }),
+      env: buildEnv({ projectPath, baseEnv, cursor }),
       encoding: "utf-8",
       maxBuffer: 32 * 1024 * 1024,
+      timeout: childTimeoutMs(),
+      killSignal: "SIGKILL",
     });
     exitCode = res.status;
     if (res.error) spawnError = res.error.message;
@@ -305,11 +418,24 @@ function runConsolidation(opts) {
   } catch (e) {
     spawnError = e && e.message ? e.message : String(e);
   } finally {
-    // Always. `tmem mark-done` releases the lock on the happy path, but a child
-    // that crashed before reaching it must not wedge the project. releaseLock is
-    // idempotent.
+    // The ONLY release path for a run this process started. `tmem mark-done` used
+    // to unlink the lock from inside the child, which meant a language model's
+    // judgement about which step it was on decided when the mutex opened: call it
+    // early and the lock is free for the rest of the run — minutes — long enough
+    // for a second trigger to start a concurrent consolidation on the same store.
+    // Here the lock is held for exactly as long as the guarded work runs, because
+    // spawnSync is synchronous and this finally cannot run before the child exits.
+    // Idempotent, and it also covers a child that crashed before doing anything.
     try { pipeline.releaseLock(hash); } catch {}
   }
+
+  // Advance the watermark, in software, to the window that was actually offered
+  // to the child — never to "now". A clean exit advances; a spawn error or a
+  // non-zero exit does not, so the same window is re-offered next run. A `no-op`
+  // verdict DOES advance: "I read them and none were durable" is a successful
+  // outcome, and not advancing on it would re-read a forever-growing window.
+  const advanced = !spawnError && exitCode === 0 && !!cursor;
+  if (advanced) { try { setConsolidatedWatermark(hash, cursor); } catch {} }
 
   const after = snapshot(hash);
   const changed = after.changelog > before.changelog || after.scenes !== before.scenes;
@@ -329,6 +455,15 @@ function runConsolidation(opts) {
     cost_usd: out && typeof out.total_cost_usd === "number" ? out.total_cost_usd : null,
     turns: out && typeof out.num_turns === "number" ? out.num_turns : null,
     duration_ms: Date.now() - started,
+    // The window this run was given and whether it was credited. Without these
+    // two fields the runs log cannot answer "how far had we folded when this
+    // ran", which is exactly the question the old silent advance made unanswerable.
+    cursor: cursor || null,
+    watermark_advanced: advanced,
+    // A spawnSync timeout arrives as an ETIMEDOUT/SIGKILL error, which the
+    // verdict already renders as "failed" — but "the run hit its ceiling" and
+    // "the run crashed" want different responses, so the log distinguishes them.
+    timed_out: !!(spawnError && /ETIMEDOUT|timed? ?out/i.test(spawnError)),
     scenes_before: before.scenes,
     scenes_after: after.scenes,
     changelog_delta: after.changelog - before.changelog,
@@ -357,6 +492,39 @@ function spawnDetachedRunner(opts) {
   // every Stop just so it can read a config file and exit is the kind of cost
   // that is invisible until it is measured.
   try { if (!require("./memory_auto_capture.js").getAutoConsolidate()) return false; } catch {}
+
+  // Cheap pre-check, mirroring the pre-filter memory_pipeline.js's selectTargets
+  // already applies to the counter arm (see that file, ~line 262) before it ever
+  // calls this function. hooks/scripts/on_session_end.js has no such filter of
+  // its own — it calls spawnDetachedRunner unconditionally on every session end —
+  // so this is the one choke point both dispatchers share where a doomed spawn
+  // can be avoided. Measured: all 9 `reason:"locked"` records in
+  // consolidation_runs.jsonl over 24 runs (2026-09-04 -> 2026-09-07) have
+  // trigger:"session-end" and zero have trigger:"counter", which is exactly what
+  // a missing pre-check on only one of the two dispatchers would produce. This
+  // is a non-atomic read, same as memory_pipeline.js's own pre-filter — a race
+  // between this check and the real acquire in runConsolidation is expected and
+  // harmless (an occasional process still gets spawned and finds the lock a few
+  // ms later, exactly like before this change); do not try to make it atomic, or
+  // it becomes a second lock implementation.
+  const hash = String(o.hash || "");
+  try {
+    if (pipeline.isLocked(hash)) {
+      const cap = require("./memory_auto_capture.js");
+      const slot = cap.getSlot(hash);
+      const turnsSinceConsolidation = (slot.turn_count || 0) - (slot.last_consolidation_turn || 0);
+      record({
+        project: hash,
+        trigger: o.trigger || "unknown",
+        verdict: "skipped",
+        reason: "locked",
+        retryable: true,
+        turns_since_consolidation: turnsSinceConsolidation,
+      });
+      return false;
+    }
+  } catch { /* fall through to spawn — the real acquire is the source of truth */ }
+
   try {
     const child = spawnFn(process.execPath, [
       __filename,
@@ -406,5 +574,6 @@ module.exports = {
   snapshot,
   runsInLastDay,
   GUARD_ENV,
+  CURSOR_ENV,
   RUNS_LOG,
 };

@@ -243,12 +243,43 @@ function readState() {
   return {};
 }
 
-// Advance the per-project consolidation watermark. This is the READ-side cursor
-// (`state.projects[<hash>].last_consolidated`) that `atoms --since-last` consumes
-// so the next consolidation reads only the delta, not the whole pool — parity
-// with upstream's last_extraction_updated_time. Idempotent, atomic tmp+rename.
-function setConsolidatedWatermark(projectHash, ts) {
-  if (!projectHash || !ts) return;
+// The consolidation CURSOR: how far a single run of THIS project may fold.
+//
+// ONE definition, because two callers must agree on it or the watermark means
+// nothing: `consolidate_runner.js` cuts the cursor BEFORE spawning the child and
+// advances the watermark to exactly that value after a clean exit, and the
+// manual path cuts it when the agent reads (`tmem consolidate-context`) and
+// consumes it at `tmem mark-done`. Anything that arrives after the cut is
+// deliberately left BEHIND the watermark so the next run re-reads it.
+//
+// It is NOT MAX(updated_time). A run reads at most CONSOLIDATE_READ_LIMIT rows,
+// so the cursor is the newest timestamp that many rows can reach from the
+// project's current watermark (memory_store.consolidationCursor) — otherwise a
+// backlog larger than the limit is credited unread. "" when the store is empty,
+// absent, or unreadable, and "" must never be treated as "advance to now".
+function projectCursor(projectHash) {
+  if (!projectHash) return "";
+  const db = path.join(projectDir(projectHash), "index.db");
+  if (!fs.existsSync(db)) return "";
+  try {
+    const { MemoryStore } = require("./memory_store.js");
+    const { CONSOLIDATE_READ_LIMIT } = require("./constants.js");
+    const store = new MemoryStore(db, { readOnly: true });
+    const cursor = store.consolidationCursor(consolidatedWatermark(projectHash), CONSOLIDATE_READ_LIMIT);
+    store.close();
+    return cursor || "";
+  } catch { return ""; }
+}
+
+/** Where a project's next consolidation read starts. "" ⇒ cold start (whole pool). */
+function consolidatedWatermark(projectHash) {
+  const st = readState();
+  return (st.projects && st.projects[projectHash] && st.projects[projectHash].last_consolidated) || "";
+}
+
+/** Read-modify-write one project's slot in state.json, atomically (tmp+rename). */
+function updateProjectState(projectHash, mutate) {
+  if (!projectHash) return;
   const statePath = path.join(memoryBaseDir(), "state.json");
   let state = {};
   if (fs.existsSync(statePath)) {
@@ -256,11 +287,55 @@ function setConsolidatedWatermark(projectHash, ts) {
   }
   if (!state.projects) state.projects = {};
   if (!state.projects[projectHash]) state.projects[projectHash] = {};
-  state.projects[projectHash].last_consolidated = ts;
+  if (mutate(state.projects[projectHash]) === false) return;
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
   const tmp = statePath + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf-8");
   fs.renameSync(tmp, statePath);
+}
+
+// Advance the per-project consolidation watermark. This is the READ-side cursor
+// (`state.projects[<hash>].last_consolidated`) that `atoms --since-last` consumes
+// so the next consolidation reads only the delta, not the whole pool — parity
+// with upstream's last_extraction_updated_time.
+//
+// MONOTONIC: it only ever moves forward. Two paths can write it (a background
+// runner crediting the window it cut, and a manual `tmem mark-done`), and an
+// interleaving that let the older of the two land last would re-offer atoms that
+// were already folded. Forward-only makes the order of those two writes stop
+// mattering. Idempotent, atomic tmp+rename.
+function setConsolidatedWatermark(projectHash, ts) {
+  if (!projectHash || !ts) return;
+  updateProjectState(projectHash, (slot) => {
+    if (slot.last_consolidated && String(ts) <= String(slot.last_consolidated)) return false;
+    slot.last_consolidated = String(ts);
+  });
+}
+
+// The MANUAL path's cursor, parked between two `tmem` processes.
+//
+// The automatic path can hand the cursor to its child in an env var because a
+// runner process spans the whole run. An interactive consolidation has no such
+// process: the agent reads with one `tmem consolidate-context` and finishes with
+// a later `tmem mark-done`, and nothing survives in between. So the cut is
+// written here by the read and consumed by mark-done — the same discipline, a
+// different carrier. Its absence at mark-done means "no tracked read happened",
+// and the watermark then does not move at all; it is never re-derived as "now",
+// which is the defect this whole wave exists to remove.
+function setPendingReadCursor(projectHash, ts) {
+  updateProjectState(projectHash, (slot) => { slot.pending_read_cursor = String(ts || ""); });
+}
+
+function pendingReadCursor(projectHash) {
+  const st = readState();
+  return (st.projects && st.projects[projectHash] && st.projects[projectHash].pending_read_cursor) || "";
+}
+
+/** Read and clear in one write — a cut may be spent exactly once. */
+function takePendingReadCursor(projectHash) {
+  const cut = pendingReadCursor(projectHash);
+  if (cut) updateProjectState(projectHash, (slot) => { delete slot.pending_read_cursor; });
+  return cut;
 }
 
 // Per-project recall toggle. Recall is ON by default; only an explicit
@@ -348,6 +423,7 @@ module.exports = {
   memoryBaseDir, sceneCount, globalDir, projectDir, listProjectHashes,
   generateMemoryId, writeL1Record, writeL1Batch,
   writeSceneBlock, writePersona, readPersona,
-  updateState, readState, setConsolidatedWatermark, setRecallEnabled, getRecallEnabled, listScenes, parseSceneMeta,
+  updateState, readState, projectCursor, consolidatedWatermark, setConsolidatedWatermark,
+  setPendingReadCursor, pendingReadCursor, takePendingReadCursor, setRecallEnabled, getRecallEnabled, listScenes, parseSceneMeta,
   appendChangelog, META_START, META_END,
 };

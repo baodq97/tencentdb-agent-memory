@@ -83,7 +83,7 @@ If `tmem projects` shows many near-duplicate slugs that are subdirs/worktrees of
 | `tmem daemon status` | Health-ping the resident embed daemon → ready/warming/failed/stuck/down + pid (use when vector recall seems cold) |
 | `tmem daemon start` | Warm + serve the embed daemon in the foreground (like `ollama serve`); keeps vector recall hot |
 | `tmem daemon stop` | Stop the daemon + clear its pidfile (recovery: `status` → `stop` → `start`) |
-| `tmem mark-done` | Mark consolidation complete + release lock |
+| `tmem mark-done` | Mark consolidation complete (resets the project's turn counter + cascade marker) |
 | `tmem init` | Initialize memory store (normally via `/memory-init`) |
 
 ## Disable per-turn context injection (per project)

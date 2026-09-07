@@ -156,10 +156,68 @@ function noiseClasses(content) {
   return classifyLowSignal(content).filter((c) => NOISE_GATE_CLASSES.includes(c));
 }
 
+/**
+ * The READ-side gate: prefixes that mark a turn as machine-generated — the
+ * harness talking to itself, never a human typing. Deliberately SEPARATE from
+ * `NOISE_GATE_CLASSES` above, which is a WRITE-side decision (what the auto-
+ * capture pipeline refuses to store). This list decides something else: whether
+ * a QUERY is worth searching memory for at all. A `<task-notification>` is long
+ * and mentions files/tests/gates/exit codes, so it keyword-matches many stored
+ * engineering facts — it is not low-signal to the FTS index, it is simply not a
+ * question anyone asked.
+ *
+ * MEASURED on the real recall log (2658 lines across recall_log.jsonl +
+ * .jsonl.1, 2026-09-04 -> 2026-09-07): 293 of 2658 turns (11.0%) open with one
+ * of these prefixes, yet they get injected on 66.9% of turns versus 38.9% for
+ * the 2365 real user turns — the hit RATE on a machine turn is nearly DOUBLE
+ * the rate on a human one, because the notification text is so keyword-rich.
+ * Gating the query side stops that injection without touching what the writer
+ * stores (`NOISE_GATE_CLASSES` is untouched by this list and vice versa).
+ *
+ * Bare prefixes, no trailing `>`: two of the eight wire shapes in the actual
+ * log do NOT close their tag before the content resumes —
+ * `<command-message>astral:uv</command-message>\n<command-name>/astral:uv...`
+ * (the leading tag is `<command-message>`, not `<command-name>`, which never
+ * occurs as a prefix) and `<cross-session-message from="..." from-name="..."
+ * from-mode="bypass">` carries attributes before its `>`. A literal closed-tag
+ * match would silently fail to gate exactly these two, so every entry here is
+ * prefix-only and uniform, even for the four shapes with zero occurrences in
+ * the current log window (their exact wire shape is unverified, so prefix-only
+ * is also the safer default for a shape that turns out to carry attributes).
+ */
+const MACHINE_TURN_PREFIXES = Object.freeze([
+  "<task-notification",
+  "<bash-stdout",
+  "<bash-input",
+  "<system-reminder",
+  "<local-command",
+  "<command-message",
+  "<cross-session-message",
+  "<teammate-message",
+]);
+
+/**
+ * True when `query` is machine-generated text, not something a human typed —
+ * the predicate `scripts/memory_recall.js` uses to gate the QUERY side (see
+ * {@link MACHINE_TURN_PREFIXES}). Copies the exact leading-whitespace
+ * tolerance `classifyLowSignal` uses (`lead = text.replace(/^\s+/, "")`) rather
+ * than inventing a second idiom for the same file.
+ *
+ * @param {string} query
+ * @returns {boolean}
+ */
+function isMachineTurn(query) {
+  const text = typeof query === "string" ? query : String(query == null ? "" : query);
+  const lead = text.replace(/^\s+/, "");
+  return MACHINE_TURN_PREFIXES.some((p) => lead.startsWith(p));
+}
+
 module.exports = {
   classifyLowSignal,
   noiseClasses,
   NOISE_GATE_CLASSES,
   CONTINUATION_RE,
   SLASH_OR_TAG_RE,
+  MACHINE_TURN_PREFIXES,
+  isMachineTurn,
 };

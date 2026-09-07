@@ -198,7 +198,7 @@ test("purity: importing and running transform loads no I/O module", () => {
 // Values, not source text: functions are dropped and only data is hashed, so
 // editing a comment — or a function body, which the rest of this file tests
 // behaviourally — does not trip it.
-const CONTRACT_DIGEST = "8d90915648e035a2";
+const CONTRACT_DIGEST = "ec7aea08408a9bf1";
 
 /** Stable serialisation of the contract's data exports. */
 function canonicaliseContract(value) {

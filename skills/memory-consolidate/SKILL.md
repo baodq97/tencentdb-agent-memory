@@ -27,6 +27,11 @@ tmem consolidate-context     # status + scenes + atoms DELTA + persona + doctrin
 This single call replaces the old status / scenes-list / atoms / persona reads.
 Parse the JSON once:
 
+- `busy: true` — another consolidation already holds this project's store. **Stop
+  here.** Do not read, fold or write anything; there is no partial work to do and
+  two folds of one store overwrite each other's merges. Report the message and
+  finish.
+
 - `status` — record counts (global + project). If both totals are 0, tell the user
   to run memory-seed first and stop.
 - `scenes` — existing `{name, summary, heat}`. Reuse an exact name when a topic
@@ -34,7 +39,10 @@ Parse the JSON once:
 - `atoms.project` / `atoms.global` — the DELTA since the last consolidation (the
   per-project watermark), so the pool you reason over stays bounded no matter how
   large the store grows. Cold start (no watermark) returns the full pool, correct
-  for the first run; `tmem mark-done` (step 5) advances the watermark.
+  for the first run. This call also CUTS the window this run may fold: whatever
+  another session captures while you work is deliberately left for the next run,
+  and step 5 credits exactly the window you were handed here — never "everything
+  in the store as of when you finished".
 - `persona.global` / `persona.project` — current global persona + project doctrine,
   to MERGE into (step 4) — you do not re-read them separately.
 - `changelog` — recent writes, for context.
