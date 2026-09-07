@@ -245,20 +245,65 @@ class MemoryStore {
     ).all(limit);
   }
 
-  // Incremental read: only records updated strictly after `sinceTs` (an ISO-8601
-  // UTC string, so lexical order == chronological order). Ascending so the caller
-  // processes oldest-first, matching upstream's last_extraction_updated_time
-  // cursor. Empty `sinceTs` degrades to the whole pool (cold-start fallback).
-  recordsSince(sinceTs = "", typeFilter = "", limit = 1000) {
-    if (!sinceTs) return this.allRecords(typeFilter, limit);
-    if (typeFilter) {
-      return this.db.prepare(
-        "SELECT * FROM l1_records WHERE type=? AND updated_time > ? ORDER BY updated_time ASC LIMIT ?"
-      ).all(typeFilter, sinceTs, limit);
-    }
+  // Incremental read: records updated strictly after `sinceTs` and, when an upper
+  // bound is given, no later than `untilTs` (ISO-8601 UTC strings, so lexical
+  // order == chronological order). Ascending so the caller processes oldest-first,
+  // matching upstream's last_extraction_updated_time cursor. No bounds at all
+  // degrades to the whole pool (cold-start fallback).
+  //
+  // `untilTs` is the READ half of the consolidation cursor: the runner cuts the
+  // cursor BEFORE it spawns the child and advances the watermark to exactly that
+  // value afterwards, so the window the child reads and the window the watermark
+  // credits must be the same window. Without this bound the child could read an
+  // atom that arrived mid-run and the watermark would still stop short of it —
+  // harmless (it is re-read next run) but it makes "read" and "credited" two
+  // different sets, which is how the original defect hid.
+  recordsSince(sinceTs = "", typeFilter = "", limit = 1000, untilTs = "") {
+    if (!sinceTs && !untilTs) return this.allRecords(typeFilter, limit);
+    const where = [];
+    const params = [];
+    if (typeFilter) { where.push("type = ?"); params.push(typeFilter); }
+    if (sinceTs) { where.push("updated_time > ?"); params.push(sinceTs); }
+    if (untilTs) { where.push("updated_time <= ?"); params.push(untilTs); }
+    params.push(limit);
     return this.db.prepare(
-      "SELECT * FROM l1_records WHERE updated_time > ? ORDER BY updated_time ASC LIMIT ?"
-    ).all(sinceTs, limit);
+      `SELECT * FROM l1_records WHERE ${where.join(" AND ")} ORDER BY updated_time ASC LIMIT ?`
+    ).all(...params);
+  }
+
+  /**
+   * The consolidation CURSOR: the newest `updated_time` this store can promise a
+   * single run will actually READ, given that a run reads at most `limit` rows.
+   *
+   * MAX(updated_time) was the old answer and it was wrong whenever the backlog
+   * exceeded the limit. Reproduced end-to-end: 600 atoms, no watermark, one run —
+   * the child read m_0000..m_0499 and the watermark advanced to m_0599's
+   * timestamp, so m_0500..m_0599 were credited as consolidated without ever being
+   * read by anything, permanently. The live store has a project with 1,967
+   * pending atoms and no watermark, where the same run would have lost 1,467.
+   *
+   * So: return the largest B for which `count(sinceTs < updated_time <= B) <=
+   * limit`. Three cases —
+   *   • the whole backlog fits ⇒ MAX(updated_time), identical to the old answer;
+   *   • it does not ⇒ the last timestamp STRICTLY BELOW the first unreadable row,
+   *     which also keeps a group of rows sharing one timestamp whole (a window
+   *     cut mid-tie would be truncated by the LIMIT and lose rows the same way);
+   *   • more than `limit` rows share the single oldest timestamp in the window ⇒
+   *     "" — no window can be both readable and creditable, so the caller must
+   *     not advance. Pathological (it needs 500+ atoms at the same millisecond)
+   *     and safe: the window is simply re-offered next run.
+   */
+  consolidationCursor(sinceTs = "", limit = 500) {
+    const since = sinceTs || "";
+    // The (limit+1)-th row of the window: the first row this run could NOT read.
+    const overflow = this.db.prepare(
+      "SELECT updated_time AS t FROM l1_records WHERE updated_time > ? ORDER BY updated_time ASC LIMIT 1 OFFSET ?"
+    ).get(since, limit);
+    if (!overflow || !overflow.t) return this.maxUpdatedTime();
+    const r = this.db.prepare(
+      "SELECT MAX(updated_time) AS m FROM l1_records WHERE updated_time > ? AND updated_time < ?"
+    ).get(since, overflow.t);
+    return (r && r.m) || "";
   }
 
   // Newest updated_time in the store, "" if empty. Used to advance the

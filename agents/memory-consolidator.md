@@ -44,6 +44,11 @@ Load everything in ONE call — `tmem consolidate-context` (status + scenes + at
 delta + persona + doctrine + changelog) — then write scenes (`tmem write-scenes`,
 batched), write persona, and mark completion.
 
+That first call is also the run's boundary: it takes a short lease on the project
+store and cuts the window this run may fold. If it comes back `busy: true`,
+another consolidation is already folding this store — stop, write nothing, and say
+so.
+
 ## Quality standards
 
 - **Atoms only — never explore the repo.** Consolidate from what `consolidate-context`
@@ -58,16 +63,18 @@ batched), write persona, and mark completion.
 
 ## When done
 
-Mark consolidation complete for THIS project — resets its counter, advances its
-read watermark + cascade marker, and releases its per-project lock:
+Mark consolidation complete for THIS project:
 
 ```bash
 tmem mark-done
 ```
 
-Counters and locks are per-project. If you were dispatched to consolidate a
-specific store (a blind store named with its path), run the skill AND `mark-done`
-with `CLAUDE_PROJECT_DIR` set to that path, so the right project's lock is released:
+This ends the lease and credits exactly the window `consolidate-context` cut —
+which is why `mark-done` without that read moves nothing, and says so.
+
+Counters are per-project. If you were dispatched to consolidate a specific store
+(a blind store named with its path), run the skill AND `mark-done` with
+`CLAUDE_PROJECT_DIR` set to that path, so the right project is marked:
 
 ```bash
 CLAUDE_PROJECT_DIR=<path> tmem mark-done

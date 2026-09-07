@@ -5,8 +5,14 @@
 // cursor is `state.projects[<hash>].last_consolidated` (already written by
 // updateState, previously read by nobody). Three behaviours:
 //   #1 `tmem atoms project --since <ts>` returns only records updated_time > ts
-//   #2 `tmem mark-done` advances the watermark to max(updated_time) processed
+//   #2 `tmem mark-done` advances the watermark to the window the READ cut
 //   #3 `tmem atoms project --since-last` reads that watermark (full on cold start)
+//
+// #2 used to read "advances the watermark to max(updated_time)", and that was the
+// defect: max(updated_time) is computed when mark-done runs, i.e. AFTER the fold,
+// so every atom captured while the agent was folding got credited without being
+// read. The manual path now cuts its window at the read (`consolidate-context`)
+// and spends it at mark-done; a bare mark-done with no cut moves nothing.
 const { test } = require("node:test");
 const assert = require("node:assert");
 const { execFileSync } = require("node:child_process");
@@ -64,18 +70,33 @@ test("#1 atoms --since scopes the read to the delta (not the whole pool)", () =>
   assert.deepStrictEqual(ids, ["c"], "only records updated after T2 should return");
 });
 
-test("#2 mark-done advances the per-project watermark to max(updated_time)", () => {
+function tmemIn(home, proj, args) {
+  return execFileSync("node", [CLI, ...args], {
+    encoding: "utf-8", env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: proj },
+  });
+}
+
+test("#2 mark-done advances the per-project watermark to the window the read cut", () => {
   const { home, proj } = tmpEnv();
   const hash = seed(home, proj, [
     { id: "a", content: "first atom", ts: T1 },
     { id: "b", content: "second atom", ts: T2 },
     { id: "c", content: "third atom", ts: T3 },
   ]);
-  execFileSync("node", [CLI, "mark-done"], {
-    encoding: "utf-8", env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: proj },
-  });
+  tmemIn(home, proj, ["consolidate-context"]);   // the agent's read: cuts the window
+  tmemIn(home, proj, ["mark-done"]);
   const state = JSON.parse(fs.readFileSync(path.join(home, ".memory-tencentdb", "state.json"), "utf-8"));
   assert.strictEqual(state.projects[hash].last_consolidated, T3);
+});
+
+test("#2b mark-done with no read behind it advances nothing", () => {
+  const { home, proj } = tmpEnv();
+  const hash = seed(home, proj, [{ id: "a", content: "first atom", ts: T1 }]);
+  tmemIn(home, proj, ["mark-done"]);
+  const sp = path.join(home, ".memory-tencentdb", "state.json");
+  const state = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
+  assert.ok(!(state.projects && state.projects[hash] && state.projects[hash].last_consolidated),
+    "nothing was demonstrably read, so nothing is credited");
 });
 
 test("#3 atoms --since-last reads the watermark; full pool on cold start", () => {
@@ -89,10 +110,9 @@ test("#3 atoms --since-last reads the watermark; full pool on cold start", () =>
   const cold = atoms(["project", "--since-last"], home, proj);
   assert.strictEqual((cold.project || []).length, 3, "cold start returns the full pool");
 
-  // Consolidate → watermark advances to T3.
-  execFileSync("node", [CLI, "mark-done"], {
-    encoding: "utf-8", env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: proj },
-  });
+  // Consolidate (read, then complete) → watermark advances to T3.
+  tmemIn(home, proj, ["consolidate-context"]);
+  tmemIn(home, proj, ["mark-done"]);
   // A new atom arrives after consolidation.
   seed(home, proj, [{ id: "d", content: "fourth atom", ts: T4 }]);
   const delta = atoms(["project", "--since-last"], home, proj);

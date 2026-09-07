@@ -150,7 +150,7 @@ tmem sync [--full]              Embed missing vectors (delta); --full rebuilds b
 tmem atoms [global|project|all] Dump L1 atoms as JSON
 tmem sessions                   List pending sessions
 tmem init                       Initialize memory store
-tmem mark-done                  Mark consolidation complete
+tmem mark-done                  Mark consolidation complete (counter + cascade marker)
 tmem config consolidate-every N Set the counter-arm threshold (default 10 new turns)
 tmem config consolidate-on-session-end N  Session-arm threshold (default 3 new turns)
 tmem config auto-consolidate [on|off]     Headless auto-consolidation (default on)

@@ -122,8 +122,27 @@ const NON_RECALL_TYPES = new Set(["episodic", "persona"]);
 /** Untyped records are eligible: absence of a type is not a decision to exclude. */
 function isVectorEligible(type) { return !NON_RECALL_TYPES.has(String(type || "")); }
 
+/* ------------------------------------------------------------------ *
+ * Consolidation read window.
+ * ------------------------------------------------------------------ */
+
+/**
+ * How many L1 atoms ONE consolidation run may read from a store.
+ *
+ * It crosses three module boundaries and used to be a bare `500` in each of
+ * them: `cli.js` cmdAtoms, `cli.js` cmdConsolidateContext, and — implicitly, by
+ * having no opinion at all — the cursor the runner cuts. That last omission is
+ * the bug this constant exists to make impossible: the child read at most 500
+ * rows while the watermark advanced to MAX(updated_time), so on a backlog of
+ * 1,967 atoms the run would read 500 and credit 1,967. The cursor is now
+ * computed against THIS number (memory_store.consolidationCursor), so the window
+ * offered and the window credited are the same window by construction.
+ */
+const CONSOLIDATE_READ_LIMIT = 500;
+
 module.exports = {
   LOW_SIGNAL, LOW_SIGNAL_CLASSES,
+  CONSOLIDATE_READ_LIMIT,
   CHARS_PER_TOKEN, DEFAULT_TIER0_MAX_TOKENS,
   NON_RECALL_TYPES, isVectorEligible,
 };

@@ -3,6 +3,208 @@
 All notable changes to this plugin are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Independent fixes: recall stops firing on the harness's own noise, `tmem doctor` denominates
+reachability over the population that can actually be recalled instead of over everything
+captured, a lock collision in consolidation is now visibly deferred instead of looking like a
+loss — and consolidation's two lifecycle primitives, how-far-have-we-folded and the mutex,
+move from the model's judgement to software, on BOTH the automatic and the manual path. The
+boundary that restores: the LLM decides WHAT is worth folding, software decides HOW FAR has
+been folded, and reclaiming the mutex requires proof that the previous holder's work — not
+merely the process that wrote the lock file — is over.
+
+### Added
+- **A read-side gate on machine-generated turns.** `NOISE_GATE_CLASSES` in `low_signal.js`
+  only ever gated the WRITE side — what auto-capture refuses to store. Nothing gated the
+  QUERY side, so a `<task-notification>`, `<cross-session-message>`, or other
+  harness-to-itself turn searched memory and injected it exactly like a human prompt would.
+  Measured on the real recall log (2,658 turns, `recall_log.jsonl` + `.jsonl.1`,
+  2026-09-04 -> 2026-09-07): 293 of 2,658 turns (11.0%) open with a machine prefix, yet
+  they were injected on **66.9%** of turns versus **38.9%** for the 2,365 real user
+  turns — nearly double the hit rate, because a notification is long and keyword-rich, not
+  because it is a question anyone asked. `isMachineTurn()` (`scripts/low_signal.js`) is
+  checked at the top of both `recall()` and `recallAsync()` in `scripts/memory_recall.js`;
+  a matched turn still logs (empty `factIds`), so the effect stays measurable rather than
+  becoming an invisible no-op.
+- **`tmem doctor` and the view dashboard denominate reachability over the recall-eligible
+  population, not episodic volume or all records.** Measured across 89 real stores: 5,713
+  total L1 records, of which only 115 (2.0% — 96 semantic + 19 instruction) are
+  vector-eligible; the rest (episodic, persona) are structurally unreachable by design, not
+  broken. `scripts/memory_reachability.js` gained a pure
+  `summarizeEligibleReachability(atoms, injectedIds)`; `scripts/view/transform.js` sums it
+  per-store into a new `totals.reachability = {eligible, hot, cold, hotPct, episodicVolume,
+  ineligibleVolume}` on the Snapshot (`hot`/`cold`/`hotPct` read `null`, not `0`, when the
+  recall log itself is unmeasured). `tmem doctor`'s plain-text output and the view's tile
+  row both print the eligible/hot percentage and the episodic count separately, with no
+  percentage attached to the count. View schema bumped 6 -> 7.
+
+### Fixed
+- **Consolidation no longer marks atoms consolidated that nobody read.** The watermark was
+  advanced by `tmem mark-done`, called by the model from inside the `claude -p` child, to
+  `MAX(updated_time)` as of that moment — i.e. after the child had already read its atoms.
+  Runs take a median of 69.0s and as long as 164.3s (all 17 records in
+  `consolidation_runs.jsonl` carrying `duration_ms`, 2026-09-04 -> 2026-09-07; the median is
+  quoted rather than a p95 because n=17 does not support a percentile to a tenth of a
+  second — the maximum is the honest ceiling, and 11 of the 17 exceed 60s) and an active
+  session keeps capturing throughout, so every atom written between the child's
+  `atoms --since-last` and its `mark-done` was credited without ever being read. Measured in
+  that same window by querying each run's own project store for `updated_time` inside
+  `[at - duration_ms, at]`: **2 atoms across those 17 runs**, both episodic, both on
+  2026-09-04, both in runs that exited 0 with verdict `changed` — small, because a write has
+  to land inside the few minutes a run is actually in flight, but silent, permanent and
+  unlogged when it does. `scripts/consolidate_runner.js` now cuts the cursor
+  (`projectCursor(hash)`, one definition in `memory_writer.js`) BEFORE it spawns the child,
+  passes it down as `TMEM_CONSOLIDATE_CURSOR`, and advances the watermark itself to exactly
+  that value — on exit 0 only. A spawn error or non-zero exit does not advance (the same
+  window is re-offered next run); a `no-op` verdict does, because "I read them and none were
+  durable" is a successful outcome and not advancing would re-read a forever-growing window.
+  `MemoryStore.recordsSince()` gained an `untilTs` upper bound, applied by `tmem atoms` and
+  `tmem consolidate-context`, so the window that is read and the window that is credited are
+  the same window. Each run record now carries `cursor` and `watermark_advanced`, so the log
+  can answer "how far had we folded" after the fact. `setConsolidatedWatermark()` is also
+  monotonic now: two paths write it, and an interleaving that let the older write land last
+  would re-offer atoms already folded.
+
+- **The cursor stops at the last atom a run can actually READ, not at the newest atom that
+  exists.** A run reads at most 500 rows per store (`CONSOLIDATE_READ_LIMIT`, now one
+  definition in `constants.js` instead of a bare `500` in each of `tmem atoms` and
+  `tmem consolidate-context`), so advancing to `MAX(updated_time)` credited every atom past
+  the 500th as consolidated without anything having read it — permanently, since the
+  watermark had moved past them. Reproduced end to end: 600 seeded atoms, no watermark, one
+  real `runConsolidation` — the child read `m_0000..m_0499`, the watermark advanced to
+  `m_0599`, and the next `atoms --since-last` returned nothing. Reachable on the live store:
+  one project (`-home-bd-projects-aiquinta-platform`) holds 1,967 records with no watermark,
+  where the first run under the old rule would have credited 1,467 atoms nobody read.
+  `MemoryStore.consolidationCursor(since, limit)` now returns the largest timestamp `B` for
+  which `count(since < updated_time <= B) <= limit`, keeping same-timestamp groups whole, and
+  `projectCursor()` is defined in terms of it.
+
+- **The consolidation mutex is no longer opened by the model, and no longer released by
+  whoever happens to call.** `tmem mark-done` unlinked the per-project lock file, so the lock
+  was released by a language model's judgement about which step it was on: call it early and
+  the store is unguarded for the rest of the run — minutes — long enough for another trigger
+  to start a second consolidation on it, which is the race the move to headless dispatch was
+  made to kill. `mark-done` no longer touches the lock; `consolidate_runner.js`'s
+  `finally { releaseLock }` is the only release path for a run it started (it cannot run
+  before the child exits, because `spawnSync` is synchronous). Because that finally now
+  ALWAYS runs, `releaseLock()` had to stop being ownership-blind: it unlinked whatever was at
+  the path, so a single reclaim or a manual `tmem unlock` mid-run did not degrade to one
+  overlapping run but to an unguarded store — R1's finally deleting R2's live lock, R3
+  starting beside R2, and so on. Each lock now carries a `token` (and an `owner`), and a
+  release must be the creator's, or an entitled path's (`mark-done` may end a MANUAL lease
+  and nothing else), or an explicit `force` — which is what `tmem unlock` is, and it now says
+  when it has just unlocked a live run.
+
+- **The manual consolidation path is guarded too — it had no mutual exclusion of any kind.**
+  `/memory-seed` → the memory-consolidator agent → the memory-consolidate skill never took a
+  lock and never checked one, so a `/memory-seed` typed while a background run was in flight
+  (median 69s) read the store unbounded and wrote scenes and persona over the same files the
+  runner's child was writing: two read-modify-write cycles, the later writer wins, neither
+  ever observing the other. `tmem consolidate-context` — the skill's read phase, and the only
+  point that spans an interactive run — now takes a short LEASE on the project store and
+  returns `{busy:true}` (fold nothing, stop) when a runner holds it; `runConsolidation`
+  refuses to start on a store the lease holds. A lease records no pid, because the `tmem`
+  process that writes it exits at once while the agent keeps working, so it is judged by its
+  own shorter TTL (15 min, `TMEM_MANUAL_LEASE_TTL_MS`) and ended early by `mark-done`.
+
+- **The manual path's watermark is now cut at the READ, not recomputed at completion.**
+  Defect (1) above was fixed for the automatic path only: a bare `tmem mark-done` still
+  advanced the watermark to a live `MAX(updated_time)`, i.e. to "now", crediting whatever
+  another session had captured while the agent was folding. The same discipline now applies
+  with a different carrier: `consolidate-context` cuts the window and parks it in
+  `state.json` (`pending_read_cursor`), `mark-done` spends it exactly once. A `mark-done`
+  with no cut behind it moves the watermark **not at all** and says so — re-reading atoms is
+  free, crediting unread ones is not. Which path a `mark-done` is on is decided by
+  `TMEM_CONSOLIDATING`, not by the presence of the cursor: the cursor is legitimately empty
+  when a store is empty or unreadable, and reading that absence as "no runner" is how
+  advance-to-now survived inside the automatic path's own child for a store whose `index.db`
+  was missing at cut time. `TMEM_CONSOLIDATING` is set on every child unconditionally.
+
+- **A lock is reclaimed only on proof that the previous holder's work is over — which the
+  writer's pid alone cannot give.** Staleness was time-only, justified by an architecture
+  that no longer exists (the lock's writer was the Stop hook, which exits at once). Since
+  consolidation moved to `consolidate_runner.js` the writer holds the lock across a
+  synchronous `spawnSync`, so the recorded pid IS live for the guarded window — but the work
+  is the `claude -p` GRANDCHILD, which survives its parent: SIGKILL the detached runner and
+  that child is reparented to init and keeps folding the store, while a bare pid check reads
+  "writer dead" and hands the mutex to a second consolidation. 11 of the 17 real runs exceed
+  the 60s pid grace, so that window would have covered most of a typical run — strictly worse
+  than the 30-minute TTL it replaced. The runner is spawned detached, so it leads its own
+  process group and the child inherits it; the lock records that `pgid`, and an EMPTY process
+  group — not a dead pid — is what proves a run is over. The ladder is now: younger than
+  `TMEM_LOCK_PID_GRACE_MS` (60s) ⇒ live; recorded pid alive ⇒ live, and **the TTL does not
+  override that** (reclaiming a provably-live holder is not self-healing, it is a second
+  concurrent run); pid dead with an empty process group ⇒ reclaim at once instead of wedging
+  the project for 30 minutes; anything else — an orphan still running, a lease with no pid, an
+  unreadable lock — falls back to the TTL exactly as before. `isStale` is also pure now
+  (renamed `staleReason`): it used to UNLINK from inside `isLocked`, so the "cheap read-only
+  pre-check" was the thing that destroyed a live run's lock file; reclaiming happens only
+  under the existing rename-claim protocol, where exactly one racer can act on the verdict.
+
+- **A hung consolidation now has a clock.** Nothing bounded the `claude -p` child in time:
+  `--max-turns` and `--max-budget-usd` are caps on work, and a child stalled in a network call
+  satisfies both forever. That is only tolerable while a TTL can steal the lock from it, and
+  it can no longer. `spawnSync` now gets a `timeout` DERIVED from `LOCK_TTL_MS` (20 min by
+  default, `TMEM_CONSOLIDATE_TIMEOUT_MS`, always at least a minute under the TTL) rather than
+  configured beside it, so "the run outlives its own lock" is unreachable by construction; a
+  run killed that way is recorded with `timed_out: true` next to its `failed` verdict.
+
+  SCOPE LIMIT: the three records that answer "how far have we folded" — the
+  `last_consolidated` watermark, the cascade L1 marker, and `last_consolidation_turn` — are
+  still three records; collapsing them is out of scope. Their write TIMING now moves apart on
+  the automatic path (the counter and cascade marker are still written by the child's
+  `mark-done`, the watermark by the runner after the child exits), and so do their VALUES for
+  one bounded case: an atom captured mid-run is counted as folded by the counter and the
+  cascade marker and deliberately excluded by the watermark. The consequence is a delay, not
+  a loss — `planCascadeStep` skips while `currentL1 <= marker`, and the next captured turn
+  moves the counter past it and re-arms dispatch — and it is strictly better than the silent
+  credit it replaces. Previously all three were written by one call at one instant.
+
+- **A session-end trigger that lost a consolidation lock race is no longer indistinguishable
+  from a discarded run.** Measured against production log evidence
+  (`-home-bd-projects-nag-pilot-req-01`, 2026-09-05): four session-end/locked skips
+  (13:07-13:51) were followed at 14:36 by a counter-triggered run that absorbed the same
+  backlog — nothing was actually lost, but the `consolidation_runs.jsonl` record for those
+  four skips read identically to a true loss. The skip record now adds `retryable:true` and
+  `turns_since_consolidation` (verdict/reason unchanged, so the pinned
+  `test/project_lock.test.js` assertion still holds). Separately, `spawnDetachedRunner` —
+  the choke point both the counter and session-end dispatchers call — now does a cheap
+  `pipeline.isLocked(hash)` pre-check before spawning, closing the gap that let the
+  session-end dispatcher spawn a doomed `claude` process on every collision (the counter
+  arm already had an equivalent pre-filter in `memory_pipeline.js`; measured, all 9
+  `reason:"locked"` records across 24 runs (2026-09-04 -> 2026-09-07) had
+  `trigger:"session-end"`, zero `trigger:"counter"`). No new state file: the existing
+  per-project counters (`capture_state.json`) are untouched by a lock miss, so the next
+  natural trigger retries the same backlog.
+
+- **`tmem doctor` and `tmem feedback` no longer print a second, contradicting denominator.**
+  The reachability and feedback sections of both commands are rendered inline in
+  `scripts/cli.js`, not through `doctor.js`'s `renderPlanText()`, so the fix above left one
+  command printing the eligible-scoped percentage in its header and the old
+  episodic-scoped one six lines below it — two numbers about the same store that disagree,
+  neither naming the population it counted. `cmdDoctor`'s feedback line and `cmdFeedback`
+  now both call `summarizeEligibleReachability()`; the episodic outcome ratio is still
+  printed, but relabelled `capture quality (episodic — not recallable by design)` so it
+  cannot be read as recall health. `tmem feedback --json` gains `eligibleAtoms` and
+  `ineligibleAtoms`, and its existing `coldAtoms`/`coldPct` are now eligible-scoped.
+  The advice this corrects was load-bearing: `tmem feedback` called every cold atom a
+  "prune candidate" over a denominator that included the ~5.6k records `NON_RECALL_TYPES`
+  excludes from recall by design — acting on it would have deleted the entire episodic
+  capture layer to move a percentage that never measured recall. That line is now split in
+  two, and the by-design population is explicitly marked NOT a prune candidate.
+
+### Notes
+- `scripts/recall_feedback.js`'s `classifyStoreAtoms()` is no longer called from production
+  code (its hot/cold split over an unfiltered atom list is exactly the denominator this
+  wave removed). It is still exported and still covered by `test/recall_feedback.test.js`;
+  deleting it was left out of scope so this wave stays a reporting change.
+- `bench/` is gitignored in full (`git ls-files bench/` is empty), so
+  `bench/machine_turn_injection.js` — the instrument that reproduces the 293/2,658
+  machine-turn split — is not versioned and cannot be re-run from a fresh clone. This is
+  the repo's existing convention, deliberately kept, and applies equally to the benches the
+  0.8.4 recall-precision numbers were measured with.
+
 ## [0.8.4] — 2026-09-04
 
 Retrieval becomes asymmetric, and every relevance floor is re-derived on the index that
