@@ -355,16 +355,30 @@ function renderFactDocs(ordered, limit, maxChars) {
 // Re-tune only with bench/negative_control.json in the loop; a sweep whose top
 // candidate is the incumbent cannot discover that the incumbent is too low.
 //
-// PROVISIONAL, AND FITTED TIGHT. Against the full 20-query control the off-topic
-// maximum is 0.547, so 0.55 clears it by only 0.003 (the earlier 10-query probe
-// read 0.533 and was flattering). The margin is thin because the two populations
-// barely separate at all on RAW embeddings — measured gap 0.009. That is a
-// property of embedding query and document with no EmbeddingGemma prompt prefix,
-// which is what embedding_service.js does today. Measured A/B: adding the prefix
-// widens the gap to 0.071 and moves this constant DOWN to ~0.41, while lifting
-// Recall@1 73.3% -> 83.3% and Recall@5 96.7% -> 100%. Re-derive here, not by
-// intuition — the constant moves down, not up. bench/RESULT_RECALL_PRECISION.md.
-const SEMANTIC_FACT_FLOOR = 0.55;
+// 0.41 — RE-DERIVED ON THE POST-PREFIX INDEX, NOT INHERITED. The 0.55 above was
+// measured on RAW symmetric embeddings, where the two populations were 0.009
+// apart: a margin thinner than the sampling noise of a 20-query control, i.e. a
+// floor that worked on its own sample. Since 0.8.4 queries and documents go
+// through the EmbeddingGemma retrieval template (scripts/embed_prompt.js), which
+// moves the whole distribution DOWN and pulls the populations apart.
+//
+// Measured on the LIVE index after migration (bench/live_index_check.js,
+// 2026-09-04, 116 in-scope facts, 30 held-out paraphrases + 20 off-topic controls):
+//   OFF-topic top-1: min 0.257  p50 0.323  max 0.401
+//   ON-topic  top-1: min 0.472  p50 0.649  max 0.762
+//   separation 0.071 — 7.9x the 0.009 this constant used to live inside
+// 0.41 = ceil((off_max + 0.005) * 100) / 100: the lowest value above every
+// observed off-topic top-1, plus a deliberate margin so the constant is not fitted
+// to the exact maximum of a 20-item sample. It keeps 30/30 on-topic queries, where
+// 0.55 on raw embeddings kept 29/30.
+//
+// KEEPING 0.55 AFTER THE PREFIX WOULD HAVE SILENTLY EMPTIED THE BLOCK: the new
+// on-topic median is 0.649 but its minimum is 0.472, and every off-topic query now
+// scores below 0.41. The constant moves DOWN with the template, never up.
+//
+// Re-tune only with bench/negative_control.json in the loop, and only after
+// re-running bench/live_index_check.js on the index in force.
+const SEMANTIC_FACT_FLOOR = 0.41;
 
 function cosineSim(a, b) {
   if (!a || !b || a.length !== b.length) return -1;

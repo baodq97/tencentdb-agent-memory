@@ -12,9 +12,10 @@ const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs");
 
+const { queryText, docText, MAX_INPUT_CHARS } = require("./embed_prompt.js");
+
 const DEFAULT_MODEL = "hf:ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/embeddinggemma-300m-qat-Q8_0.gguf";
 const DIMENSIONS = 768;
-const MAX_INPUT_CHARS = 512;
 
 function sanitizeAndNormalize(vec) {
   const arr = Array.from(vec).map(v => Number.isFinite(v) ? v : 0);
@@ -61,6 +62,25 @@ class EmbeddingService {
     const truncated = text.length <= MAX_INPUT_CHARS ? text : text.slice(0, MAX_INPUT_CHARS);
     const embedding = await this.embeddingContext.getEmbeddingFor(truncated);
     return sanitizeAndNormalize(embedding.vector);
+  }
+
+  /**
+   * The two retrieval sides, for callers that hold the service IN-PROCESS (the
+   * `tmem sync` backfill, memory_init, memory_store's write-through) rather than
+   * going through the daemon client. Same template as embed_client's pair — both
+   * import it from embed_prompt.js, so a query embedded here and a document
+   * embedded there are still the asymmetric pair the model expects.
+   *
+   * `embed()` stays raw and is NOT deprecated: the bench measures the transport
+   * with it, and `tmem daemon status` pings with it. It is only wrong as a
+   * RETRIEVAL call, which is why no retrieval path calls it any more.
+   */
+  async embedQuery(text) {
+    return this.embed(queryText(text));
+  }
+
+  async embedDoc(text, title) {
+    return this.embed(docText(text, title));
   }
 
   async embedBatch(texts) {

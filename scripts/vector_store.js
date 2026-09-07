@@ -104,6 +104,63 @@ class VectorStore {
     return out;
   }
 
+  /**
+   * `vec_meta` accessors — the schema has existed since the first version and had
+   * no reader or writer until the embedding generation needed somewhere to live.
+   *
+   * WHY A STAMP IS NEEDED AT ALL. Cosine between a vector built from a prefixed
+   * string and one built from raw text is not "slightly off", it is a comparison
+   * of two different embeddings of two different strings. A half-migrated index
+   * therefore does not degrade, it reports confident nonsense — and every consumer
+   * here (the KNN search, the atom floor's read-back) takes that number at face
+   * value. The stamp is what makes "these vectors are from another generation"
+   * detectable instead of invisible.
+   *
+   * Read-only stores return null from setMeta rather than throwing: the read path
+   * must never write, and a caller that stamps opportunistically is not a bug.
+   */
+  getMeta(key) {
+    if (this.degraded || !this.db) return null;
+    try {
+      const r = this.db.prepare("SELECT value FROM vec_meta WHERE key = ?").get(key);
+      return r ? String(r.value) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  setMeta(key, value) {
+    if (this.degraded || !this.db || this.readOnly) return false;
+    try {
+      this.db.prepare(
+        "INSERT INTO vec_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+      ).run(key, String(value));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Is this store's index built with the embedding template the running code uses?
+   *
+   * An EMPTY store counts as current: it has no vectors to be wrong about, and
+   * reporting a fresh install as stale would send every new user to a migration
+   * they do not need. A store with vectors and NO stamp is pre-0.8.4 and therefore
+   * stale by definition — that is the whole population this gate was added for.
+   *
+   * Note what this does NOT cover: a store holding records but zero vectors. Its
+   * atoms reach recall through FTS with no similarity known, which applyAtomFloor
+   * keeps. That hole predates this stamp and is a coverage question (`tmem sync`),
+   * not a generation one; conflating them here would empty the block on any fresh
+   * install before its first sync.
+   */
+  isCurrentGeneration(currentVersion) {
+    if (this.degraded || !this.db) return true;
+    if (this.count() === 0) return true;
+    return this.getMeta("embed_version") === currentVersion;
+  }
+
   upsertVec(recordId, embedding) {
     if (this.degraded || !this.db) return false;
     try {

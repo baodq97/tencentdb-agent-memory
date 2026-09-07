@@ -76,6 +76,10 @@ function storeExtract(slug, {
   scenes = null,
   indexDbBytes = 4096,
   vectorDbBytes = 0,
+  // Which embedding generation built the vectors. Defaults to the CURRENT one so
+  // every pre-existing fixture keeps meaning what it meant: those stores are not
+  // stale, they are just stores. Pass null for a pre-0.8.4 (unstamped) index.
+  embedVersion = require("../scripts/embed_prompt.js").EMBED_VERSION,
 } = {}) {
   const ref = {
     slug, scope, label: slug,
@@ -99,7 +103,7 @@ function storeExtract(slug, {
   else if (vectors === "error") vectorsRead = C.errored("l1_vec unreadable", { recordIds: null, count: null, dimensions: null });
   else {
     const ids = new Set(vectors);
-    vectorsRead = C.ok({ recordIds: ids, count: vectorRows ?? ids.size, dimensions: ids.size ? 768 : null });
+    vectorsRead = C.ok({ recordIds: ids, count: vectorRows ?? ids.size, dimensions: ids.size ? 768 : null, embedVersion });
   }
 
   const scenesRead = scenes === null
@@ -194,7 +198,7 @@ test("purity: importing and running transform loads no I/O module", () => {
 // Values, not source text: functions are dropped and only data is hashed, so
 // editing a comment — or a function body, which the rest of this file tests
 // behaviourally — does not trip it.
-const CONTRACT_DIGEST = "0e5c80efdbd054e1";
+const CONTRACT_DIGEST = "8d90915648e035a2";
 
 /** Stable serialisation of the contract's data exports. */
 function canonicaliseContract(value) {
@@ -720,6 +724,48 @@ test("heat: the mirror-image mismatch — a writer above the documented scale", 
   assert.equal(g.evidence.offScale, 1);
   assert.equal(g.evidence.observedMax, 120);
   assert.equal(snap.totals.heat.scenesWithACue, 1);
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Embedding generation — the gap every coverage metric is blind to
+// ───────────────────────────────────────────────────────────────────────────
+
+test("vectors from an older embedding generation are a CRITICAL gap, not a coverage one", () => {
+  // Fully covered — one record, one vector — so every coverage check here reads
+  // green. That is exactly why this needs its own kind: the defect is that the
+  // numbers are meaningless, not that they are missing.
+  const snap = T.transformRoot(rootExtract([
+    storeExtract("alpha", {
+      records: [rec("m_1", { type: "instruction" })],
+      vectors: ["m_1"],
+      embedVersion: null, // pre-0.8.4: vectors exist, no stamp
+    }),
+  ]));
+
+  const g = snap.gaps.find((x) => x.kind === GAP_KIND.VECTORS_STALE);
+  assert.ok(g, `expected a vectors_stale gap, got ${JSON.stringify(gapKinds(snap))}`);
+  assert.equal(g.severity, "critical");
+  assert.equal(g.unmeasured, false);
+  assert.equal(g.suggestion, "tmem sync --full");
+  // A delta sync finds nothing missing and would change nothing — the evidence has
+  // to name both generations so the reader can see why --full is the fix.
+  assert.equal(g.evidence.currentGeneration, require("../scripts/embed_prompt.js").EMBED_VERSION);
+  assert.match(String(g.evidence.storedGeneration), /unstamped/);
+  // And it must NOT be reported as a coverage shortfall on top.
+  assert.equal(gapKinds(snap).includes(GAP_KIND.VECTORS_MISSING), false);
+});
+
+test("a store on the current generation, and an EMPTY store, raise no staleness gap", () => {
+  const snap = T.transformRoot(rootExtract([
+    storeExtract("alpha", { records: [rec("m_1", { type: "instruction" })], vectors: ["m_1"] }),
+    // Empty l1_vec: it has no vectors to be from the wrong generation. It is
+    // already reported as a coverage critical; saying "stale" as well would be a
+    // second finding about the same absence.
+    storeExtract("beta", { records: [rec("m_2", { type: "instruction" })], vectors: [], embedVersion: null }),
+    // No vectors.db at all — a store that has simply never been synced.
+    storeExtract("gamma", { records: [rec("m_3", { type: "instruction" })] }),
+  ]));
+  assert.equal(gapKinds(snap).includes(GAP_KIND.VECTORS_STALE), false);
 });
 
 test("heat: no scenes -> no heat mismatch gap (nothing was measured to disagree)", () => {

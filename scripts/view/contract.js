@@ -72,8 +72,12 @@ const { LOW_SIGNAL, LOW_SIGNAL_CLASSES } = require("../constants.js");
  *   5 — Snapshot gained `upgradeNudges` (string[]): doctor.buildUpgradeNudges'
  *       activation hints, surfaced on the health screen. RootExtract gained
  *       `currentSlug` (the resolved current-project slug) to feed them.
+ *   6 — Embedding generations. VectorIdsRead gained `embedVersion` (the store's
+ *       `vec_meta.embed_version`, null before 0.8.4), StoreSummary gained the
+ *       same field, and GAP_KIND gained {@link GAP_KIND.VECTORS_STALE} for a
+ *       store whose vectors were built by a different embedding template.
  */
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 /* ------------------------------------------------------------------ *
  * 1. Status + Source
@@ -543,7 +547,7 @@ function storeSizeBytes(ref) {
  */
 
 /**
- * @typedef {Source<{recordIds: Set<string>|null, count: number|null, dimensions: number|null}>} VectorIdsRead
+ * @typedef {Source<{recordIds: Set<string>|null, count: number|null, dimensions: number|null, embedVersion: string|null}>} VectorIdsRead
  *   THE reading that started all this. `unmeasured` when vectors.db is absent
  *   or sqlite-vec fails to load — reason must say which. Never report 0 for a
  *   store whose vector capability could not be exercised.
@@ -831,6 +835,19 @@ const GAP_KIND = Object.freeze({
   VECTORS_MISSING: "vectors_missing",           // records with no embedding
   VECTORS_UNMEASURABLE: "vectors_unmeasurable", // sqlite-vec absent/failed — not a gap
   VECTORS_ORPHANED: "vectors_orphaned",         // embedding with no record
+  /**
+   * The store's vectors were built by an earlier embedding generation — a
+   * different prompt template, truncation budget or model (see
+   * scripts/embed_prompt.js EMBED_VERSION).
+   *
+   * NOT a coverage gap, and deliberately its own kind rather than a flavour of
+   * VECTORS_MISSING: every vector is present, so every coverage check reads
+   * green, while the cosines they produce against a current-generation query are
+   * comparisons between embeddings of two different strings. Recall's own gate
+   * drops such a store's atoms entirely, so a store in this state is not merely
+   * imprecise, it is contributing nothing — which is worth saying out loud.
+   */
+  VECTORS_STALE: "vectors_stale",
   STORE_UNREADABLE: "store_unreadable",
   DUPLICATE_RECORDS: "duplicate_records",
   LOW_SIGNAL_RECORDS: "low_signal_records",
@@ -1120,7 +1137,7 @@ function validateCoverage(cov, label = "coverage") {
  *   3. Append `persona\t${personaBytes|"NA"}\t${personaMtime|""}`.
  *   4. Join with `\n`, prefix `v${SCHEMA_VERSION}\n`, and take
  *        sha256(utf8) -> hex -> first 16 chars.
- *   5. Format: `s<SCHEMA_VERSION>-<16 hex>` — currently `s5-<16 hex>`.
+ *   5. Format: `s<SCHEMA_VERSION>-<16 hex>` — currently `s6-<16 hex>`.
  *      The version is inside the id on purpose: two runs over identical state
  *      but different contract semantics MUST NOT share an id, and a file named
  *      `snapshot-s2-*.json` is self-evidently pre-v3.

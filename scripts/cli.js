@@ -583,6 +583,7 @@ async function cmdSync(args) {
   const { MemoryStore, isVectorEligible } = req("memory_store.js");
   const { VectorStore } = req("vector_store.js");
   const { getEmbeddingService } = req("embedding_service.js");
+  const { EMBED_VERSION } = req("embed_prompt.js");
 
   // Target stores. Default: current project + global (matches recall's view).
   // --all: global + every project store. Shared with prune/dedup so the "which
@@ -646,15 +647,20 @@ async function cmdSync(args) {
   if (degradedStores > 0) {
     console.error(`⚠ ${degradedStores} store(s) skipped: sqlite-vec did not load, so vectors cannot be embedded here. Run where the vector engine is available (installed plugin / daemon host).`);
   }
-  if (!todo.length) {
+  // "No ATOMS to embed" is not "nothing to do": a store can hold zero
+  // vector-eligible records and hundreds of scene-fact bullets, and on a --full
+  // pass those bullets are exactly what needs re-embedding. Returning here is
+  // therefore only correct when the fact warm has nothing to do either, which
+  // `warmFactsForSync` decides for itself — so on --full we fall through to it.
+  if (!todo.length && !full) {
     console.log(degradedStores > 0
       ? "No vectors embedded (vector engine unavailable — see warning above)."
-      : (full ? "No records to embed." : "All vectors in sync."));
+      : "All vectors in sync.");
     return;
   }
 
   const svc = getEmbeddingService();
-  console.log(`${full ? "Reindexing" : "Syncing"} ${todo.length} vectors...`);
+  if (todo.length) console.log(`${full ? "Reindexing" : "Syncing"} ${todo.length} vectors...`);
   svc.startWarmup();
   await svc.waitForReady();
   if (!svc.isReady()) { console.error("Embedding not available."); return; }
@@ -669,15 +675,65 @@ async function cmdSync(args) {
   for (const [dir, records] of Object.entries(byDir)) {
     const vecStore = new VectorStore(path.join(dir, "vectors.db"));
     if (vecStore.degraded) { vecStore.close(); continue; }
+    let embedded = 0;
     for (const r of records) {
-      const vec = await svc.embed(r.content);
-      if (vec) { vecStore.upsertVec(r.record_id, vec); done++; }
+      // DOCUMENT side, untitled — same call the write-through path makes, so a
+      // record embedded at capture time and the same record re-embedded here are
+      // byte-identical inputs to the model.
+      const vec = await svc.embedDoc(r.content, null);
+      if (vec) { vecStore.upsertVec(r.record_id, vec); done++; embedded++; }
+    }
+    // Stamp only when this pass re-embedded EVERYTHING in the store. On a delta
+    // sync the untouched vectors are whatever generation they already were, so
+    // claiming the store is current would bless exactly the mixed index the stamp
+    // exists to prevent — a store migrates on `--full`, or not at all.
+    if (full && embedded === records.length) {
+      vecStore.setMeta("embed_version", EMBED_VERSION);
     }
     vecStore.close();
   }
 
+  await warmFactsForSync(full, targets, svc);
+
   svc.close();
-  console.log(`Embedded ${done}/${todo.length} vectors.`);
+  if (todo.length) console.log(`Embedded ${done}/${todo.length} vectors.`);
+}
+
+/**
+ * The OTHER half of a migration: the scene-fact vector cache.
+ *
+ * A store holds two embedded populations — atoms in `vectors.db`, and the
+ * distilled scene-fact bullets in `scene_facts_vec.json`. `tmem sync` used to
+ * know about the first only, which was fine while both were built the same way.
+ * Once the embedding generation can change, a sync that re-embeds atoms and
+ * leaves the fact cache stale migrates the SMALLER population and leaves the
+ * store's primary per-turn surface (`<recalled-facts>`) to trickle back at 12
+ * bullets a turn — ~285 turns on this store. So a `--full` pass does both.
+ *
+ * Delta syncs skip it: on an unchanged generation the per-turn path fills new
+ * bullets within a few turns, which is what it is tuned for.
+ */
+async function warmFactsForSync(full, targets, svc) {
+  if (!full) return;
+  const { warmFactVecCache } = req("memory_recall.js");
+  const dirs = targets.map(([, dir]) => dir).filter((d) => fs.existsSync(d));
+  if (!dirs.length) return;
+
+  // Wrapped to the {vector} shape the per-turn path uses, so warm and hot fill
+  // the SAME cache through the same contract.
+  const embedDocFn = async (text, title) => ({ vector: await svc.embedDoc(text, title) });
+
+  let last = -1;
+  const res = await warmFactVecCache(dirs, embedDocFn, (doneN, total) => {
+    const pct = total ? Math.floor((doneN / total) * 10) : 10;
+    if (pct !== last) { last = pct; process.stdout.write(`\rWarming scene-fact vectors... ${doneN}/${total}`); }
+  });
+  if (res.missing) process.stdout.write("\r");
+  console.log(
+    res.missing
+      ? `Scene-fact vectors: embedded ${res.embedded}/${res.missing} missing (${res.total} bullets in scope).`
+      : `Scene-fact vectors: already current (${res.total} bullets in scope).`
+  );
 }
 
 // ── prune / dedup shared plumbing ──
@@ -1615,7 +1671,7 @@ async function cmdContrib(rest) {
     case "sync": {
       const store = new ContribStore(dbPath);
       const { VectorStore } = req("vector_store.js");
-      const { embedViaDaemon } = req("embed_client.js");
+      const { embedDoc } = req("embed_client.js");
       const vec = new VectorStore(path.join(contribRoot, "vectors.db"));
       const id = args[0];
       const cfg2 = loadConfig(gDir);
@@ -1624,7 +1680,10 @@ async function cmdContrib(rest) {
       for (const sid of subjects) {
         for (const a of store.getAtoms(sid)) {
           try {
-            const emb = await embedViaDaemon(a.content);
+            // DOCUMENT side. A contributor atom's dimension is the closest
+            // thing it has to a title, and it is a short label the store already
+            // carries — the same shape the scene name plays for facts.
+            const emb = await embedDoc(a.content, a.dimension);
             if (emb && emb.length) { vec.upsertVec(a.record_id, emb); n += 1; }
           } catch { /* daemon down — skip, FTS still works */ }
         }
@@ -1640,8 +1699,8 @@ async function cmdContrib(rest) {
       let merged = ftsHits.map((r) => r.record_id);
       try {
         const { VectorStore, rrfMerge } = req("vector_store.js");
-        const { embedViaDaemon } = req("embed_client.js");
-        const emb = await embedViaDaemon(query);
+        const { embedQuery } = req("embed_client.js");
+        const emb = await embedQuery(query);
         if (emb && emb.length) {
           const vec = new VectorStore(path.join(contribRoot, "vectors.db"));
           const vHits = vec.searchVec(emb, 10).map((r) => r.record_id || r.recordId);
@@ -1892,10 +1951,15 @@ function loadSnapshot(rootDir) {
 // (command string + tier). applyDoctorFixes prints `finding.fix.command` (from
 // doctor.js) and runs the matching entry here, so a kind is routed in ONE table
 // rather than an if/else chain. doctor.js must stay pure, so the executors live
-// here. Both vector kinds share cmdSync; applyDoctorFixes dedupes by command so
-// it embeds once.
+// here. All three vector kinds share cmdSync; applyDoctorFixes dedupes by COMMAND
+// STRING, so the two coverage kinds embed once between them — but `vectors_stale`
+// carries a different string (`--full`) and therefore runs as a second pass. That
+// is redundant, not wrong: the full pass subsumes the delta one, and a store can
+// legitimately be both under-covered and stale. Left as two passes rather than
+// hand-ordering them, because the alternative is a scheduler in a fix table.
 const DOCTOR_FIX_RUNNERS = {
   vectors_missing:      (scope) => cmdSync(scope === "all" ? ["--all"] : []),
+  vectors_stale:        (scope) => cmdSync(scope === "all" ? ["--full", "--all"] : ["--full"]),
   vectors_unmeasurable: (scope) => cmdSync(scope === "all" ? ["--all"] : []),
   duplicate_records:    () => cmdDedup(["--atoms", "--apply"]),
   low_signal_records:   () => cmdPrune(["--low-signal", "--apply"]),

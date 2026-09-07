@@ -469,7 +469,18 @@ function readVectorIds(ref) {
       if (d && Number.isFinite(d.d)) dimensions = d.d;
     } catch { /* dimension is a nicety; its absence does not invalidate the id set */ }
 
-    return ok({ recordIds: ids, count: ids.size, dimensions });
+    // Which embedding generation built these vectors (vec_meta.embed_version,
+    // stamped by the full-rebuild paths). null means "no stamp" — every store
+    // written before 0.8.4, which is exactly the population that needs migrating.
+    // Read here rather than compared here: extract states what is on disk, and
+    // transform decides whether it is stale. Same split as `dimensions`.
+    let embedVersion = null;
+    try {
+      const r = db.prepare("SELECT value FROM vec_meta WHERE key = 'embed_version'").get();
+      if (r && r.value) embedVersion = String(r.value);
+    } catch { /* no vec_meta table = pre-stamp store = null, which is the answer */ }
+
+    return ok({ recordIds: ids, count: ids.size, dimensions, embedVersion });
   } catch (e) {
     return errored(`l1_vec unreadable (${ref.vectorDbPath}): ${e.message}`, NO_VECTORS);
   } finally {

@@ -144,7 +144,9 @@ tmem scenes list                List scene blocks
 tmem scene <name>               Print one full scene block (project-first, then global)
 tmem scenes dedup [--dry-run]   Remove duplicate scenes
 tmem changelog [--last N]       Recent memory changes
-tmem sync [--full]              Embed missing vectors (delta); --full rebuilds
+tmem sync [--full]              Embed missing vectors (delta); --full rebuilds both
+                                populations (atoms + scene-fact vectors) and re-stamps
+                                the store's embedding generation
 tmem atoms [global|project|all] Dump L1 atoms as JSON
 tmem sessions                   List pending sessions
 tmem init                       Initialize memory store
@@ -276,7 +278,13 @@ maintenance verbs are its detail.
 
 - **FTS5** — keyword search via `node:sqlite` (built-in)
 - **sqlite-vec** — vector cosine search (npm)
-- **EmbeddingGemma-300m** — local embedding via `node-llama-cpp` (npm, ~80MB model)
+- **EmbeddingGemma-300m** — local embedding via `node-llama-cpp` (npm, ~80MB model), used
+  **asymmetrically**: queries embed as `task: search result | query: …`, documents as
+  `title: <scene> | text: …`. Measured on the live corpus, the template widens the gap
+  between on-topic and off-topic similarity from 0.009 to 0.071 — which is what lets a
+  relevance floor separate them at all. `vec_meta.embed_version` stamps which template
+  built a store's index; a store on an older one is excluded from atom recall until
+  `tmem sync --full`
 - **Resident embed daemon** — keeps the model warm over local IPC (named pipe / unix socket); degrades to FTS-only on failure. Manage explicitly with `tmem daemon start|status|stop`
 - **RRF** (k=60) — merges FTS5 + vector results
 

@@ -18,6 +18,7 @@ const net = require("node:net");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { addrForDir, readPidFile, pidAlive } = require("./embed_daemon.js");
+const { queryText, docText } = require("./embed_prompt.js");
 
 const SCRIPTS_DIR = __dirname;
 const DAEMON_PATH = path.join(__dirname, "embed_daemon.js");
@@ -165,6 +166,37 @@ function embedViaDaemon(text, opts = {}) {
 }
 
 /**
+ * The two retrieval sides. Every caller must pick one — `embedViaDaemonStatus`
+ * stays raw for `pingDaemon` and the bench, which measure the transport rather
+ * than retrieve anything.
+ *
+ * PREFIXING HAPPENS HERE, CLIENT-SIDE, AND THE WIRE IS UNCHANGED ON PURPOSE. The
+ * daemon's address is sha1(__dirname) (embed_daemon.js addrForDir), so an npm
+ * upgrade in place leaves the PREVIOUS version's resident daemon serving this
+ * client for up to its 15-minute idle timeout. Had the side been signalled as a
+ * new wire field (`{op:"embed", kind:"query"}`), that old daemon would ignore it
+ * and return unprefixed vectors — a wrong number with no error, written into a
+ * freshly-stamped index. Sending an already-prefixed string means the stale
+ * daemon is simply a pure embed function, which is all it ever was.
+ */
+function embedQueryStatus(text, opts = {}) {
+  return embedViaDaemonStatus(queryText(text), opts);
+}
+
+function embedDocStatus(text, title, opts = {}) {
+  return embedViaDaemonStatus(docText(text, title), opts);
+}
+
+/** Vector-or-null wrappers, matching embedViaDaemon's shape. */
+function embedQuery(text, opts = {}) {
+  return embedQueryStatus(text, opts).then((r) => r.vector);
+}
+
+function embedDoc(text, title, opts = {}) {
+  return embedDocStatus(text, title, opts).then((r) => r.vector);
+}
+
+/**
  * Health-check the daemon WITHOUT spawning one (unlike embedViaDaemon, which
  * auto-spawns on a connect error). Resolves a discriminated state:
  *   ready   — replied with a vector (also returns vlen)
@@ -213,4 +245,7 @@ function pingDaemon(opts = {}) {
   });
 }
 
-module.exports = { embedViaDaemon, embedViaDaemonStatus, ensureDaemon, daemonAddr, pingDaemon };
+module.exports = {
+  embedViaDaemon, embedViaDaemonStatus, ensureDaemon, daemonAddr, pingDaemon,
+  embedQuery, embedQueryStatus, embedDoc, embedDocStatus,
+};
