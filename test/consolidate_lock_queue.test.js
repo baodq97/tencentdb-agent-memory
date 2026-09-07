@@ -21,6 +21,12 @@ const os = require("node:os");
 const path = require("node:path");
 
 const runner = require("../scripts/consolidate_runner.js");
+// A `claude` on PATH, always. Without it consolidate_runner's preflight short-
+// circuits to skipped/no-claude-binary BEFORE the lock check, so every assertion
+// below silently tests the preflight instead of the lock — green on a developer
+// machine with Claude Code installed, red on a clean CI runner. That exact
+// failure shipped once already (see test/_fake_claude.js); this file repeated it.
+const { envWithClaude } = require("./_fake_claude.js");
 const lock = require("../scripts/memory_pipeline.js");
 const pipeline = require("../scripts/memory_pipeline.js");
 
@@ -84,7 +90,7 @@ test("the backlog counter survives a lock collision untouched", () => {
     try {
       const rec = runner.runConsolidation({
         hash: HASH,
-        trigger: "session-end",
+        trigger: "session-end", env: envWithClaude(),
         spawnSyncFn: () => { throw new Error("must not spawn while locked"); },
       });
       assert.strictEqual(rec.verdict, "skipped");
@@ -112,7 +118,7 @@ test("a second trigger after release is the one that actually runs, never concur
     assert.strictEqual(pipeline.acquireLock(HASH), true, "simulate a live run holding the lock");
     const firstRec = runner.runConsolidation({
       hash: HASH,
-      trigger: "session-end",
+      trigger: "session-end", env: envWithClaude(),
       spawnSyncFn: () => { spawnCount += 1; throw new Error("must not spawn while locked"); },
     });
     assert.strictEqual(firstRec.verdict, "skipped");
@@ -123,7 +129,7 @@ test("a second trigger after release is the one that actually runs, never concur
 
     const secondRec = runner.runConsolidation({
       hash: HASH,
-      trigger: "counter",
+      trigger: "counter", env: envWithClaude(),
       spawnSyncFn: () => {
         spawnCount += 1;
         // The deferred trigger's backlog is what this run processes — prove it
