@@ -8,6 +8,17 @@
 //
 // PURE: aggregates plain descriptors, no fs/store access. cli.js reads the store
 // and passes the numbers in, so this is unit-testable without a real store.
+//
+// summarizeReachability() below denominates its "capture signal" entirely on
+// the EPISODIC population — a real capture-volume signal, but not a recall-
+// health number, because scripts/constants.js's NON_RECALL_TYPES excludes
+// episodic (and persona) from ever being embedded or read back. Measured
+// across 89 real stores: 5713 L1 records, of which only 115 (2.0%) are
+// vector-eligible — the rest are structurally unreachable BY DESIGN, not
+// broken. summarizeEligibleReachability() below is the honest recall-health
+// number: it denominates over the eligible population only.
+
+const { isVectorEligible } = require("./constants.js");
 
 // An atom carries an OUTCOME (not just a topic/question) when it names a result:
 // a number, a path/symbol, a version, or a decision verb — and is not itself a
@@ -61,4 +72,41 @@ function summarizeReachability(stores) {
   };
 }
 
-module.exports = { isOutcomeBearing, summarizeReachability, OUTCOME_RE };
+/**
+ * The recall-health reachability number: how many of the atoms that CAN be
+ * recalled (isVectorEligible(type)) actually WERE, at least once, per the
+ * recall log. Episodic/persona volume never enters this denominator — it is
+ * reported separately by the caller as `ineligible`, a capture-volume figure,
+ * never a recall-health percentage.
+ *
+ * @param {Array<{id:string, type:string}>} atoms
+ * @param {Set<string>|Array<string>} injectedIds  ids the recall log shows were
+ *   ever injected into a session (i.e. "hot" at least once).
+ * @returns {{eligible:number, hot:number, cold:number, hotPct:number, ineligible:number}}
+ */
+function summarizeEligibleReachability(atoms, injectedIds) {
+  const list = Array.isArray(atoms) ? atoms : [];
+  const injected = injectedIds instanceof Set ? injectedIds : new Set(injectedIds || []);
+  let eligible = 0;
+  let hot = 0;
+  let ineligible = 0;
+  for (const a of list) {
+    if (!a) continue;
+    if (isVectorEligible(a.type)) {
+      eligible += 1;
+      if (injected.has(a.id)) hot += 1;
+    } else {
+      ineligible += 1;
+    }
+  }
+  const cold = eligible - hot;
+  const hotPct = eligible > 0 ? Math.round((hot / eligible) * 100) : 0;
+  return { eligible, hot, cold, hotPct, ineligible };
+}
+
+module.exports = {
+  isOutcomeBearing,
+  summarizeReachability,
+  summarizeEligibleReachability,
+  OUTCOME_RE,
+};

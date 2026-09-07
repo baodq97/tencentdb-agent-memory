@@ -143,6 +143,12 @@ function buildPlan(snapshot, opts = {}) {
   const vectorsMissing =
     vectorsMeasured != null && vectorsCovered != null ? vectorsMeasured - vectorsCovered : null;
 
+  // Round-tripped verbatim off the snapshot — this module never computes a
+  // health metric itself (see the header). transform.js's totals.reachability
+  // is already the eligible-population number (see its own header for the
+  // 89-store measurement); doctor only copies it onto the plan and renders it.
+  const reachability = t.reachability || null;
+
   return {
     verdict: verdictFrom(findings),
     generatedAt: snapshot && snapshot.generatedAt,
@@ -163,6 +169,7 @@ function buildPlan(snapshot, opts = {}) {
       // on the finding's evidence for anyone auditing the corpus.
       lowSignal: (t.lowSignal && t.lowSignal.prunableRecords) ?? null,
       duplicates: (t.duplicates && t.duplicates.exact) ?? null,
+      reachability,
     },
     findings: findings.map((f) => ({
       kind: f.kind,
@@ -198,6 +205,20 @@ function renderPlanText(plan) {
   if (t.lowSignal != null) bits.push(`${t.lowSignal} prunable low-signal`);
   if (t.duplicates != null) bits.push(`${t.duplicates} duplicate`);
   if (bits.length) out.push("  " + bits.join(" · "));
+
+  // Two separate lines, deliberately: one percentage, over the population that
+  // can ever be recalled, and one plain count with NO percentage, for the
+  // episodic volume that is captured but out of recall scope by design. Folding
+  // them together is exactly the bug this metric replaces — "1628/5559 (29%)"
+  // read as a recall-health number when 5559 was the episodic population, which
+  // NON_RECALL_TYPES excludes from recall entirely.
+  const r = t.reachability;
+  if (r) {
+    out.push(r.hot != null
+      ? `  atoms that can be recalled: ${r.hot}/${r.eligible} (${r.hotPct}%) recalled at least once`
+      : `  atoms that can be recalled: ${r.eligible} eligible (recalled-at-least-once count unmeasured — no recall log)`);
+    out.push(`  captured but out of recall scope by design: ${r.episodicVolume} episodic atoms`);
+  }
 
   if (!plan.findings.length) {
     out.push("\nNo problems in scope. ✓");

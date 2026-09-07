@@ -3307,6 +3307,19 @@ function tiles(snap) {
     ? "Nothing has been written about you yet."
     : `<b>${n(proj.byTier.sessionStart)} arrive each session</b>; ${n(proj.byTier.never)} never reach it.`;
 
+  // Same wording as `tmem doctor` (see doctor.js renderPlanText), and the same
+  // source field (totals.reachability), on purpose: two screens that disagree
+  // on a number are worse than either one being wrong. `hot === null` means the
+  // recall log itself is unmeasured — that is a DIFFERENT unknown from
+  // "eligible" being zero, so it gets its own sentence rather than a "0%".
+  const rc = t.reachability || null;
+  const reachGap = !rc
+    ? "Not measured."
+    : (rc.hot == null
+      ? `${n(rc.eligible)} eligible; recalled-at-least-once count unmeasured — no recall log.`
+      : `<b>${n(rc.hot)} of ${n(rc.eligible)} (${rc.hotPct}%) recalled at least once.</b> ` +
+        `${n(rc.episodicVolume)} more episodic atoms are captured but out of recall scope by design.`);
+
   return `<div class="tiles">
     <div class="tot">
       <div class="l">Memories saved</div>
@@ -3324,6 +3337,11 @@ function tiles(snap) {
       <div class="l">Things it knows about you</div>
       <div class="v">${proj ? n(proj.totalBullets) : "0"}</div>
       <div class="gapline">${personaGap}</div>
+    </div>
+    <div class="tot">
+      <div class="l">Atoms that can be recalled</div>
+      <div class="v">${rc ? n(rc.eligible) : "0"}</div>
+      <div class="gapline">${reachGap}</div>
     </div>
   </div>`;
 }

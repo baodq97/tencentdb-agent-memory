@@ -546,9 +546,9 @@ function monthOf(iso) {
  * absent without anything looking wrong, so it stays wrapped in a status forever.
  *
  * @param {import("./contract.js").StoreExtract} storeExtract
- * @param {{now?: number, navBudgetChars?: number|null}} [opts]
+ * @param {{now?: number, navBudgetChars?: number|null, recallUsageById?: Object|null}} [opts]
  */
-function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null } = {}) {
+function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null, recallUsageById = null } = {}) {
   const ref = storeExtract.ref;
   const rd = storeExtract.records || C.unmeasured("records not read");
   const vr = storeExtract.vectors || C.unmeasured("vectors not read");
@@ -577,6 +577,7 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
       reason: rd.reason,
       records: null, byType: null, byWritePath: null, contentLength: null,
       lowSignal: null, lowSignalUnion: null, lowSignalPrunable: null, duplicates: null,
+      reachability: null,
       vectors: unmeasuredVectors(`store unreadable: ${rd.reason}`),
       vectorState: VECTOR_STATE.UNMEASURED,
       embedVersion: null,
@@ -620,6 +621,13 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
   // different one: does this vector's record still exist?
   let vectorsWithRecord = 0;
   let eligibleRecords = 0;
+  // Reachability, not coverage: of the atoms that CAN be recalled at all
+  // (isVectorEligible), how many the recall log shows were actually injected
+  // into a session at least once. `recallUsageById` is null when the recall
+  // log itself is unmeasured — in that case `eligibleHotRecords` stays 0 but
+  // the caller (transformRoot) reports hot as unmeasured, never as a false
+  // zero, exactly as Coverage already does for vectors.
+  let eligibleHotRecords = 0;
 
   for (const r of records) {
     const type = RECORD_TYPES.includes(r.type) ? r.type : RECORD_TYPE_OTHER;
@@ -645,7 +653,12 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
     // 5,459 "missing" vectors were exactly episodic 5,420 + persona 39, and
     // `tmem sync` correctly reported "all vectors in sync" while doctor showed 2%.
     const eligible = isVectorEligible(r.type);
-    if (eligible) eligibleRecords += 1;
+    if (eligible) {
+      eligibleRecords += 1;
+      if (recallUsageById && recallUsageById[r.record_id] && recallUsageById[r.record_id].recalls > 0) {
+        eligibleHotRecords += 1;
+      }
+    }
 
     if (vecIds && vecIds.has(r.record_id)) vectorsWithRecord += 1;
 
@@ -765,6 +778,13 @@ function summariseStore(storeExtract, { now = Date.now(), navBudgetChars = null 
     lowSignalPrunable,
     duplicates: { exact: exact.records, normalised: normalised.records },
     duplicateGroups: { exact: exact.groups, normalised: normalised.groups },
+    // Recall-health, denominated on the population that can ever be recalled —
+    // NOT on `records` or `byType.episodic` (see memory_reachability.js header
+    // for the 89-store measurement that motivated the split). `hot` is a raw
+    // count here; whether it should be trusted as measured-vs-unmeasured is a
+    // recallUsage-wide fact decided once by the caller in transformRoot, not
+    // per store, so it is not folded into a ratio at this layer.
+    reachability: { eligible: eligibleRecords, hot: eligibleHotRecords },
     vectors,
     // Read off the l1_vec row count, which is a whole-store count — a truncated
     // RECORD read does not make "never set up / set up and empty / working"
@@ -1626,7 +1646,16 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     ? DEFAULT_TIER0_MAX_CHARS
     : personaBudgetTokens * CHARS_PER_TOKEN;
 
-  const stores = ((root && root.stores) || []).map((s) => summariseStore(s, { now, navBudgetChars }));
+  // Hoisted ahead of the store loop (was computed after it, near `gaps`):
+  // recallUsage depends only on root.recallLog, not on `stores`, so this is a
+  // pure reorder. Every store's reachability figure needs `.byId` to tell hot
+  // from cold, and threading it through summariseStore's existing per-record
+  // loop is one pass, not a second read of the recall log per store.
+  const recallUsage = buildRecallUsage(root && root.recallLog, now);
+  const recallUsageById = recallUsage.status === STATUS.OK ? recallUsage.byId : null;
+
+  const stores = ((root && root.stores) || [])
+    .map((s) => summariseStore(s, { now, navBudgetChars, recallUsageById }));
 
   // ---- totals ------------------------------------------------------
   const byType = zeroMap(RECORD_TYPES);
@@ -1642,6 +1671,7 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
   const missingByMonth = {};
 
   let records = 0, recordsMeasured = 0, truncatedStores = 0;
+  let reachabilityEligible = 0, reachabilityHot = 0;
   let scenes = 0, sizeBytes = 0;
   let readableStores = 0, erroredStores = 0;
   let lowSignalUnion = 0;
@@ -1680,6 +1710,8 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     recordsMeasured += s.recordsMeasured;
     if (s.recordsTruncated) truncatedStores += 1;
     for (const k of RECORD_TYPES) byType[k] += s.byType[k];
+    reachabilityEligible += s.reachability.eligible;
+    reachabilityHot += s.reachability.hot;
     for (const k of WRITE_PATHS) byWritePath[k] += s.byWritePath[k];
     for (const k of LOW_SIGNAL_CLASSES) lowSignalPerClass[k] += s.lowSignal[k];
     lowSignalUnion += s.lowSignalUnion;
@@ -1835,7 +1867,6 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     projectAtomCount: atomCount(projectStoreForNudges),
   }, { maxChars: tier0MaxChars });
 
-  const recallUsage = buildRecallUsage(root && root.recallLog, now);
   const gaps = buildGaps({ stores, persona, state, config, captureState, heat });
 
   const gapsBySeverity = zeroMap(Object.values(SEVERITY));
@@ -1879,6 +1910,28 @@ function transformRoot(root, { now = Date.now(), extractMs = 0 } = {}) {
     scenesNavUnmeasured,
     scenesNavUnmeasuredReason,
     navBudgetChars,
+    // The recall-health number, denominated on the population that can ever be
+    // recalled (isVectorEligible), NOT on `records` or `byType.episodic`. See
+    // memory_reachability.js's header for the 89-store measurement that showed
+    // the old episodic-denominated "capture signal" reading 29% signal / 99%
+    // cold on a population — episodic atoms — that structurally has no path to
+    // recall at all. `episodicVolume` and `ineligibleVolume` are kept as plain
+    // capture-volume counts, never folded into `hotPct`, so a reader cannot
+    // reconstruct the old misleading percentage from these fields.
+    reachability: {
+      eligible: reachabilityEligible,
+      // `null`, not 0: recallUsage is a single root-level reading (one recall
+      // log, not one per store), so when it is unmeasured every store's hot
+      // count is unknowable together, not zero — the same rule Coverage
+      // applies to a store whose vectors could not be read.
+      hot: recallUsage.status === STATUS.OK ? reachabilityHot : null,
+      cold: recallUsage.status === STATUS.OK ? reachabilityEligible - reachabilityHot : null,
+      hotPct: recallUsage.status === STATUS.OK
+        ? (reachabilityEligible > 0 ? Math.round((reachabilityHot / reachabilityEligible) * 100) : 0)
+        : null,
+      episodicVolume: byType.episodic,
+      ineligibleVolume: Math.max(0, recordsMeasured - reachabilityEligible),
+    },
     gapsBySeverity,
     unmeasuredGaps,
   };

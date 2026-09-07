@@ -76,8 +76,14 @@ const { LOW_SIGNAL, LOW_SIGNAL_CLASSES } = require("../constants.js");
  *       `vec_meta.embed_version`, null before 0.8.4), StoreSummary gained the
  *       same field, and GAP_KIND gained {@link GAP_KIND.VECTORS_STALE} for a
  *       store whose vectors were built by a different embedding template.
+ *   7 — Totals gained `reachability` ({eligible, hot, cold, hotPct,
+ *       episodicVolume, ineligibleVolume}): the recall-eligible-population
+ *       reachability metric, replacing the episodic-denominated capture-signal
+ *       percentage that doctor previously reported as a recall-health number.
+ *       StoreSummary gained the matching per-store `reachability`
+ *       ({eligible, hot}) it is summed from.
  */
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 /* ------------------------------------------------------------------ *
  * 1. Status + Source
@@ -729,6 +735,11 @@ function storeSizeBytes(ref) {
  * @property {Object<string, number>|null} lowSignal     Keyed by {@link LOW_SIGNAL_CLASSES}.
  * @property {Object<string, number>|null} duplicates    Keyed by {@link DUPLICATE_TIERS};
  *   value = records that are a non-first member of a duplicate group.
+ * @property {{eligible:number, hot:number}|null} reachability  Per-store
+ *   recall-eligible atom count and how many of them the recall log shows were
+ *   injected at least once. `hot` is a raw count here — whether it should be
+ *   trusted as measured is a recall-log-wide fact decided once by
+ *   {@link Totals}.reachability, not per store.
  * @property {VectorCoverageStore} vectors
  * @property {SceneStats|null} scenes
  * @property {string|null} newestRecordAt  Max updated_time (ISO) — feeds the snapshot id.
@@ -1088,6 +1099,35 @@ function validateCoverage(cov, label = "coverage") {
  *   a schema bump, which is the point of it being singular now.
  * @property {Object<string, number>} gapsBySeverity   Excludes unmeasured gaps.
  * @property {number} unmeasuredGaps                   Counted separately, on purpose.
+ * @property {Reachability} reachability   The recall-health number, denominated
+ *   on the population that can ever be recalled (`isVectorEligible`), not on
+ *   `records` or `byType.episodic`. Replaces the old episodic-denominated
+ *   "capture signal" that read 29% signal / 99% cold on a population — episodic
+ *   atoms — that structurally has no path to recall at all (measured across 89
+ *   stores: 5713 L1 records, 115 (2.0%) vector-eligible). `episodicVolume` and
+ *   `ineligibleVolume` are the captured-but-out-of-scope-by-design counts, kept
+ *   visible as plain numbers and never folded into `hotPct`.
+ */
+
+/**
+ * @typedef {Object} Reachability
+ * @property {number} eligible   Atoms whose type can ever be recalled.
+ * @property {number|null} hot   Of `eligible`, how many the recall log shows
+ *   were injected into a session at least once. `null` — not 0 — when the
+ *   recall log itself is unmeasured (a single root-level reading, so this is
+ *   never partially known across stores; see {@link Coverage}'s same rule).
+ * @property {number|null} cold  `eligible - hot`; `null` under the same
+ *   condition as `hot`.
+ * @property {number|null} hotPct  `round(100 * hot / eligible)`; `null` under
+ *   the same condition as `hot`. The ONLY percentage this metric produces —
+ *   there is deliberately no percentage for `episodicVolume` or
+ *   `ineligibleVolume`, because inventing one invites exactly the misreading
+ *   this schema version exists to retire.
+ * @property {number} episodicVolume    Episodic atoms captured this pass — a
+ *   real capture-volume signal, kept visible, but out of recall scope by
+ *   design (NON_RECALL_TYPES) and therefore never a recall-health percentage.
+ * @property {number} ineligibleVolume  All non-eligible atoms (episodic +
+ *   persona), i.e. `recordsMeasured - eligible`.
  */
 
 /**
@@ -1137,7 +1177,7 @@ function validateCoverage(cov, label = "coverage") {
  *   3. Append `persona\t${personaBytes|"NA"}\t${personaMtime|""}`.
  *   4. Join with `\n`, prefix `v${SCHEMA_VERSION}\n`, and take
  *        sha256(utf8) -> hex -> first 16 chars.
- *   5. Format: `s<SCHEMA_VERSION>-<16 hex>` — currently `s6-<16 hex>`.
+ *   5. Format: `s<SCHEMA_VERSION>-<16 hex>` — currently `s7-<16 hex>`.
  *      The version is inside the id on purpose: two runs over identical state
  *      but different contract semantics MUST NOT share an id, and a file named
  *      `snapshot-s2-*.json` is self-evidently pre-v3.
